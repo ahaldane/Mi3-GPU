@@ -61,7 +61,6 @@ cl_command_queue clCommandQue;
 cl_device_id *clDevices;
 cl_program clProgram;
 cl_kernel clMCMCKernel;
-cl_kernel clInitseqKernel;
 cl_kernel clCountKernel;
 cl_kernel clUpdateKernel;
 cl_kernel clZeroKernel;
@@ -277,18 +276,6 @@ void setupCountKernel(cl_mem bicount_dev,
     gpuErrchk(errcode);
 }
 
-void setupInitseqKernel(cl_mem startseq_dev, cl_mem savedseq_dev){
-    cl_int errcode;
-    clInitseqKernel = clCreateKernel(clProgram, "initSeqMem", &errcode);
-    gpuErrchk(errcode);
-
-    errcode |= clSetKernelArg(clInitseqKernel, 0, 
-               sizeof(cl_mem), (void *)&startseq_dev);
-    errcode |= clSetKernelArg(clInitseqKernel, 1, 
-               sizeof(cl_mem), (void *)&savedseq_dev);
-    gpuErrchk(errcode);
-}
-
 void setupZeroKernel(cl_mem bicounts){
     cl_int errcode;
     clZeroKernel = clCreateKernel(clProgram, "zeroBicounts", &errcode);
@@ -296,18 +283,6 @@ void setupZeroKernel(cl_mem bicounts){
 
     errcode |= clSetKernelArg(clZeroKernel, 0, 
                sizeof(cl_mem), (void *)&bicounts);
-    gpuErrchk(errcode);
-}
-
-void initSeqMem(){
-    cl_int errcode;
-    size_t localWorkSize[1], globalWorkSize[1];
-    
-    localWorkSize[0] = WGSIZE;
-    globalWorkSize[0] = WGSIZE*NGROUPS; 
-    errcode = clEnqueueNDRangeKernel(clCommandQue, 
-               clInitseqKernel, 1, NULL, globalWorkSize, 
-               localWorkSize, 0, NULL, NULL);
     gpuErrchk(errcode);
 }
 
@@ -388,10 +363,9 @@ cl_mem pairI_dev;
 cl_mem pairJ_dev;
 cl_mem run_seed_dev;
 cl_mem savedseq_dev;
-cl_mem startseq_dev;
 cl_uint *pairI, *pairJ;
 void setupMem(uint L, uint nB, cl_float *couplings, 
-              cl_float *bimarg, uchar *startseq){
+              cl_float *bimarg, uint *seqmem){
     cl_int errcode;
     uint i,j,n;
     uint n_couplings = L*(L-1)*nB*nB/2;
@@ -419,12 +393,8 @@ void setupMem(uint L, uint nB, cl_float *couplings,
            sizeof(cl_uint), NULL, &errcode);
     gpuErrchk(errcode);
     savedseq_dev = clCreateBuffer(clGPUContext, 
-           CL_MEM_READ_WRITE, 
-           sizeof(cl_uint)*SWORDS*NGROUPS*WGSIZE, NULL, &errcode);
-    gpuErrchk(errcode);
-    startseq_dev = clCreateBuffer(clGPUContext, 
            CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, 
-           sizeof(cl_uint)*SWORDS, startseq, &errcode);
+           sizeof(cl_uint)*SWORDS*NGROUPS*WGSIZE, seqmem, &errcode);
     gpuErrchk(errcode);
     
     //set up the map from pair index to pair values
@@ -533,9 +503,9 @@ main(int argc, char** argv){
     int i,j,l,n,a,b;
     FILE *f;
 
-    if(argc != 9 && argc != 11){
+    if(argc != 8 && argc != 9){
         printf("Usage: ./a.out bimarg gdsteps initialBurnin burnloop nloop "
-               "niter alphabet startseq [couplings finalseqs]\n");
+               "niter initseqfile [couplings]\n");
         exit(1);
     }
 
@@ -568,28 +538,30 @@ main(int argc, char** argv){
 
     uint *seqmem = malloc(sizeof(cl_uint)*WGSIZE*NGROUPS*SWORDS);
     uchar *seqs = (uchar*)seqmem;
+    
+    //read in sequences
+    uint readval;
+    f = fopen(argv[7], "rb");
+    #define checkval(param) fread(&readval, sizeof(uint), 1, f); \
+                       if(readval != WGSIZE){ \
+                           printf("Error: Sequence file says #param=%d, "\
+                                  "but running with %d"); exit(1);  }
+    checkval(WGSIZE);
+    checkval(NGROUPS);
+    checkval(L);
+    checkval(nB);
+    #undef checkval
+    fread(seqmem, sizeof(cl_uint), WGSIZE*NGROUPS*SWORDS, f);
+    fclose(f);
 
-    char *alphabet = argv[7];
-    uint *startseqmem = malloc(sizeof(uint)*SWORDS);
-    for(i = 0; i < SWORDS; i++){
-        startseqmem[i] = 0;
-    }
-    uchar *startseq = (uchar*)startseqmem;
-    printf("Initial sequence: ");
-    for(i = 0; i < L; i++){
-        //XXX check bounds
-        startseq[i] = (uchar)(strchr(alphabet, argv[7][i]) - alphabet); 
-        printf("%d ", startseq[i]);
-    }
-    printf("\n");
 
     cl_float *bimarg = malloc(sizeof(cl_float)*n_couplings);
     for(i = 0; i < nPairs*nComb; i++){
         bimarg[i] = bimarg_in[i];
     }
     
-    if(argc == 11){
-        f = fopen(argv[9], "rb");
+    if(argc == 9){
+        f = fopen(argv[8], "rb");
         fread(couplings, sizeof(cl_float), n_couplings, f);
         fclose(f);
     }else{
@@ -615,21 +587,12 @@ main(int argc, char** argv){
     loadKernel("metropolis.cl", nB, L, nloop, nsteps);
     //dumpPTX("metropolis.ptx");
  
-    setupMem(L, nB, couplings, bimarg, startseq);
+    setupMem(L, nB, couplings, bimarg, seqmem);
     setupMCMCKernel(J_dev, run_seed_dev, savedseq_dev);
     setupUpdateKernel(bimarg_dev, bicount_dev, J_dev);
-    setupInitseqKernel(startseq_dev, savedseq_dev);
     setupCountKernel(bicount_dev, savedseq_dev, pairI_dev, pairJ_dev);
     setupZeroKernel(bicount_dev);
     
-    if(argc == 9){
-        initSeqMem(); //kernel call, fills in seqmem with initial sequence
-    } else{
-        f = fopen(argv[10], "rb");
-        fread(seqmem, sizeof(cl_uint), WGSIZE*NGROUPS*SWORDS, f);
-        fclose(f);
-        writeData(savedseq_dev, seqmem, sizeof(cl_uint)*WGSIZE*NGROUPS*SWORDS);
-    }
     
     ////////////// 
     //perform the computation!

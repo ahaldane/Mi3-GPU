@@ -23,15 +23,6 @@ float uniformMap(uint i){
 #define SWORDS ((L-1)/4+1)  //number of words needed to store a sequence
 #define SBYTES (4*SWORDS)   //number of bytes needed to store a sequence
 
-//kernel which fills in seqmem with the starting sequence
-__kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
-void initSeqMem(__global uint *startseq, __global uint *savedSeqs){
-    uint i;
-    for(i = 0; i < SWORDS; i++){
-        savedSeqs[i*NGROUPS*WGSIZE + get_global_id(0)] = startseq[i];
-    }
-}
-
 //kernel which zeros bicounts. (in OpenCL 1.2+, clEnqueueFillBuffer does this)
 __kernel
 void zeroBicounts(__global uint *bicounts){
