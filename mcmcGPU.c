@@ -4,7 +4,7 @@
 #include <string.h>
 #include <assert.h>
 #include <CL/cl.h>
-#include "epsilons.h"
+#include "common/epsilons.h"
 #include "clErrors.h"
 
 #define WGSIZE 256
