@@ -10,8 +10,8 @@
 #error "The cl_khr_byte_addresssable_store extension is required!!"
 #endif
 
-typedef uchar uchar;
-typedef uint uint;
+typedef unsigned char uchar;
+typedef unsigned int uint;
 
 float uniformMap(uint i){
     return (i>>8)*0x1.0p-24f; //converts a 32 bit integer to a uniform float [0,1) 
@@ -51,7 +51,7 @@ void metropolis(__global float *J,
     uchar *seq = (uchar*)seqmem;
     float energy = 0;
     
-    //initialize sequence
+    //load sequence
     for(i = 0; i < SWORDS; i++){
         seqmem[i] = savedSeqMem[i*NGROUPS*WGSIZE + get_global_id(0)];
     }

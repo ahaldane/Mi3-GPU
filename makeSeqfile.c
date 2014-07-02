@@ -10,7 +10,7 @@ typedef unsigned int uint;
 
 int main(int argc, char *argv[]){
     if(argc != 3 && argc != 4){
-        printf("Usage: ./a.out alphabet startseq [outfile]");
+        printf("Usage: ./a.out alphabet startseq [outfile]\n");
         exit(1);
     }
      int i,n;
