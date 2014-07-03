@@ -7,4 +7,4 @@ makeSeqfile: makeSeqfile.c
 	gcc -O3 makeSeqfile.c -o makeSeqfile
 
 mcmcCPUgen: mcmcCPUgen.c common/epsilons.c common/epsilons.h
-	gcc -O3 -lm mcmcCPUgen.c -o mcmcCPU common/epsilons.c -o mcmcCPUgen
+	gcc -O3 -lm mcmcCPUgen.c common/epsilons.c -o mcmcCPUgen

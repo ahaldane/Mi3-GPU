@@ -245,7 +245,13 @@ void writeStatus(){
     }
     fclose(f);
 
+    uint wgsize = WGSIZE;
+    uint ngroups = NGROUPS;
     f = fopen("finalseqs", "wb");
+    fwrite(&wgsize, sizeof(uint), 1, f);
+    fwrite(&ngroups, sizeof(uint), 1, f);
+    fwrite(&L, sizeof(uint), 1, f);
+    fwrite(&nB, sizeof(uint), 1, f);
     fwrite(seqmem, sizeof(cl_uint), SEQMEMSIZE, f);
     fclose(f);
 }
