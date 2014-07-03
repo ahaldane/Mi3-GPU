@@ -4,9 +4,7 @@
 #include <math.h>
 #include <string.h>
 #include <assert.h>
-#include <limits.h>
-#include <float.h>
-#include <errno.h>
+#include "common/stdPanic.h"
 #include "common/epsilons.h"
 #include "gpuSetup.h"
 
@@ -41,29 +39,19 @@ static uint L, nB, n_couplings, nseqs;
 static float gamma_d;
 static uint gdsteps, burnstart, burnin, nloop, nsteps, nseqs;
 
-uint readuint(char *str){
-    char *end;
-    errno = 0;
-    long  lnum = strtoul(str, &end, 10);  
-    if(end == str || errno){
-        fprintf(stderr, "Error reading integer: '%s'\n", str);
-        exit(1);
+void validateSequences(){
+    printf("Validating sequences...");
+    uchar *seqs = (uchar*)seqmem;
+    uint i;
+    for(i = 0; i < 4*SEQMEMSIZE; i++){
+        if(seqs[i] > nB){
+            fprintf(stderr, "Sequence file is malformed.\n"); 
+            exit(1);
+        }
     }
-    if((lnum > INT_MAX) || (lnum < INT_MIN))
-        fprintf(stderr, "Error: %ld out of range for INT\n", lnum);
-    return (int) lnum;
-}
-float readfloat(char *str){
-    char *end;
-    errno = 0;
-    double  lnum = strtod(str, &end);  
-    if(end == str || errno){
-        fprintf(stderr, "Error reading float: '%s'\n", str);
-        exit(1);
-    }
-    if((lnum > FLT_MAX) || (lnum < FLT_MIN))
-        fprintf(stderr, "Error: %g out of range\n", lnum);
-    return (float) lnum;
+    //in principle, also need to check all sequence energies are
+    //not inf
+
 }
 
 void setupHostFromArgs(int argc, char *argv[]){
@@ -73,11 +61,10 @@ void setupHostFromArgs(int argc, char *argv[]){
     int maxargs = 10;
     int argnum = 1;
     if(argc != (maxargs-1) && argc != maxargs){
-        printf("Usage: ./a.out bimarg gamma gdsteps initialBurnin burnloop "
-               "nloop niter initseqfile [couplings]\n");
+        fprintf(stderr, "Usage: ./a.out bimarg gamma gdsteps initialBurnin "
+                        "burnloop nloop niter initseqfile [couplings]\n");
         exit(1);
     }
-    //XXX I do NO error checking of input parameters after this!!!
 
     printf("Initialization\n===============\n");
  
@@ -93,20 +80,20 @@ void setupHostFromArgs(int argc, char *argv[]){
     n_couplings = L*(L-1)*nB*nB/2;
     printf("nBases %d  seqLen %d\n", nB, L);
     
-                                          // example values
-    gamma_d = readfloat(argv[argnum++]);  // 0.005
-    gdsteps = readuint(argv[argnum++]);   // 10
-    burnstart = readuint(argv[argnum++]); // 100
-    burnin = readuint(argv[argnum++]);    // 100
-    nloop = readuint(argv[argnum++]);     // 100
-    nsteps = readuint(argv[argnum++]);    // 100
+                                                // example values
+    gamma_d = readfloat_ordie(argv[argnum++]);  // 0.005
+    gdsteps = readuint_ordie(argv[argnum++]);   // 10
+    burnstart = readuint_ordie(argv[argnum++]); // 100
+    burnin = readuint_ordie(argv[argnum++]);    // 100
+    nloop = readuint_ordie(argv[argnum++]);     // 100
+    nsteps = readuint_ordie(argv[argnum++]);    // 100
     nseqs = WGSIZE*NGROUPS*nloop;
 
     //malloc host memory
-    bicount = malloc(sizeof(cl_uint)*n_couplings);
-    couplings = malloc(sizeof(cl_float)*n_couplings);
-    bimarg = malloc(sizeof(cl_float)*n_couplings);
-    seqmem = malloc(sizeof(cl_uint)*SEQMEMSIZE);
+    bicount = malloc_ordie(sizeof(cl_uint)*n_couplings);
+    couplings = malloc_ordie(sizeof(cl_float)*n_couplings);
+    bimarg = malloc_ordie(sizeof(cl_float)*n_couplings);
+    seqmem = malloc_ordie(sizeof(cl_uint)*SEQMEMSIZE);
     
     //copy over bimarginals to float array
     for(i = 0; i < n_couplings; i++){
@@ -116,12 +103,12 @@ void setupHostFromArgs(int argc, char *argv[]){
     
     //read in sequences
     uint readval;
-    f = fopen(argv[argnum++], "rb");
+    f = fopen_ordie(argv[argnum++], "rb");
     #define checkval(param) \
-        fread(&readval, sizeof(uint), 1, f); \
+        fread_ordie(&readval, sizeof(uint), 1, f); \
         if(readval != param){ \
-            printf("Error: Sequence file says " #param "=%d, "\
-                   "but running with %d", readval, param); \
+            fprintf(stderr, "Error: Sequence file says " #param "=%d, "\
+                   "but running with %d\n", readval, param); \
             exit(1);  \
         }
     checkval(WGSIZE);
@@ -129,14 +116,14 @@ void setupHostFromArgs(int argc, char *argv[]){
     checkval(L);
     checkval(nB);
     #undef checkval
-    fread(seqmem, sizeof(cl_uint), SEQMEMSIZE, f);
+    fread_ordie(seqmem, sizeof(cl_uint), SEQMEMSIZE, f);
     fclose(f);
     
     //read in couplings, or initialize them to 0
     if(argc == maxargs){
-        f = fopen(argv[argnum++], "rb");
-        fread(couplings, sizeof(cl_float), n_couplings, f);
-        fclose(f);
+        f = fopen_ordie(argv[argnum++], "rb");
+        fread_ordie(couplings, sizeof(cl_float), n_couplings, f);
+        fclose_ordie(f);
     }else{
         for(i = 0; i < n_couplings; i++){
             if(bimarg[i] == 0){
@@ -152,10 +139,12 @@ void setupHostFromArgs(int argc, char *argv[]){
         printf("%.15g ", couplings[i]);
     }
     printf(" ...\n\n");
+    
+    validateSequences();
 
     //set up the map from pair index to pair values
-    pairI = malloc(sizeof(cl_uint)*L*(L-1)/2);
-    pairJ = malloc(sizeof(cl_uint)*L*(L-1)/2);
+    pairI = malloc_ordie(sizeof(cl_uint)*L*(L-1)/2);
+    pairJ = malloc_ordie(sizeof(cl_uint)*L*(L-1)/2);
     uint j,n = 0;
     for(i = 0; i < L-1; i++){
         for(j = i+1; j < L; j++){
@@ -248,9 +237,17 @@ void writeStatus(){
         printf("%.15g ", couplings[a]);
     }
     printf(" ...\n");
+
+    #define checkFile(f) \
+        if(f == NULL){ \
+            fprintf(stderr, "Error: failed to open file for output!"); \
+            return; \
+        }
+    //If the file opens but I can't write to it, you're on your own!
     
     //save current state to file
     FILE *f = fopen("result", "wt");
+    checkFile(f);
     for(j = 0; j < nPairs; j++){
         for(a = 0; a < nB*nB; a++){
             fprintf(f, "%.15g ", couplings[nB*nB*j + a]);
@@ -260,10 +257,12 @@ void writeStatus(){
     fclose(f);
 
     f = fopen("binresult", "wb");
+    checkFile(f);
     fwrite(couplings, sizeof(cl_float), n_couplings, f);
     fclose(f);
 
     f = fopen("bicounts", "wt");
+    checkFile(f);
     for(j = 0; j < nPairs; j++){
         for(a = 0; a < nB*nB; a++){
             fprintf(f, "%u ", bicount[nB*nB*j + a]);
@@ -275,12 +274,15 @@ void writeStatus(){
     uint wgsize = WGSIZE;
     uint ngroups = NGROUPS;
     f = fopen("finalseqs", "wb");
+    checkFile(f);
     fwrite(&wgsize, sizeof(uint), 1, f);
     fwrite(&ngroups, sizeof(uint), 1, f);
     fwrite(&L, sizeof(uint), 1, f);
     fwrite(&nB, sizeof(uint), 1, f);
     fwrite(seqmem, sizeof(cl_uint), SEQMEMSIZE, f);
     fclose(f);
+
+    #undef checkFile
 }
 
 int main(int argc, char* argv[]){
