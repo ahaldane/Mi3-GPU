@@ -4,6 +4,9 @@
 #include <math.h>
 #include <string.h>
 #include <assert.h>
+#include <limits.h>
+#include <float.h>
+#include <errno.h>
 #include "common/epsilons.h"
 #include "gpuSetup.h"
 
@@ -38,6 +41,30 @@ static uint L, nB, n_couplings, nseqs;
 static float gamma_d;
 static uint gdsteps, burnstart, burnin, nloop, nsteps, nseqs;
 
+uint readuint(char *str){
+    char *end;
+    errno = 0;
+    long  lnum = strtoul(str, &end, 10);  
+    if(end == str || errno){
+        fprintf(stderr, "Error reading integer: '%s'\n", str);
+        exit(1);
+    }
+    if((lnum > INT_MAX) || (lnum < INT_MIN))
+        fprintf(stderr, "Error: %ld out of range for INT\n", lnum);
+    return (int) lnum;
+}
+float readfloat(char *str){
+    char *end;
+    errno = 0;
+    double  lnum = strtod(str, &end);  
+    if(end == str || errno){
+        fprintf(stderr, "Error reading float: '%s'\n", str);
+        exit(1);
+    }
+    if((lnum > FLT_MAX) || (lnum < FLT_MIN))
+        fprintf(stderr, "Error: %g out of range\n", lnum);
+    return (float) lnum;
+}
 
 void setupHostFromArgs(int argc, char *argv[]){
     FILE *f;
@@ -66,13 +93,13 @@ void setupHostFromArgs(int argc, char *argv[]){
     n_couplings = L*(L-1)*nB*nB/2;
     printf("nBases %d  seqLen %d\n", nB, L);
     
-                                      // example values
-    gamma_d = atof(argv[argnum++]);   // 0.005
-    gdsteps = atoi(argv[argnum++]);   // 10
-    burnstart = atoi(argv[argnum++]); // 100
-    burnin = atoi(argv[argnum++]);    // 100
-    nloop = atoi(argv[argnum++]);     // 100
-    nsteps = atoi(argv[argnum++]);    // 100
+                                          // example values
+    gamma_d = readfloat(argv[argnum++]);  // 0.005
+    gdsteps = readuint(argv[argnum++]);   // 10
+    burnstart = readuint(argv[argnum++]); // 100
+    burnin = readuint(argv[argnum++]);    // 100
+    nloop = readuint(argv[argnum++]);     // 100
+    nsteps = readuint(argv[argnum++]);    // 100
     nseqs = WGSIZE*NGROUPS*nloop;
 
     //malloc host memory
