@@ -17,6 +17,8 @@
 
 #define  SEQMEMSIZE  SWORDS*NGROUPS*WGSIZE // # of words to store all sequences
 
+#define J(i,j,a,b) couplings[(b) + nB*(a) + nB*nB*((i)*L-(i)*((i)+1)/2 + (j)-(i)-1)]
+
 typedef unsigned char uchar;
 typedef unsigned int uint;
 //I also assume uint is the same size as cl_uint, etc
@@ -39,20 +41,13 @@ static uint L, nB, n_couplings, nseqs;
 static float gamma_d;
 static uint gdsteps, burnstart, burnin, nloop, nsteps, nseqs;
 
-void validateSequences(){
-    printf("Validating sequences...");
-    uchar *seqs = (uchar*)seqmem;
-    uint i;
-    for(i = 0; i < 4*SEQMEMSIZE; i++){
-        if(seqs[i] > nB){
-            fprintf(stderr, "Sequence file is malformed.\n"); 
-            exit(1);
-        }
-    }
-    //in principle, also need to check all sequence energies are
-    //not inf
+//formward declarations
+void setupHostFromArgs(int argc, char *argv[]);
+void setupGPU();
+void cleanUp();
+void validateSequences();
+void writeStatus();
 
-}
 
 void setupHostFromArgs(int argc, char *argv[]){
     FILE *f;
@@ -138,7 +133,7 @@ void setupHostFromArgs(int argc, char *argv[]){
     for(i = 0; i < 5; i++){
         printf("%.15g ", couplings[i]);
     }
-    printf(" ...\n\n");
+    printf(" ...\n");
     
     validateSequences();
 
@@ -153,6 +148,7 @@ void setupHostFromArgs(int argc, char *argv[]){
             n++;
         }
     }
+    printf("\n");
 }
 
 void setupGPU(){
@@ -203,6 +199,47 @@ void cleanUp(){
     free(seqmem);
     free(pairI);
     free(pairJ);
+}
+
+void validateSequences(){
+    //this is a lot of work for something that rarely happens...
+    printf("Validating sequences...  ");
+    //reorder sequence memory so it's easier to read
+    //(weird original ordering is for GPU coalesced access)
+    uint *oseqmem = malloc_ordie(sizeof(uint)*SEQMEMSIZE);
+    uint s,i,n,m;
+    for(s = 0; s < NGROUPS*WGSIZE; s++){
+        for(i = 0; i < SWORDS; i++){
+            oseqmem[s*SWORDS + i] = seqmem[i*NGROUPS*WGSIZE + s];
+        }
+    }
+    uchar *seqs = (uchar*)oseqmem;
+
+    for(i = 0; i < NGROUPS*WGSIZE; i++){
+        uchar *seq = &seqs[i*SBYTES];
+
+        //check all bases are < nB
+        for(n = 0; n < L; n++){
+            if(seq[n] > nB){
+                printf("Error: Sequence #%d has invalid character %d.\n", i, seq[i]); 
+                exit(1);
+            }
+        }
+        
+        //make sure no sequences have infinite energy
+        float energy = 0;
+        for(n = 0; n < L-1; n++){
+            for(m = n+1; m < L; m++){
+                energy += J(n,m,seq[n],seq[m]);
+            }
+        }
+        if(isinf(energy) || isnan(energy)){ 
+            printf("Error: Sequence #%d has infinite energy.\n", i); 
+            exit(1);
+        }
+    }
+    free(seqs);
+    printf("Done.\n");
 }
 
 void writeStatus(){
