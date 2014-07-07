@@ -3,7 +3,7 @@
 #include <string.h>
 
 #define WGSIZE 32
-#define NGROUPS 32
+#define NGROUPS 256
 
 typedef unsigned char uchar;
 typedef unsigned int uint;

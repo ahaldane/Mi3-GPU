@@ -9,7 +9,7 @@
 #include "gpuSetup.h"
 
 #define WGSIZE 32
-#define NGROUPS 32
+#define NGROUPS 256
 
 //sequences are padded to 32 bit boundaries
 #define SWORDS ((L-1)/4+1)  //number of words needed to store a sequence
