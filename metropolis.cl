@@ -106,7 +106,7 @@ void countSeqs(__global uint *bicounts,
                __global uint *savedSeqs, 
                __global uint *pairI, 
                __global uint *pairJ) {
-    __local uint smem[WGSIZE*SWORDS];
+    __local uint smem[NSEQLOAD*SWORDS];
     __local uchar *seqs = (__local uchar*)smem;
 
     uint li = get_local_id(0);
@@ -129,16 +129,21 @@ void countSeqs(__global uint *bicounts,
     // s1 = L-1-(int)((1+sqrt(1+8*(L*(L-1)/2-1 - pairnum)))/2); 
     // s2 = pairnum+s1+1-s1*L+s1*(s1)/2
 
-    for(s = 0; s < NGROUPS; s++){
-        //load some sequences into local memory
-        for(i = 0; i < SWORDS; i++){
-            smem[li*SWORDS + i] = savedSeqs[i*NGROUPS*WGSIZE + (s*WGSIZE + li)];
+    //NSEQLOAD must be a divisor of NGROUPS*WGSIZE!!!  The idea is we divide up 
+    //the NGROUPS*WGSIZE sequences into chunks of size NSEQLOAD.
+    //Since each work unit loads one sequence, must have NSEQLOAD < WGSIZE
+    for(s = 0; s < NGROUPS*WGSIZE; s += NSEQLOAD){
+        //load NSEQLOAD sequences into local memory
+        if(li < NSEQLOAD){
+            for(i = 0; i < SWORDS; i++){
+                smem[li*SWORDS + i] = savedSeqs[i*NGROUPS*WGSIZE + (s + li)];
+            }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
        
         //count them up
         if(n < NCOUPLE){
-            for(m = 0; m < WGSIZE; m++){
+            for(m = 0; m < NSEQLOAD; m++){
                 //this probably causes lots of bank conflicts
                 if(seqs[SBYTES*m + s1] == b1  && seqs[SBYTES*m + s2] == b2){ 
                     count++;

@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define WGSIZE 256
+#define WGSIZE 32
 #define NGROUPS 32
 
 typedef unsigned char uchar;

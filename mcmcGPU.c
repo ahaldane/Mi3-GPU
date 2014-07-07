@@ -8,7 +8,7 @@
 #include "common/epsilons.h"
 #include "gpuSetup.h"
 
-#define WGSIZE 256
+#define WGSIZE 32
 #define NGROUPS 32
 
 //sequences are padded to 32 bit boundaries
@@ -153,12 +153,22 @@ void setupHostFromArgs(int argc, char *argv[]){
 
 void setupGPU(){
     initGPU();
+    
+    //nseqload must be a divisor of NGROUPS*WGSIZE and seqs must be < 8192b
+    uint nseqload = 8192/SBYTES; //maximum # of seqs that fit in 8192 bytes
+    while(((NGROUPS*WGSIZE)%nseqload) != 0){
+        nseqload--;
+    }
+    if(nseqload > WGSIZE){
+        nseqload = WGSIZE; //nseqload should not be > WGSIZE
+    }
 
     char options[1024];
-    sprintf(options, "-D NGROUPS=%d -D WGSIZE=%d -D SEED=%d -D nB=%d -D L=%d "
-                     "-D nsteps=%d -D nseqs=%d -D gamma=%g "
+    sprintf(options, "-D NGROUPS=%d -D WGSIZE=%d -D NSEQLOAD=%d -D SEED=%d "
+                     "-D nB=%d -D L=%d -D nsteps=%d -D nseqs=%d -D gamma=%g "
                      "-cl-nv-verbose -Werror", 
-                     NGROUPS, WGSIZE, rand(), nB, L, nsteps, nseqs, gamma_d);
+                     NGROUPS, WGSIZE, nseqload, rand(), nB, L, nsteps, nseqs,
+                     gamma_d);
     printf("Options: %s\n\n", options);
     loadKernel("metropolis.cl", options);
     //dumpPTX("metropolis.ptx");
