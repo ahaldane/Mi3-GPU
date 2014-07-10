@@ -7,6 +7,7 @@ import load
 
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '0'
 os.environ['PYOPENCL_NO_CACHE'] = '1'
+ndisp = 5
 
 WGSIZE, NGROUPS = 256, 32
 
@@ -33,7 +34,7 @@ nsteps = uint32(args.next())    # 100
 
 print ("Running {} loops of {} sequences (x{}) with {} loops burnin per "
        "GD step, for {} GD steps. Running {} loops of pre-GD burnin.").format(
-       nloop, nsteps, WGSIZE*NGROUPS, gdsteps, burnin, burnstart)
+       nloop, nsteps, WGSIZE*NGROUPS, burnin, gdsteps, burnstart)
 print ("Re-initializing to random seqs each GD step by doing 100 loops of "
        "neutral sampling.")
 
@@ -106,7 +107,14 @@ while (NGROUPS*WGSIZE)%nseqload != 0:
 #number of work groups needed to process couplings
 cplgrp = ((n_couplings-1)/WGSIZE+1) 
 
-with open("metropolis.cl") as f:
+if nseqload == WGSIZE:
+    print 'Using "Local" OpenCL code for short sequences'
+    srcfn = "metropolisLocal.cl"
+else:
+    print 'Using "Global" OpenCL code for long sequences'
+    srcfn = "metropolisGlobal.cl"
+
+with open(srcfn) as f:
     src = f.read()
 options = [('NGROUPS', NGROUPS), ('WGSIZE', WGSIZE), ('NSEQLOAD', nseqload), 
            ('SEED', randint(2**32)), ('nB', nB), ('L', L), ('nsteps', nsteps), 
@@ -152,7 +160,6 @@ def writeStatus():
     print "SSD: {}".format(rmsd)
     
     #print some details to stdout
-    ndisp = 5
     print "Bicounts: " + " ".join(map(str,bicount[0,:ndisp])) + '...'
     print "Marginals: " + " ".join(map(str,bicount[0,:ndisp]/float(nseqs))) + '...'
     print "Couplings: " + " ".join(map(str,couplings[0,:ndisp])) + "..."
