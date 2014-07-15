@@ -31,7 +31,7 @@ void zeroBicounts(__global uint *bicounts){
 }
 
 //convenient macro to access J matrix elements:
-#define coupling(i,j,a,b) J[(b) + nB*(a) + nB*nB*((i)*L-(i)*((i)+1)/2 + (j)-(i)-1)]
+#define IND(i,j,a,b) ((b) + nB*(a) + nB*nB*((i)*L-(i)*((i)+1)/2 + (j)-(i)-1))
 //assumes j > i!!
 
 //kernel which iterates the MCMC sequence generation steps, 
@@ -65,7 +65,7 @@ void metropolis(__global float *J,
                 #pragma unroll
                 for(cm = m%4; cm < 4 && m < L; cm++, m++){
                     seqm = ((uchar*)(&sbm))[cm];
-                    energy += coupling(n,m,seqn,seqm);
+                    energy += J[IND(n,m,seqn,seqm)];
                 }
             }
         }
@@ -96,12 +96,12 @@ void metropolis(__global float *J,
                 for(cm = 0; cm < 4 && m < L; cm++, m++){
                     seqm = ((uchar*)(&sbm))[cm];
                     if(m < pos){
-                        newenergy += ( coupling(m,pos,seqm,residue) - 
-                                       coupling(m,pos,seqm,   seqp) );
+                        newenergy += ( J[IND(m,pos,seqm,residue)] - 
+                                       J[IND(m,pos,seqm,   seqp)] );
                     }
                     if(m > pos){
-                        newenergy += (coupling(pos,m,residue,seqm) - 
-                                      coupling(pos,m,   seqp,seqm) );
+                        newenergy += ( J[IND(pos,m,residue,seqm)] - 
+                                       J[IND(pos,m,   seqp,seqm)] );
                     }
                  }
             }
