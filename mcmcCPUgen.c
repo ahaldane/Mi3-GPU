@@ -65,16 +65,17 @@ int main(int argc, char *argv[]){
         fprintf(stderr, "Error: size of alphabet (%d) does not i"
                         "match nBases (%d)", strlen(alphabet), nBases);
     }
+    printf("#PARAM alpha: '%s'\n", alphabet);
+
     char *startseq = argv[4];
     int *seq = malloc(sizeof(int)*seqLen);
-    printf("Starting seq: ");
+    printf("#INFO Starting seq: ");
     for(i = 0; i < seqLen; i++){
         seq[i] = (int)(strchr(alphabet, startseq[i]) - alphabet);
-        printf("%d ", seq[i]);
+        printf("%c", alphabet[seq[i]]);
     }
-
+    printf("\n");
     double energy = getEnergy(seq);
-    printf("  (E: %g)\n", energy);
 
     //FILE *outf = fopen("out", "wb"); //used to output autocorrelation data
     
