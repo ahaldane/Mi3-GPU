@@ -1,5 +1,6 @@
 #!/usr/bin/env python2
 from scipy import *
+import scipy
 from numpy.random import randint
 import pyopencl as cl
 import sys, os
@@ -56,11 +57,13 @@ if len(alpha) != nB:
 ocouplings = zeros((nPairs, nB*nB), dtype='<f4')
 ocouplings[bimarg == 0] = inf
 try:
-    couplings = load(args.next())
+    couplings = scipy.load(args.next())
     if couplings.dtype != dtype('<f4'):
         raise Exception("Couplings in wrong format")
-except:
+except StopIteration:
+    print "Setting Initial couplings to 0"
     couplings = ocouplings
+
 print "Initial Couplings: " + " ".join(map(str,couplings[0,:ndisp])) + "..."
 
 pairI, pairJ = zip(*[(i,j) for i in range(L-1) for j in range(i+1,L)])
@@ -148,29 +151,39 @@ pairJ_dev = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=pairJ)
 #perform the computation!
 print "\n\nMCMC Run\n========"
 
-def writeStatus():
+def writeStatus(n):
+    n = str(n)
+
     cl.enqueue_copy(queue, couplings, J_dev)
     cl.enqueue_copy(queue, bicount, bicount_dev)
     cl.enqueue_copy(queue, seqmem, seqmem_dev)
-    
-    #print out rmsd
+
     rmsd = sqrt(mean((bimarg - bicount/float32(nseqs))**2))
-    print "RMSD: {}".format(rmsd)
-    rmsd = sum((bimarg - bicount/float32(nseqs))**2)
-    print "SSD: {}".format(rmsd)
-    
+    ssd = sum((bimarg - bicount/float32(nseqs))**2)
+
+    disp = []
+    #print out rmsd
+    disp.append("RMSD: {}".format(rmsd))
+    disp.append("SSD: {}".format(rmsd))
     #print some details to stdout
-    print "Bicounts: " + " ".join(map(str,bicount[0,:ndisp])) + '...'
-    print "Marginals: " + " ".join(map(str,bicount[0,:ndisp]/float(nseqs))) + '...'
-    print "Couplings: " + " ".join(map(str,couplings[0,:ndisp])) + "..."
+    disp.append("Bicounts: " + " ".join(map(str,bicount[0,:ndisp])) + '...')
+    disp.append("Marginals: " + " ".join(map(str,bicount[0,:ndisp]/float(nseqs))) + '...')
+    disp.append("Couplings: " + " ".join(map(str,couplings[0,:ndisp])) + "...")
+    dispstr = "\n".join(disp)
+    
+    mkdir(os.path.join(outdir, n))
+    with open(os.path.join(outdir, n, 'info.txt')) as f:
+        print >>f, dispstr
 
     #save current state to file
-    savetxt('result', couplings)
-    save('binresult', couplings)
-    savetxt('bicounts', bicount, fmt='%d')
+    savetxt(os.path.join(outdir, n, 'J.txt'), couplings)
+    save(os.path.join(outdir, n, 'J'), couplings)
+    savetxt(os.path.join(outdir, n, 'bicounts'), bicount, fmt='%d')
     for i in range(SWORDS): #undo memory rearrangement
         bseqs.view(uint32)[:,i] = seqmem[i,:] 
-    load.writeSites('finalsequences', bseqs[:,:L], alpha, param=params)
+    load.writeSites(os.path.join(outdir, n, 'finalseqs'), bseqs[:,:L], alpha, param=params)
+
+    print dispstr
 
 #initial burnin
 kernel_seed = array([0], dtype=int32)

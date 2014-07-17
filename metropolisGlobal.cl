@@ -196,7 +196,8 @@ void updateCouplings(__global float *targetMarginals,
         couplings[n] = INFINITY;
     }
     else{
-        couplings[n] += gamma*(target - marginal)/(target*(target-1));
+        float dJ = (target - marginal)/(target*(target-1));
+        couplings[n] += gamma*clamp(dJ, -1.0f, 1.0f);
     }
 }
 
