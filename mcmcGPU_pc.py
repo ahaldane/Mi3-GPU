@@ -3,7 +3,7 @@ from scipy import *
 import scipy
 from numpy.random import randint
 import pyopencl as cl
-import sys, os, errno, glob
+import sys, os, errno, glob, argparse
 import load
 
 def mkdir_p(path):
@@ -13,7 +13,7 @@ def mkdir_p(path):
         if not (exc.errno == errno.EEXIST and os.path.isdir(path)):
             raise
 scriptPath = os.path.dirname(os.path.realpath(__file__))
-outdir = 'outputSimple'
+outdir = 'output'
 printsome = lambda a: " ".join(map(str,a.flatten()[:5]))
 
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '0'
@@ -23,59 +23,54 @@ WGSIZE, NGROUPS = 256, 32
 
 # Read in args and Data:
 #=======================
+parser = argparse.ArgumentParser(description='GD-MCMC')
+parser.add_argument('bimarg')
+parser.add_argument('gamma_d', type=float32)
+parser.add_argument('gdsteps', type=uint32)
+parser.add_argument('burnin', type=uint32)
+parser.add_argument('nloop', type=uint32)
+parser.add_argument('nsteps', type=uint32)
+parser.add_argument('alpha')
+parser.add_argument('couplings', nargs='?')
+
+args = parser.parse_args(sys.argv[1:])
+
 
 print "Initialization\n==============="
 
-args = iter(sys.argv)
-args.next()
-
-bimarg = loadtxt(args.next(), dtype='<f4')
+bimarg = loadtxt(args.bimarg, dtype='<f4')
 L = int(((1+sqrt(1+8*bimarg.shape[0]))/2) + 0.5) 
 nB = int(sqrt(bimarg.shape[1]) + 0.5) #+0.5 for rounding any fp error
 nPairs = L*(L-1)/2;
 n_couplings = nPairs*nB*nB
 print "nBases {}  seqLen {}".format(nB, L)
 
-                                # for example:
-gamma_d = float32(args.next())  # 0.005
-gdsteps = uint32(args.next())   # 10
-burnstart = uint32(args.next()) # 100
-burnin = uint32(args.next())    # 100
-nloop = uint32(args.next())     # 100
-nsteps = uint32(args.next())    # 100
+                        # for example:
+gamma_d = args.gamma_d  # 0.005
+gdsteps = args.gdsteps  # 10
+burnin = args.burnin    # 100
+nloop = args.nloop      # 100
+nsteps = args.nsteps    # 128
 
 print ("Running {} loops of {} sequences (x{}) with {} loops burnin per "
-       "GD step, for {} GD steps. Running {} loops of pre-GD burnin.").format(
-       nloop, nsteps, WGSIZE*NGROUPS, burnin, gdsteps, burnstart)
-neutralloop = 100 #feel free to change this. nB*L seems good too.
-print ("Running {} loops of neutral sampling at the start of "
-       "each GD step.").format(neutralloop)
+       "GD step, for {} GD steps.").format(
+       nloop, nsteps, WGSIZE*NGROUPS, burnin, gdsteps)
 
 bicount = empty((nPairs, nB*nB), dtype='<u4')
-oseqs, seqinfo = load.loadSites(args.next())
-params = seqinfo[2]
-alpha = params['alpha']
-
-if oseqs.shape[1] != L:
-    print "Expected sequence length {}, got {}".format(L, oseqs.shape[1])
-    exit()
-if oseqs.shape[0] != WGSIZE*NGROUPS:
-    print "Expected {} sequences, got {}".format(WGSIZE*NGROUPS, oseqs.shape[0])
-    exit()
+alpha = args.alpha
 if len(alpha) != nB:
     print "Expected alphabet size {}, got {}".format(nB, len(alpha))
     exit()
 
 ocouplings = zeros((nPairs, nB*nB), dtype='<f4')
 ocouplings[bimarg == 0] = inf
-#try:
-#    couplings = scipy.load(args.next())
-#    if couplings.dtype != dtype('<f4'):
-#        raise Exception("Couplings in wrong format")
-#except StopIteration:
-#    print "Setting Initial couplings to 0"
-#    couplings = ocouplings
-couplings = ocouplings
+if args.couplings:
+    couplings = scipy.load(args.couplings)
+    if couplings.dtype != dtype('<f4'):
+        raise Exception("Couplings in wrong format")
+else:
+    print "Setting Initial couplings to 0"
+    couplings = ocouplings
 
 print "Initial Couplings: " + printsome(couplings) + "..."
 
@@ -147,14 +142,19 @@ prg = cl.Program(ctx, src).build(optstr + extraopt )
 print "OpenCL Compilation Log:"
 print prg.get_build_info(devices[0], cl.program_build_info.LOG)
 
-#convert seqs to uchars, padded to 32bits, assume GPU is little endian
-bseqs = zeros((oseqs.shape[0], SBYTES), dtype='<u1', order='C')
-bseqs[:,:L] = oseqs  
 #arrange seq memory for coalesced access
 seqmem = zeros((SWORDS, WGSIZE*NGROUPS), dtype='<u4', order='C')
-for i in range(SWORDS):
-    seqmem[i,:] = bseqs.view(uint32)[:,i]
-ccseqmem = seqmem.copy()
+
+#converts seqs to uchars, padded to 32bits, assume GPU is little endian
+bseqs = zeros((WGSIZE*NGROUPS, SBYTES), dtype='<u1', order='C')
+def packSeqs(mem, seqs):
+    bseqs[:,:L] = seqs  
+    for i in range(SWORDS):
+        mem[i,:] = bseqs.view(uint32)[:,i]
+def unpackSeqs(mem):
+    for i in range(SWORDS): #undo memory rearrangement
+        bseqs.view(uint32)[:,i] = mem[i,:] 
+    return bseqs[:,:L]
 
 #allocate & init device memory
 mf = cl.mem_flags
@@ -172,17 +172,15 @@ pairJ_dev = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=pairJ)
 
 print "\n\nMCMC Run\n========"
 
-def writeStatus(n, rmsd, ssd):
+def writeStatus(n, rmsd, ssd, bicount, couplings, seqs):
     n = str(n)
 
-    disp = [
-        #print out rmsd
-        "RMSD: {}".format(rmsd),
-        "SSD: {}".format(ssd),
-        #print some details to stdout
-        "Bicounts: " + printsome(bicount) + '...',
-        "Marginals: " + printsome(bicount/float(nseqs)) + '...',
-        "Couplings: " + printsome(couplings) + "..."]
+    #print some details 
+    disp = ["RMSD: {}".format(rmsd),
+            "SSD: {}".format(ssd),
+            "Bicounts: " + printsome(bicount) + '...',
+            "Marginals: " + printsome(bicount/float(nseqs)) + '...',
+            "Couplings: " + printsome(couplings) + "..."]
     dispstr = "\n".join(disp)
     
     mkdir_p(os.path.join(outdir, n))
@@ -190,43 +188,59 @@ def writeStatus(n, rmsd, ssd):
         print >>f, dispstr
 
     #save current state to file
-    savetxt(os.path.join(outdir, n, 'J.txt'), couplings)
     save(os.path.join(outdir, n, 'J'), couplings)
     savetxt(os.path.join(outdir, n, 'bicounts'), bicount, fmt='%d')
-    for i in range(SWORDS): #undo memory rearrangement
-        bseqs.view(uint32)[:,i] = seqmem[i,:] 
     load.writeSites(os.path.join(outdir, n, 'finalseqs'), 
-                    bseqs[:,:L], alpha, param=params)
+                    seqs, alpha, param={'alpha': alpha})
 
     print dispstr
 
-#initial burnin
-kernel_seed = array([0], dtype=int32)
-print "Initial Burnin for {} steps:".format(burnstart)
-for j in range(burnstart):
-    cl.enqueue_copy(queue, run_seed_dev, kernel_seed )
-    kernel_seed[0] += 1
-    prg.metropolis(queue, (WGSIZE*NGROUPS,), (WGSIZE,), 
-                   J_dev, run_seed_dev, seqmem_dev)
+nonzeroJ = isfinite(couplings.flatten())
+def doFit():
+    nproj = 8
+    kernel_seed = array([0], dtype=int32)
+    global couplings
+    lastrmsd = inf
+    for i in range(gdsteps):
+        #equilibrate until we are back at original rmsd 3 times
+        nMinRMSD = 0
+        equilN = 0
+        while equilN < nproj or nMinRMSD < 3:
+            rmsd = singleStep('{}_{}equil'.format(i,equilN), kernel_seed)
+            equilN += 1
+            if rmsd < lastrmsd:
+                nMinRMSD += 1
+        
+        #run nprogs steps, recording couplings
+        recJ = []
+        for l in range(nproj):
+            rmsd = singleStep('{}_{}sample'.format(i,l), kernel_seed)
+            recJ.append(couplings.copy())
+        
+        #project couplings some number of steps ahead (XXX clean this up please)
+        projectionFactor = 8
+        recJ = vstack([j.flatten() for j in recJ])
+        polys = polyfit(arange(nproj), recJ[:,nonzeroJ], 1)
+        projJ = array([polyval(polys[:,l], nproj + projectionFactor*nproj) for l in range(polys.shape[1])])
+        couplings.reshape(couplings.size)[nonzeroJ] = projJ
+        print ""
+        print "Projecting forward {} steps.".format(projectionFactor*nproj)
+        print "Projected Couplings: " + printsome(couplings) + "..."
+        save(os.path.join(outdir, 'Jproj_{}'.format(i)), couplings)
+        
+        lastrmsd = rmsd
 
-#main loop
-lastrmsd = inf
-for i in range(gdsteps):
+        cl.enqueue_copy(queue, J_dev, couplings)
+
+def singleStep(runName, kernel_seed):
     print ""
-    print "Gradient Descent step {}".format(i)
-
-    cl.enqueue_copy(queue, seqmem_dev, ccseqmem) #re-init seqs
-    #J_dev should already be saved in couplings
-    cl.enqueue_copy(queue, J_dev, ocouplings)
+    print "Gradient Descent step {}".format(runName)
     
-    #neutral initialization loops (to avoid well effects)
-    for j in range(neutralloop):
-        cl.enqueue_copy(queue, run_seed_dev, kernel_seed)
-        kernel_seed[0] += 1
-        prg.metropolis(queue, (WGSIZE*NGROUPS,), (WGSIZE,), 
-                       J_dev, run_seed_dev, seqmem_dev)
-
-    cl.enqueue_copy(queue, J_dev, couplings)
+    #randomize initial sequences
+    #(WARNING: this does not work if any couplings are inf!!!)
+    #(In that case use mcmcSGPU.py)
+    packSeqs(seqmem, randint(0, nB, size=(WGSIZE*NGROUPS, L)))
+    cl.enqueue_copy(queue, seqmem_dev, seqmem)
 
     #burnin loops
     for j in range(burnin):
@@ -249,19 +263,15 @@ for i in range(gdsteps):
     rmsd = sqrt(mean((bimarg - bicount/float32(nseqs))**2))
     ssd = sum((bimarg - bicount/float32(nseqs))**2)
 
-    if False: #rmsd > lastrmsd:
-        gamma = gamma/10.0
-        print ("Warning: RMSD increased. Decreasing gamma to {} and "
-               "restarting from last step.").format(gamma)
-    else:
-        #update & save couplings
-        prg.updateCouplings(queue, (WGSIZE*cplgrp,), (WGSIZE,), 
-                            bimarg_dev, bicount_dev, J_dev)
-        cl.enqueue_copy(queue, couplings, J_dev)
+    prg.updateCouplings(queue, (WGSIZE*cplgrp,), (WGSIZE,), 
+                        bimarg_dev, bicount_dev, J_dev)
 
+    cl.enqueue_copy(queue, couplings, J_dev)
     cl.enqueue_copy(queue, seqmem, seqmem_dev)
-    writeStatus(i, rmsd, ssd)
-    lastrmsd = rmsd
+    writeStatus(runName, rmsd, ssd, bicount, couplings, unpackSeqs(seqmem))
+    return rmsd
+
+doFit()
 
 #Note that loop control is split between nloop and nsteps. This is because
 #on some (many) systems there is a watchdog timer that kills any kernel 

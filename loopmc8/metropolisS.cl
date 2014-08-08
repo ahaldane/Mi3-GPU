@@ -10,6 +10,8 @@
 #error "The cl_khr_byte_addresssable_store extension is required!!"
 #endif
 
+#pragma OPENCL EXTENSION cl_khr_fp64: enable
+
 typedef unsigned char uchar;
 typedef unsigned int uint;
 
@@ -23,22 +25,15 @@ float uniformMap(uint i){
 #define SWORDS ((L-1)/4+1)  //number of words needed to store a sequence
 #define SBYTES (4*SWORDS)   //number of bytes needed to store a sequence
 
-//kernel which zeros bicounts. (in OpenCL 1.2+, clEnqueueFillBuffer does this)
-__kernel
-void zeroBicounts(__global uint *bicounts){
-    if(get_global_id(0) < NCOUPLE)
-        bicounts[get_global_id(0)] = 0;
-}
-
 //convenient macro to access J matrix elements:
 #define IND(i,j,a,b) ((b) + nB*(a) + nB*nB*((i)*L-(i)*((i)+1)/2 + (j)-(i)-1))
 //assumes j > i!!
 
-//kernel which iterates the MCMC sequence generation steps, 
 __kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
 void metropolis(__global float *J,
                 __global uint *run_seed, 
-                __global uint *seqmem){
+                __global uint *seqmem,
+                __global float *energies){
     uint i,j,n,m;
 
     //init rng
@@ -49,9 +44,10 @@ void metropolis(__global float *J,
     uchar seqm, seqn, seqp;
     uint cn, cm;
     uint sbn, sbm;
+    __local float lcouplings[nB*nB];
 
     //initialize energy
-    float energy = 0;
+    double energy = 0;
     n = 0;
     while(n < L-1){
         // coalsesced load
@@ -61,11 +57,19 @@ void metropolis(__global float *J,
             seqn = ((uchar*)(&sbn))[cn];
             m = n+1;
             while(m < L){
+
                 uint sbm = seqmem[(m/4)*NGROUPS*WGSIZE + get_global_id(0)]; 
                 #pragma unroll
                 for(cm = m%4; cm < 4 && m < L; cm++, m++){
+                    if(get_local_id(0) < nB*nB){
+                        //WGSIZE must be greater than nB*nB!!
+                        lcouplings[get_local_id(0)] = J[(n*L + m)*nB*nB + get_local_id(0)];
+                    }
+                    barrier(CLK_LOCAL_MEM_FENCE);
+
                     seqm = ((uchar*)(&sbm))[cm];
-                    energy += J[IND(n,m,seqn,seqm)];
+                    energy += lcouplings[nB*seqn + seqm];
+                    barrier(CLK_LOCAL_MEM_FENCE);
                 }
             }
         }
@@ -74,19 +78,18 @@ void metropolis(__global float *J,
     //with some super preprocessor magic, could do unrolling myself?
 
     //main loop
+    uint pos = 0;
     for(i = 0; i < nsteps; i++){
         c.v[0]++; 
         threefry4x32_ctr_t rng = threefry4x32(c, k);
         
         //repeat sequence update 2x, using 2 of the 4 rngs each time
         #pragma unroll
-        for(j = 0; j <= 2; j += 2){
-            uint r = rng.v[j]%(nB*L);
-            uint pos = r/nB;
-            uint residue = r%nB; 
+        for(j = 0; j <= 1; j += 2){
+            uint residue = rng.v[j]%nB; 
             
             //calculate new energy
-            float newenergy = energy;
+            double newenergy = energy;
             uint sbn = seqmem[(pos/4)*NGROUPS*WGSIZE + get_global_id(0)]; 
             seqp = ((uchar*)(&sbn))[pos%4];
             m = 0;
@@ -94,19 +97,17 @@ void metropolis(__global float *J,
                 uint sbm = seqmem[(m/4)*NGROUPS*WGSIZE + get_global_id(0)]; 
                 #pragma unroll
                 for(cm = 0; cm < 4 && m < L; cm++, m++){
+                    if(get_local_id(0) < nB*nB){
+                        lcouplings[get_local_id(0)] = J[(pos*L + m)*nB*nB + get_local_id(0)]; 
+                    }
+                    barrier(CLK_LOCAL_MEM_FENCE);
                     seqm = ((uchar*)(&sbm))[cm];
-                    if(m < pos){
-                        newenergy += ( J[IND(m,pos,seqm,residue)] - 
-                                       J[IND(m,pos,seqm,   seqp)] );
-                    }
-                    if(m > pos){
-                        newenergy += ( J[IND(pos,m,residue,seqm)] - 
-                                       J[IND(pos,m,   seqp,seqm)] );
-                    }
+                    newenergy += ( lcouplings[nB*residue + seqm] - 
+                                   lcouplings[nB*seqp    + seqm] );
+                    barrier(CLK_LOCAL_MEM_FENCE);
                  }
             }
 
-            
             //apply MC criterion and possibly update
             float p = exp(-(newenergy - energy));
             if(p > uniformMap(rng.v[j+1]) && ! isinf(newenergy)){ 
@@ -115,8 +116,14 @@ void metropolis(__global float *J,
                 seqmem[(pos/4)*NGROUPS*WGSIZE + get_global_id(0)] = sbn;
                 energy = newenergy;
             }
+            
+            //pos cycles repeatedly through all positions, in order
+            //this helps the sequence & J loads to be coalesced
+            pos = (pos+1)%L;
         }
     }
+
+    energies[get_global_id(0)] = energy;
 }
 
 //kernel which computes bicounts from savedSeqMem
@@ -174,30 +181,5 @@ void countSeqs(__global uint *bicounts,
     }
     if(n < NCOUPLE){
         bicounts[n] += count; 
-    }
-}
-
-//kernel which updates the couplings based on the measured bicounts
-__kernel 
-void updateCouplings(__global float *targetMarginals, 
-                     __global uint *bicounts, 
-                     __global float *couplings){
-    uint li = get_local_id(0);
-    uint n = get_global_id(0);
-
-    if(n >= NCOUPLE){
-        return;
-    }
-
-    float marginal = ((float)bicounts[n])/((float)nseqs);
-    float target = targetMarginals[n];
-
-    if(target == 0){
-        couplings[n] = INFINITY;
-    }
-    else{
-        couplings[n] += -gamma*(target - marginal)/marginal;
-        //float dJ = -(target - marginal)/target;
-        //couplings[n] += gamma*clamp(dJ, -1.0f, 1.0f);
     }
 }

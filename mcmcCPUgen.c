@@ -76,33 +76,41 @@ int main(int argc, char *argv[]){
     }
     printf("\n");
     double energy = getEnergy(seq);
+    double E0 = energy;
 
     //FILE *outf = fopen("out", "wb"); //used to output autocorrelation data
     
     while(1){
+        uint naccept = 0;
+        double meandE = 0;
+        double ddE = 0;
         for(n = 0; n < steps; n++){
             c.v[0]++; 
             threefry4x32_ctr_t rng = threefry4x32(c, k);
 
             //repeat sequence update 2x, using 2 of the 4 rngs each time
-            for(i = 0; i <= 2; i += 2){
+            for(i = 0; i <= 1; i += 2){
                 uint r = rng.v[i]%(nBases*seqLen);
                 uint pos = r/nBases;
                 uint residue = r%nBases;
 
                 double newenergy = newEnergy(seq, energy, pos, residue);
                 double p = exp(-(newenergy - energy));
+                
+                ddE = newenergy - energy;
 
                 if(p > uniformMap32(rng.v[i+1]) && !isinf(newenergy)){
+                    meandE += newenergy - energy;
                     seq[pos] = residue;
                     energy = newenergy;
+                    naccept++;
                 }
             
                 //for use in calculating the autocorrelation time:
                 //fwrite(&energy, sizeof(double), 1, outf);
             }
         }
-
+        fprintf(stderr, "E=%g dE=(%g, %g) acc=%g%%\n", energy, ddE, meandE/steps, naccept/((float)(steps)));
         for(l = 0; l < seqLen; l++){
             printf("%c", alphabet[seq[l]]);
         }

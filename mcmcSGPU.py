@@ -13,7 +13,7 @@ def mkdir_p(path):
         if not (exc.errno == errno.EEXIST and os.path.isdir(path)):
             raise
 scriptPath = os.path.dirname(os.path.realpath(__file__))
-outdir = 'outputSimple'
+outdir = 'output'
 printsome = lambda a: " ".join(map(str,a.flatten()[:5]))
 
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '0'
@@ -68,14 +68,13 @@ if len(alpha) != nB:
 
 ocouplings = zeros((nPairs, nB*nB), dtype='<f4')
 ocouplings[bimarg == 0] = inf
-#try:
-#    couplings = scipy.load(args.next())
-#    if couplings.dtype != dtype('<f4'):
-#        raise Exception("Couplings in wrong format")
-#except StopIteration:
-#    print "Setting Initial couplings to 0"
-#    couplings = ocouplings
-couplings = ocouplings
+try:
+    couplings = scipy.load(args.next())
+    if couplings.dtype != dtype('<f4'):
+        raise Exception("Couplings in wrong format")
+except StopIteration:
+    print "Setting Initial couplings to 0"
+    couplings = ocouplings
 
 print "Initial Couplings: " + printsome(couplings) + "..."
 
@@ -190,7 +189,7 @@ def writeStatus(n, rmsd, ssd):
         print >>f, dispstr
 
     #save current state to file
-    savetxt(os.path.join(outdir, n, 'J.txt'), couplings)
+    #savetxt(os.path.join(outdir, n, 'J.txt'), couplings)
     save(os.path.join(outdir, n, 'J'), couplings)
     savetxt(os.path.join(outdir, n, 'bicounts'), bicount, fmt='%d')
     for i in range(SWORDS): #undo memory rearrangement
@@ -200,24 +199,56 @@ def writeStatus(n, rmsd, ssd):
 
     print dispstr
 
-#initial burnin
-kernel_seed = array([0], dtype=int32)
-print "Initial Burnin for {} steps:".format(burnstart)
-for j in range(burnstart):
-    cl.enqueue_copy(queue, run_seed_dev, kernel_seed )
-    kernel_seed[0] += 1
-    prg.metropolis(queue, (WGSIZE*NGROUPS,), (WGSIZE,), 
-                   J_dev, run_seed_dev, seqmem_dev)
+nonzeroJ = isfinite(couplings.flatten())
+def doFit():
+    nproj = 8
+    kernel_seed = array([0], dtype=int32)
+    global couplings
+    lastrmsd = inf
+    for i in range(gdsteps):
+        #equilibrate until we are back at original rmsd 3 times
+        nMinRMSD = 0
+        equilN = 0
+        while equilN < nproj or nMinRMSD < 3:
+            #if os.path.exists(os.path.join(outdir, '{}_{}equil'.format(i,equilN))):
+            #    equilN += 1
+            #    continue
+            rmsd = singleStep('{}_{}equil'.format(i,equilN), kernel_seed)
+            equilN += 1
+            if rmsd < lastrmsd:
+                nMinRMSD += 1
+        
+        #run nprogs steps, recording couplings
+        recJ = []
+        for l in range(nproj):
+            rmsd = singleStep('{}_{}sample'.format(i,l), kernel_seed)
+            recJ.append(couplings.copy())
+        #else:
+        #    recJ = [scipy.load('output/0_{}sample/J.npy'.format(l)) for l in range(nproj)]
+        
+        #project couplings some number of steps ahead
+        projectionFactor = 8
+        recJ = vstack([j.flatten() for j in recJ])
+        polys = polyfit(arange(nproj), recJ[:,nonzeroJ], 1)
+        projJ = array([polyval(polys[:,l], nproj + projectionFactor*nproj) for l in range(polys.shape[1])])
+        couplings.reshape(couplings.size)[nonzeroJ] = projJ
+        print ""
+        print "Projecting forward {} steps.".format(projectionFactor*nproj)
+        print "Projected Couplings: " + printsome(couplings) + "..."
+        save(os.path.join(outdir, 'Jproj_{}'.format(i)), couplings)
+        
+        lastrmsd = rmsd
 
-#main loop
-lastrmsd = inf
-for i in range(gdsteps):
+        cl.enqueue_copy(queue, J_dev, couplings)
+
+def singleStep(runName, kernel_seed):
     print ""
-    print "Gradient Descent step {}".format(i)
+    print "Gradient Descent step {}".format(runName)
 
-    cl.enqueue_copy(queue, seqmem_dev, ccseqmem) #re-init seqs
-    #J_dev should already be saved in couplings
+    cl.enqueue_copy(queue, couplings, J_dev)
     cl.enqueue_copy(queue, J_dev, ocouplings)
+
+    #XXX somethow fogot to re-initialize seqs??
     
     #neutral initialization loops (to avoid well effects)
     for j in range(neutralloop):
@@ -249,19 +280,14 @@ for i in range(gdsteps):
     rmsd = sqrt(mean((bimarg - bicount/float32(nseqs))**2))
     ssd = sum((bimarg - bicount/float32(nseqs))**2)
 
-    if False: #rmsd > lastrmsd:
-        gamma = gamma/10.0
-        print ("Warning: RMSD increased. Decreasing gamma to {} and "
-               "restarting from last step.").format(gamma)
-    else:
-        #update & save couplings
-        prg.updateCouplings(queue, (WGSIZE*cplgrp,), (WGSIZE,), 
-                            bimarg_dev, bicount_dev, J_dev)
-        cl.enqueue_copy(queue, couplings, J_dev)
-
+    prg.updateCouplings(queue, (WGSIZE*cplgrp,), (WGSIZE,), 
+                        bimarg_dev, bicount_dev, J_dev)
+    cl.enqueue_copy(queue, couplings, J_dev)
     cl.enqueue_copy(queue, seqmem, seqmem_dev)
-    writeStatus(i, rmsd, ssd)
-    lastrmsd = rmsd
+    writeStatus(runName, rmsd, ssd)
+    return rmsd
+
+doFit()
 
 #Note that loop control is split between nloop and nsteps. This is because
 #on some (many) systems there is a watchdog timer that kills any kernel 

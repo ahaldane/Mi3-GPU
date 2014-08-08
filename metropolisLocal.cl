@@ -76,12 +76,12 @@ void metropolis(__global float *J,
             float newenergy = energy;
             for(m = 0; m < L; m++){
                 if(m < pos){
-                    newenergy += ( J[IND(m,pos,seqm,residue)] - 
-                                   J[IND(m,pos,seqm,   seqp)] );
+                    newenergy += ( J[IND(m,pos,seq[m], residue)] - 
+                                   J[IND(m,pos,seq[m],seq[pos])] );
                 }
                 if(m > pos){
-                    newenergy += ( J[IND(pos,m,residue,seqm)] - 
-                                   J[IND(pos,m,   seqp,seqm)] );
+                    newenergy += ( J[IND(pos,m, residue,seq[m])] - 
+                                   J[IND(pos,m,seq[pos],seq[m])] );
                 }
             }
 
@@ -176,7 +176,8 @@ void updateCouplings(__global float *targetMarginals,
         couplings[n] = INFINITY;
     }
     else{
-        couplings[n] += gamma*(target - marginal)/(target*(target-1));
+        float dJ = (target - marginal)/(target*(target-1));
+        couplings[n] += gamma*clamp(dJ, -1.0f, 1.0f);
     }
 }
 
