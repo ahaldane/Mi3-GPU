@@ -11,7 +11,7 @@ from scipy.optimize import leastsq
 numpy.random.seed(1234) #comment this if you don't want identical runs
 
 #Recommmended/Example command line:
-#stdbuf -i0 -o0 -e0 ./mcmcGPU.py bimarg.npy 0.0001 100 16384 229 ABCDEFGH rand -couplings logscore -preopt logscore -o outdir >log &
+#stdbuf -i0 -o0 -e0 ./mcmcGPU.py bimarg.npy 0.0004 100 16384 192 256 8 ABCDEFGH rand -pc 0.001 -couplings logscore -preopt logscore --trackequil -o outdir >log
 
 ################################################################################
 # Set up enviroment and some helper functions
@@ -105,6 +105,7 @@ parser.add_argument('-pcdamping', default=0.001)
 parser.add_argument('-Jcutoff', default=None)
 parser.add_argument('-preopt', default='none', 
                     help="One of 'rand', 'logscore', or a filename")
+parser.add_argument('--trackequil', action='store_true')
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -392,16 +393,20 @@ def singleStep(runName, kernel_seed, couplings, startseq):
     cl.enqueue_copy(queue, seqmem_dev, seqmem)
     cl.enqueue_copy(queue, J_dev, couplings)
     prg.packfV(queue, (nPairs*nB*nB,), (nB*nB,), J_dev, J_full_dev)
-    #marginals = []
-    for j in range(nloop):
-        runMCMC(kernel_seed)
-        #countBimarg(bicount_dev, bimarg_dev, NSEQ, seqmem_dev)
-        #cl.enqueue_copy(queue, bimarg_model, bimarg_dev)
-    #    marginals.append(bimarg_model.copy())
-    #rr = [sum((marginals[-1] - m).flatten()**2) for m in marginals]
-    #mkdir_p(os.path.join(outdir, runName))
-    #savetxt(os.path.join(outdir, runName, 'mrun'), rr)
+    
+    #equilibration
+    if not args.trackequil:
+        for j in range(nloop):
+            runMCMC(kernel_seed)
+    else:
+        mkdir_p(os.path.join(outdir, runName, 'equilibration'))
+        for j in range(nloop):
+            runMCMC(kernel_seed)
+            countBimarg(bicount_dev, bimarg_dev, NSEQ, seqmem_dev)
+            cl.enqueue_copy(queue, bimarg_model, bimarg_dev)
+            save(os.path.join(outdir, runName, 'equilibration', 'bimarg_{}'.format(j)), bimarg_model)
 
+    #samples
     cl.enqueue_copy(queue, seqmem, seqmem_dev)
     sampledseqs = [unpackSeqs(seqmem)]
     for j in range(nsamples-1):
@@ -493,10 +498,10 @@ def gradientDescent(niter):
                 cl.enqueue_copy(queue, J_tmp_dev, J_tmp_dev2)
                 cl.enqueue_copy(queue, bimarg_out_dev, bimarg_out_dev2)
 
-                #if sumweights[0] < nsamples*NSEQ/2 or max(weights) > 64:
+                if sumweights[0] < nsamples*NSEQ/2 or max(weights) > 64:
                 #if max(weights) > 64 or min(weights) < 1.0/64:
                 #if max(weights)/min(weights) > 128:
-                if max(weights) > 64:
+                #if max(weights) > 64:
                     print "Sequence weights diverging. Stopping"
                     cl.enqueue_copy(queue, J_dev, J_tmp_dev)
                     return
