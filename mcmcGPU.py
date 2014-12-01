@@ -11,7 +11,7 @@ from scipy.optimize import leastsq
 numpy.random.seed(1234) #comment this if you don't want identical runs
 
 #Recommmended/Example command line:
-#stdbuf -i0 -o0 -e0 ./mcmcGPU.py bimarg.npy 0.0004 100 16384 192 256 8 ABCDEFGH rand -pc 0.001 -couplings logscore -preopt logscore --trackequil -o outdir >log
+#stdbuf -i0 -o0 -e0 ./mcmcGPU.py bimarg.npy 0.0004 100 16384 192 256 8 ABCDEFGH rand -pc 0.001 -couplings logscore -preopt logscore -trackequil 256 -o outdir >log
 
 ################################################################################
 # Set up enviroment and some helper functions
@@ -105,7 +105,7 @@ parser.add_argument('-pcdamping', default=0.001)
 parser.add_argument('-Jcutoff', default=None)
 parser.add_argument('-preopt', default='none', 
                     help="One of 'rand', 'logscore', or a filename")
-parser.add_argument('--trackequil', action='store_true')
+parser.add_argument('-trackequil', type=uint32, default=0)
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -137,6 +137,9 @@ nloop = args.nloop      # 100
 nsteps = args.nsteps    # 100 #make this a multiple of L, and ~ 100 - 500
 nsampleloops = args.nsampleloops    
 nsamples = args.nsamples  
+
+if args.trackequil != 0 and nloop%args.trackequil != 0:
+    raise Exception("Error: trackequil must be a divisor of nloop")
 
 if nsamples == 0:
     raise Exception("nsamples must be at least 1")
@@ -395,13 +398,14 @@ def singleStep(runName, kernel_seed, couplings, startseq):
     prg.packfV(queue, (nPairs*nB*nB,), (nB*nB,), J_dev, J_full_dev)
     
     #equilibration
-    if not args.trackequil:
+    if args.trackequil == 0:
         for j in range(nloop):
             runMCMC(kernel_seed)
     else:
         mkdir_p(os.path.join(outdir, runName, 'equilibration'))
-        for j in range(nloop):
-            runMCMC(kernel_seed)
+        for j in range(nloop/args.trackequil):
+            for k in range(args.trackequil):
+                runMCMC(kernel_seed)
             countBimarg(bicount_dev, bimarg_dev, NSEQ, seqmem_dev)
             cl.enqueue_copy(queue, bimarg_model, bimarg_dev)
             save(os.path.join(outdir, runName, 'equilibration', 'bimarg_{}'.format(j)), bimarg_model)
@@ -485,7 +489,7 @@ def gradientDescent(niter):
             cl.enqueue_copy(queue, sumweights, sumweights_dev)
             cl.enqueue_copy(queue, weights, weights_dev)
             rmsd = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
-            print "{} r2: {} bimarg: {}   Neff: {:.1f} wspan: {:.3g} {:.2g}".format(n,rmsd,printsome(bimarg_model), sumweights[0], min(weights), max(weights))
+            print "{} rmsd: {}   bimarg: {}   Neff: {:.1f} wspan: {:.3g}:{:.2g}".format(n,rmsd,printsome(bimarg_model), sumweights[0], min(weights), max(weights))
 
             if rmsd > lastrmsd: #go back to last step
                 alpha = alpha/2
