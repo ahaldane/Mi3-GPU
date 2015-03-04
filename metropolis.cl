@@ -1,8 +1,4 @@
-#include <Random123/threefry.h>
-
-//#ifdef cl_nv_pragma_unroll
-//#pragma OPENCL EXTENSION cl_nv_pragma_unroll : enable
-//#endif
+#include <mwc64x/cl/mwc64x/mwc64xvec2_rng.cl>
 
 #ifdef cl_khr_byte_addressable_store
 #pragma OPENCL EXTENSION cl_khr_byte_addressable_store : enable
@@ -16,7 +12,7 @@ typedef unsigned char uchar;
 typedef unsigned int uint;
 
 float uniformMap(uint i){
-    return (i>>8)*0x1.0p-24f; //converts a 32 bit integer to a uniform float [0,1) 
+    return (i>>8)*0x1.0p-24f; //converts a 32 bit integer to a float [0,1) 
 }
 
 #define NCOUPLE ((L*(L-1)*nB*nB)/2)
@@ -46,18 +42,26 @@ void packfV(__global float *v,
     vp[nB*nB*(i+L*j) + li] = lv[nB*(li%nB) + li/nB]; 
 }
 
-__kernel //to be called with group size nB*nB, with nPair groups
-void genLogScoreSeqs(__global float *unimarg, 
-                     __global uint *seqmem){
-    uint li = get_local_id(0);
-    uint gi = get_group_id(0);
+__kernel 
+void storeSeqs(__global uint *smallbuf, 
+               __global uint *largebuf,
+               __global uint *offset_p){
+    uint w, n, offset;
+    offset = *offset_p;
+
+    #define SWORDS ((L-1)/4+1) 
+    for(w = 0; w < SWORDS; w++){
+        for(n = get_local_id(0); n < NSEQS; n += WGSIZE){
+            largebuf[w*NSAMPLES*NSEQS + offset + n] = smallbuf[w*NSEQS + n];
+        }
+    }
+    #undef SWORDS
 }
 
-
-inline double getEnergiesf(__global float *J,
-                           __global uint *seqmem,
-                           __global float *energies,
-                           __local float *lcouplings){
+//only call from kernels with NSEQ work units!!!!!!
+inline float getEnergiesf(__global float *J,
+                          __global uint *seqmem,
+                          __local float *lcouplings){
     // This function is complicated by optimizations for the GPU.
     // For clarity, here is equivalent but clearer (pseudo)code:
     //
@@ -73,7 +77,7 @@ inline double getEnergiesf(__global float *J,
     uint cn, cm;
     uint sbn, sbm;
     uint n,m,k;
-    double energy = 0;
+    float energy = 0;
     n = 0;
     while(n < L-1){
         uint sbn = seqmem[(n/4)*get_global_size(0) + get_global_id(0)]; 
@@ -110,7 +114,7 @@ inline double getEnergiesf(__global float *J,
                     barrier(CLK_LOCAL_MEM_FENCE);
 
                     seqm = ((uchar*)(&sbm))[cm];
-                    energy += lcouplings[nB*seqn + seqm];
+                    energy = energy+lcouplings[nB*seqn + seqm];
                     barrier(CLK_LOCAL_MEM_FENCE);
                 }
             }
@@ -124,37 +128,45 @@ void getEnergies(__global float *J,
                  __global uint *seqmem,
                  __global float *energies){
     __local float lcouplings[4*nB*nB];
-    energies[get_global_id(0)] = getEnergiesf(J, seqmem, energies, lcouplings);
+    energies[get_global_id(0)] = getEnergiesf(J, seqmem, lcouplings);
 }
+
+//#define getbyte(mem, n) (((mem>>(8*n))&0xff))
+//#define setbyte(mem, n, val) {mem = mem ^ ((val ^ getbyte(mem,n))<<(8*n));}
+
+//uses fewer registers
+#define getbyte(mem, n) (((uchar*)(&mem))[n])
+#define setbyte(mem, n, val) {(((uchar*)(&mem))[n]) = val;}
 
 __kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
 void metropolis(__global float *J,
                 __global uint *run_seed, 
-                __global uint *seqmem,
-                __global float *energies){
-    uint i,n,m;
-    uint li = get_local_id(0);
-    uint gi = get_global_id(0);
+                __global uint *gpu_seed, 
+                __global uint *nsteps_p, 
+                __global float *energies,
+                __global uint *seqmem){
+    
+    *run_seed += 1;
+    uint nsteps = *nsteps_p;
 
     //init rng
-    threefry4x32_key_t k = {{0, get_local_id(0), *run_seed, SEED}};
-    threefry4x32_ctr_t c = {{0, get_global_id(0), 0xdeadbeef, 0xbeeff00d}};
-    
+	mwc64xvec2_state_t rstate = {(uint2)(get_local_id(0), get_global_id(0)),
+                                 (uint2)(*run_seed, *gpu_seed)};
+    MWC64XVEC2_NextUint2(&rstate); //step once past seed
+
     //set up local mem 
-    uchar seqm, seqp;
-    uint cm;
-    uint sbn, sbm;
     __local float lcouplings[nB*nB*4];
 
     // The rest of this function is complicated by optimizations for the GPU.
     // For clarity, here is equivalent but clearer (pseudo)code:
     //
-    //energy = getEnergies();
+    //energy = energies[get_global_id(0)];
     //uint pos = 0; //position to mutate
     //for(i = 0; i < nsteps; i++){
     //    uint residue = rand()%nB; //calculate new residue
-    //    double newenergy = energy; //calculate new energy
+    //    float newenergy = energy; //calculate new energy
     //    for(m = 0; m < L; m++){
+    //        if(m == pos) continue;
     //        newenergy += (J[pos,m,residue,seq[m]] - J[pos,m,seq[pos],seq[m]]);
     //    }
     //    //apply MC criterion and possibly update
@@ -164,68 +176,85 @@ void metropolis(__global float *J,
     //    }
     //    pos = (pos+1)%L; //pos cycles repeatedly through all positions
     //}
-    //energies[get_global_id(0)] = energy;
 
     //initialize energy
-    double energy = getEnergiesf(J, seqmem, energies, lcouplings);
+    float energy = getEnergiesf(J, seqmem, lcouplings);
 
     //main loop
     uint pos = 0;
+    uint sbn;
+    uint i;
     for(i = 0; i < nsteps; i++){
-        c.v[0]++; //we only use 2 of the 4 threefry values...
-        threefry4x32_ctr_t rng = threefry4x32(c, k); 
-        uint residue = rng.v[0]%nB; 
+        uint2 rng = MWC64XVEC2_NextUint2(&rstate);
+        uint mutres = rng.x%nB; //small error here if MAX_INT%nB != 0
         
         //calculate new energy
-        double newenergy = energy;
-        uint sbn = seqmem[(pos/4)*NGROUPS*WGSIZE + gi]; 
-        seqp = ((uchar*)(&sbn))[pos%4];
-        m = 0;
+        float newenergy = energy; 
+        if(pos%4 == 0){ //load next 4 bytes of sequence
+            sbn = seqmem[(pos/4)*NSEQS + get_global_id(0)]; 
+        }
+        uchar seqp = getbyte(sbn, pos%4);
+        uint m = 0;
         while(m < L){
             //loop through seq, changing energy by changed coupling with pos
-            uint sbm = seqmem[(m/4)*NGROUPS*WGSIZE + gi]; 
             
             //load the next 4 rows of couplings to local mem
-            for(n = li; n < min((uint)4, L-m)*nB*nB; n += WGSIZE){
+            uint n;
+            for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB; n += WGSIZE){
                 lcouplings[n] = J[(pos*L + m)*nB*nB + n]; 
             }
-            barrier(CLK_LOCAL_MEM_FENCE);
+
+            uint sbm;
+            if(m/4 == pos/4){
+                //careful that sbn is not stored back to seqmem for 4 steps
+                sbm = sbn;
+            }
+            else{
+                //bottleneck of this kernel
+                sbm = seqmem[(m/4)*NSEQS + get_global_id(0)]; 
+                barrier(CLK_LOCAL_MEM_FENCE);
+            }
             
             //calculate contribution of those 4 rows to energy
-            #pragma unroll
-            for(cm = 0; cm < 4 && m < L; cm++, m++){
-                seqm = ((uchar*)(&sbm))[cm];
-                newenergy += ( lcouplings[nB*nB*cm + nB*residue + seqm] - 
-                               lcouplings[nB*nB*cm + nB*seqp    + seqm] );
+            for(n = 0; n < 4 && m < L; n++, m++){
+                if(m == pos){
+                    continue;
+                }
+                uchar seqm = getbyte(sbm, n);
+                newenergy = newenergy + lcouplings[nB*nB*n + nB*mutres + seqm];
+                newenergy = newenergy - lcouplings[nB*nB*n + nB*seqp   + seqm];
             }
             barrier(CLK_LOCAL_MEM_FENCE);
         }
 
         //apply MC criterion and possibly update
-        float p = exp(-(newenergy - energy));
-        if(p > uniformMap(rng.v[1]) && ! isinf(newenergy)){ 
-        //no need to check for nan:  the old coupling is guaranteed not inf
-            ((uchar*)(&sbn))[pos%4] = residue;
-            seqmem[(pos/4)*NGROUPS*WGSIZE + gi] = sbn;
+        if(exp(-(newenergy - energy)) > uniformMap(rng.y)){ 
+            setbyte(sbn, pos%4, mutres);
             energy = newenergy;
         }
+
+        if(((pos+1)%4 == 0) || (pos+1 == L)){ 
+            //store the finished 4 bytes of sequence
+            seqmem[(pos/4)*NSEQS + get_global_id(0)] = sbn;
+        }
         
-        //pos cycles repeatedly through all positions, in order
+        //pos cycles repeatedly through all positions, in order.
         //this helps the sequence & J loads to be coalesced
         pos = (pos+1)%L;
     }
 
-    energies[gi] = energy;
+#ifdef BENCHMARK
+    energies[get_global_id(0)] = energy;
+#endif
 }
 
 __kernel //call with group size = NHIST, for nPair groups
 void countBimarg(__global uint *bicount,
                  __global float *bimarg, 
-                 __global uint *offset,
                  __global uint *nseq_p, 
                  __global uint *seqmem) {
     uint li = get_local_id(0);
-    uint gi = get_group_id(0) + (*offset);
+    uint gi = get_group_id(0);
     uint i,j,n,m;
     uint nseq = *nseq_p;
     
@@ -273,16 +302,15 @@ void countBimarg(__global uint *bicount,
 
 __kernel //call with global work size = to # sequences
 void perturbedWeights(__global float *J, 
-                     __global uint *nseq_p, 
                       __global uint *seqmem,
                       __global float *weights,
                       __global float *energies){
     __local float lcouplings[4*nB*nB];
-    double energy = getEnergiesf(J, seqmem, energies, lcouplings);
+    float energy = getEnergiesf(J, seqmem, lcouplings);
     weights[get_global_id(0)] = exp(-(energy - energies[get_global_id(0)]));
 }
 
-__kernel //simply sums a vector. Call with single group as large as possible
+__kernel //simply sums a vector. Call with single group of size VSIZE
 void sumWeights(__global float *weights,
                 __global float *sumweights,
                 __global uint *nseq_p){
@@ -312,11 +340,10 @@ __kernel //call with group size = NHIST, for nPair groups
 void weightedMarg(__global float *bimarg_new, 
                   __global float *weights, 
                   __global float *sumweights,
-                  __global uint *offset,
                   __global uint *nseq_p, 
                   __global uint *seqmem) {
     uint li = get_local_id(0);
-    uint gi = get_group_id(0) + (*offset);
+    uint gi = get_group_id(0);
     uint i,j,n,m;
     uint nseq = *nseq_p;
     
@@ -365,17 +392,16 @@ __kernel
 void updatedJ(__global float *bimarg_target,
               __global float *bimarg,
               __global float *J_orig,
-              __global float *alpha,
+              __global float *gamma,
               __global float *Ji,
               __global float *Jo){
-    uint li = get_local_id(0);
-    uint n;
-    for(n = li; n < NCOUPLE; n += VSIZE){
-        Jo[n] = Ji[n] - (*alpha)*(bimarg_target[n] - bimarg[n])/(bimarg[n] + PC);
+    uint n = get_global_id(0);
 
-        #ifdef JCUTOFF
-        Jo[n] = clamp(Jo[n], J_orig[n] - (float)JCUTOFF, J_orig[n] + (float)JCUTOFF);
-        #endif
-    }
+    Jo[n] = Ji[n] - (*gamma)*(bimarg_target[n] - bimarg[n])/(bimarg[n] + PC);
+
+    #ifdef JCUTOFF
+    Jo[n] = clamp(Jo[n], J_orig[n] - (float)JCUTOFF, 
+                         J_orig[n] + (float)JCUTOFF);
+    #endif
 }
 

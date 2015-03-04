@@ -1,0 +1,171 @@
+#!/usr/bin/env python2
+from __future__ import with_statement
+from scipy import *
+import sys
+import json
+
+class Opener:
+    def __init__(self, fileobj, rw="rt"):
+        self.fileobj = fileobj
+        self.rw = rw
+        self.f = None
+
+    def __enter__(self):
+        if isinstance(self.fileobj, basestring):
+            self.f = open(self.fileobj, self.rw)
+            return self.f
+        elif hasattr(self.fileobj, 'read') or hasattr(self.fileobj, 'write'):
+            if self.rw != self.fileobj.mode: #error? XXX
+                raise Exception(("File is already open ({}), but in wrong mode "
+                                "({})").format(self.fileobj.mode, self.rw))
+            return self.fileobj
+
+    def __exit__(self, e, fileobj, t):
+        if self.f != None:
+            self.f.close()
+        return False
+
+def loadSeqs(fn, names=None): 
+    with Opener(fn) as f:
+        gen = loadSeqsChunked(f, names)
+        param, headers = gen.next()
+        seqs = concatenate([s for s in gen])
+    return seqs, param, headers
+
+def mapSeqs(fn, names, mapper):
+    if mapper == None:
+        mapper = lambda x: x
+    
+    with Opener(fn) as f:
+        gen = loadSeqsChunked(fn,names)
+        param, headers = gen.next()
+        seqs = concatenate(mapper(s) for s in gen)
+    return seqs, param, headers
+
+def parseHeader(hd):
+    param = {}
+    headers = {}
+    for line in hd:
+        if line[1:].isspace():
+            continue
+        elif line.startswith('#PARAM '):
+            param = json.loads(line[len('#PARAM '):])
+        elif line.startswith('# '):
+            headers['comments'].append(line[2:])
+        else: #assumes first word is header category
+            wordend = line.find(' ')
+            if wordend == -1:
+                head = line[1:]
+            else:
+                head = line[1:wordend]
+            headers[head] = headers.get(head,[]) + [line[len(head)+2:]]
+            
+    return param, headers
+
+#optimized for fast loading, assumes ASCII
+def loadSeqsChunked(f, names=None, chunksize=None): 
+    #read header
+    pos = f.tell()
+    header = []
+    l = f.readline()
+    while l.startswith('#'):
+        header.append(l)
+        pos = f.tell()
+        l = f.readline()
+    L = len(l[:-1])
+    f.seek(pos)
+    
+    #get alphabet
+    param, headers = parseHeader(header)
+    if names == None:
+        if param == {} or 'alpha' not in param:
+            raise Exception("Could not determine names of alphabet")
+        names = param['alpha']
+    param['alpha'] = names
+
+    yield param, headers
+    
+    #set up translation table
+    nucNums = -ones(256, uint8) #nucNums is a map from ascii to base number
+    nucNums[frombuffer(names, uint8)] = arange(len(names))
+    
+    #do translation
+    def translateSeqs(seqmat):
+        seqmat = seqmat.reshape(seqmat.size/(L+1), L+1)
+        
+        #sanity checks on the sequences
+        if any(seqmat[:,-1] != ord('\n')):
+            badline = sum([c.shape[0] for c in chunks])
+            badline += argwhere(seqmat[:,-1] != ord('\n'))[0]
+            raise Exception("Sequence {} has different length".format(badline))
+
+        #fancy indexing casts indices to intp.... annoying slowdown
+        seqmat = nucNums[seqmat[:,:-1]] 
+
+        if any(seqmat.flatten() < 0):
+            badpos = argwhere(seqmat.flatten() < 0)[0]
+            badchar = seqmat.flatten()[badpos]
+            if badchar == ord('\n'):
+                badline = sum([c.shape[0] for c in chunks])
+                badline += badpos/L
+                raise Exception("Sequence {} has wrong length".format(badline))
+            else:
+                raise Exception("Invalid residue: {0}".format(badchar))
+        return seqmat
+
+    #load in chunks
+    if chunksize is None:
+        chunksize = 16384/(L+1)
+    chunks = []
+    dat = fromfile(f, dtype=uint8, count=chunksize*(L+1))
+    while dat.size == chunksize*(L+1):
+        yield translateSeqs(dat)
+        dat = fromfile(f, dtype=uint8, count=chunksize*(L+1))
+    
+    #process last partial chunk if present
+    if dat.size != 0:
+        #correct for extra/missing newline at end of file
+        if (dat.size % (L+1)) != 0: 
+            if dat[-1] == ord("\n") and ((dat.size-1) % (L+1)) == 0:
+                dat = dat[:-1] #account for newline at eof
+            elif ((dat.size+1) % (L+1)) == 0:
+                dat = concatenate([dat, [ord("\n")]])
+            else:
+                raise Exception("Unexpected characters at eof") 
+        yield translateSeqs(dat)
+
+def writeSeqs(fn, seqs, names, param=None, headers=None, noheader=False):
+    with Opener(fn, 'wt') as f:
+        writeSeqsF(f, seqs, names, param, headers, noheader)
+
+def writeSeqsF(f, seqs, names, param=None, headers=None, noheader=False):
+    if not noheader:
+        param = param if param != None else {}
+        param['alpha'] = names
+        f.write('#PARAM {0}\n'.format(json.dumps(param)))
+        headers = headers if headers != None else []
+        for head in headers:
+            for line in headers[head]:
+                f.write('#{} {0}\n'.format(head, line))
+
+    chunksize = 4096
+    alphabet = array([ord(c) for c in names] + [ord('\n')], dtype='<u1')
+    s = empty((chunksize, seqs.shape[1]+1), dtype=intp)
+    s[:,-1] = len(names)
+    for i in range(0,seqs.shape[0], chunksize):
+        s[:,:-1] = seqs[i:i+chunksize,:]
+        alphabet[s].tofile(f)
+    if i+chunksize != seqs.shape[0]:
+        s[:seqs.shape[0]-i-chunksize,:-1] = seqs[i+chunksize:,:]
+        alphabet[s[:seqs.shape[0]-i-chunksize,:]].tofile(f)
+
+def getCounts(seqs, nBases):
+    nSeq, seqLen = seqs.shape
+    bins = arange(nBases+1, dtype='int')
+    counts = zeros((seqLen, nBases), dtype='int')
+    for i in range(seqLen):
+        counts[i,:] = histogram(seqs[:,i], bins)[0]
+    return counts # index as [pos, res]
+
+def getFreqs(seq, nBases):
+    return getCounts(seq, nBases).astype('float')/seq.shape[0]
