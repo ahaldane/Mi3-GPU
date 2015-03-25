@@ -512,12 +512,12 @@ nB = int(sqrt(bimarg_target.shape[1]) + 0.5) #+0.5 for rounding any fp error
 nPairs = L*(L-1)/2;
 n_couplings = nPairs*nB*nB
 print "nBases {}  seqLen {}".format(nB, L)
+gdsteps = args.gdsteps  # 10
 print "Running {} GD steps".format(gdsteps)
 print ""
 
                         # for example:
 gamma0 = args.gamma     # 0.001
-gdsteps = args.gdsteps  # 10
 nloop = args.nloop      # 100
 nsteps = args.nsteps    # 1 #increase this if L small. = num of MCMC iterations
 nwalkers = args.nwalkers    
