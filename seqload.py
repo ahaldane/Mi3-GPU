@@ -135,7 +135,7 @@ def loadSeqsChunked(f, names=None, chunksize=None):
         yield translateSeqs(dat)
 
 def writeSeqs(fn, seqs, names, param=None, headers=None, noheader=False):
-    with Opener(fn, 'wt') as f:
+    with Opener(fn, 'w') as f:
         writeSeqsF(f, seqs, names, param, headers, noheader)
 
 def writeSeqsF(f, seqs, names, param=None, headers=None, noheader=False):
@@ -152,12 +152,11 @@ def writeSeqsF(f, seqs, names, param=None, headers=None, noheader=False):
     alphabet = array([ord(c) for c in names] + [ord('\n')], dtype='<u1')
     s = empty((chunksize, seqs.shape[1]+1), dtype=intp)
     s[:,-1] = len(names)
-    for i in range(0,seqs.shape[0], chunksize):
+    for i in range(0,seqs.shape[0]-chunksize, chunksize):
         s[:,:-1] = seqs[i:i+chunksize,:]
         alphabet[s].tofile(f)
-    if i+chunksize != seqs.shape[0]:
-        s[:seqs.shape[0]-i-chunksize,:-1] = seqs[i+chunksize:,:]
-        alphabet[s[:seqs.shape[0]-i-chunksize,:]].tofile(f)
+    s[:seqs.shape[0]-i-chunksize,:-1] = seqs[i+chunksize:,:]
+    alphabet[s[:seqs.shape[0]-i-chunksize,:]].tofile(f)
 
 def getCounts(seqs, nBases):
     nSeq, seqLen = seqs.shape
