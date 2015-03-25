@@ -397,6 +397,10 @@ void updatedJ(__global float *bimarg_target,
               __global float *Jo){
     uint n = get_global_id(0);
 
+    if(n > NCOUPLE){
+        return;
+    }
+
     Jo[n] = Ji[n] - (*gamma)*(bimarg_target[n] - bimarg[n])/(bimarg[n] + PC);
 
     #ifdef JCUTOFF

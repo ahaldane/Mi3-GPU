@@ -362,7 +362,9 @@ class MCMCGPU:
     def updateJPerturb(self):
         self.log("updateJPerturb")
         nB, nPairs = self.nB, self.nPairs
-        self.prg.updatedJ(self.queue, (nPairs*nB*nB,), (self.wgsize,), 
+        #find next highest multiple of wgsize, for num work units
+        nworkunits = self.wgsize*((nPairs*nB*nB-1)//self.wgsize+1)
+        self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,), 
                           self.bibufs['target'], self.bibufs['back'], 
                           self.Jbufs['main'], self.bufs['gamma'], 
                           self.Jbufs['back'], self.Jbufs['front'])
@@ -657,7 +659,7 @@ if args.gpus:
     #find the devices
     for i,j in inds:
         try:
-            plat = gpuplatforms_list[i]
+            plat = gpuplatform_list[i]
             gpu = plat[j]
         except IndexError:
             raise Exception("No GPU with id {}-{}".format(i,j))
