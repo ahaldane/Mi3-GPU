@@ -85,7 +85,7 @@ def tryload(fn):
 def main():
     parser = argparse.ArgumentParser(description='Script to switch Gauges')
     parser.add_argument('gauge', choices=['fieldless', 'fieldlessQuick', 
-                                          'zero', 'minJ', 'zeroJ'])
+                                          'zero', 'zeroJ'])
     parser.add_argument('-hin')
     parser.add_argument('-Jin')
     parser.add_argument('-hout')
@@ -122,9 +122,6 @@ def main():
         if hL != jL or hnB != jnB:
             raise Exception("Error: Size of h does not match size of J")
         L,nB = jL,jnB
-
-    if args.gauge == 'minJ':
-        raise Exception("Error: minJ gauge is not yet implemeted. Sorry!")
 
     gfuncs = {'fieldless':     fieldlessGauge,
               'fieldlessQuick': fieldlessGaugeQuick,
