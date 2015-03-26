@@ -243,7 +243,7 @@ void metropolis(__global float *J,
         pos = (pos+1)%L;
     }
 
-#ifdef BENCHMARK
+#ifdef MEASURE_FP_ERROR
     energies[get_global_id(0)] = energy;
 #endif
 }

@@ -448,6 +448,7 @@ parser.add_argument('-trackequil', type=uint32, default=0,
                     help='during equilibration, save bimarg every N loops')
 parser.add_argument('-gpus')
 parser.add_argument('-benchmark', action='store_true')
+parser.add_argument('-measureFPerror', action='store_true')
 parser.add_argument('-perturbSteps', default='128')
 parser.add_argument('-regularizationScale', default=0.5)
 
@@ -555,15 +556,15 @@ elif args.couplings == 'logscore':
     marg = marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
     h = -log(marg)
     h = h - mean(h, axis=1)[:,newaxis]
-    couplings = fieldlessGauge(h, zeros((nPairs,nB*nB),dtype='<f4'))
+    couplings = fieldlessGauge(h, zeros((nPairs,nB*nB),dtype='<f4'))[1]
 else:
     print "Reading initial couplings from file {}".format(args.couplings)
     couplings = scipy.load(args.couplings)
     if couplings.dtype != dtype('<f4'):
         raise Exception("Couplings in wrong format")
 #switch to 'even' fieldless gauge for nicer output
-h0, J0 = zeroGauge(couplings)
-couplings = fieldlessGauge(h0, J0)
+h0, J0 = zeroGauge(zeros((L,nB)), couplings)
+couplings = fieldlessGauge(h0, J0)[1]
 save(os.path.join(outdir, 'startJ'), couplings)
 
 if args.restart != 'none' and not args.startseq:
@@ -663,8 +664,8 @@ nhist = 64 #power of two. Number of histograms used in counting
 options = [('WGSIZE', wgsize), ('NSEQS', nwalkers_gpu), ('NSAMPLES', nsamples),
            ('VSIZE', vsize), ('NHIST', nhist), ('nB', nB), ('L', L), 
            ('PC', pcDamping)]
-if args.benchmark:
-    options.append(('BENCHMARK', 1))
+if args.measureFPerror:
+    options.append(('MEASURE_FP_ERROR', 1))
 if Jcutoff:
     options.append(('JCUTOFF', Jcutoff))
 optstr = " ".join(["-D {}={}".format(opt,val) for opt,val in options]) 
@@ -815,11 +816,11 @@ def singleStep(runName, couplings, startseq, gpus):
 #local optimization related code
 
 def Jbias(J, scale=0.5):
-    h0, J0 = zeroJGauge(J)
+    h0, J0 = zeroJGauge(zeros((L,nB)), J)
     #J0 = J0*(1-exp(-abs(J0)/(scale*std(J0.flatten()))))
     fb = sqrt(sum(J0**2, axis=1))
     J0 = J0*((1-exp(-fb/(scale*mean(fb))))[:,newaxis])
-    return fieldlessGauge(h0, J0)
+    return fieldlessGauge(h0, J0)[1]
 
 def localStep(n, lastssd, gpus):
     #calculate perturbed marginals
@@ -1043,9 +1044,11 @@ else:
     print "No Pre-optimization"
 
 if args.benchmark:
-    #gpus[0].measureFPerror()
     MCMCbenchmark(startseq, couplings, gpus)
+elif args.measureFPerror:
+    gpus[0].measureFPerror()
 else:
     doFit(startseq, couplings, gpus)
+
 print "Done!"
 
