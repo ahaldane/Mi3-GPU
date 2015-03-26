@@ -8,6 +8,7 @@ import pyopencl as cl
 import sys, os, errno, glob, argparse, time
 import seqload
 from scipy.optimize import leastsq
+from changeGauge import zeroGauge, zeroJGauge, fieldlessGauge
 
 #numpy.random.seed(1234) #uncomment this to get identical runs
 
@@ -30,52 +31,6 @@ printsome = lambda a: " ".join(map(str,a.flatten()[:5]))
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '0'
 os.environ['PYOPENCL_NO_CACHE'] = '1'
 os.environ["CUDA_CACHE_DISABLE"] = '1'
-
-def getCouplingMatrix(couplings):
-    coupleinds = [(a,b) for a in range(L-1) for b in range(a+1, L)]
-    C = empty((L,nB,L,nB))*nan
-    for n,(i,j) in enumerate(coupleinds): 
-        block = couplings[n].reshape(nB,nB)
-        C[i,:,j,:] = block
-        C[j,:,i,:] = block.T
-    return C
-
-def zeroGauge(Js): #convert to zero gauge
-    Jx = Js.reshape((nPairs, nB, nB))
-    JxC = nan_to_num(getCouplingMatrix(Js))
-
-    J0 = (Jx - mean(Jx, axis=1)[:,newaxis,:] 
-             - mean(Jx, axis=2)[:,:,newaxis] 
-             + mean(Jx, axis=(1,2))[:,newaxis,newaxis])
-    h0 = sum(mean(JxC, axis=1), axis=0)
-    h0 = h0 - mean(h0, axis=1)[:,newaxis]
-    J0 = J0.reshape((J0.shape[0], nB**2))
-    return h0, J0
-
-def zeroJGauge(Js): #convert to zero gauge
-    #only set mean J to 0, but set fields so sequence energies do not change
-    Jx = Js.reshape((nPairs, nB, nB))
-
-    J0 = (Jx - mean(Jx, axis=1)[:,newaxis,:] 
-             - mean(Jx, axis=2)[:,:,newaxis] 
-             + mean(Jx, axis=(1,2))[:,newaxis,newaxis])
-
-    JxC = nan_to_num(getCouplingMatrix(Js))
-    h0 = (sum(mean(JxC, axis=1), axis=0) - 
-          (sum(mean(JxC, axis=(1,3)), axis=0)/2)[:,newaxis])
-    J0 = J0.reshape((J0.shape[0], nB**2))
-    return h0, J0
-
-def fieldlessGauge(hs, Js): #convert to a fieldless gauge
-    #note: Fieldless gauge is not fully constrained: There
-    #are many possible choices that are fieldless, this just returns one of them
-    #This function tries to distribute the fields evenly
-    J0 = Js.copy()
-    hd = hs/(L-1)
-    for n,(i,j) in enumerate([(i,j) for i in range(L-1) for j in range(i+1,L)]):
-        J0[n,:] += repeat(hd[i,:], nB)
-        J0[n,:] += tile(hd[j,:], nB)
-    return J0
 
 #identical calculation as CL kernel, but with high precision (to check fp error)
 def getEnergies(s, couplings): 
@@ -134,6 +89,15 @@ def printGPUs():
 #number of queued items allowed in a context. If you reach the limit, all queues
 #will block until a kernel finishes. So all code must be careful that one GPU
 #does not hog the queues.
+
+#Note that on some systems there is a watchdog timer that kills any kernel 
+#that takes too long to finish. You will get a CL_OUT_OF_RESOURCES error 
+#if this happens, which occurs when the *following* kernel is run.
+
+#Note that MCMC generation is split between nloop and nsteps.  Restarting the
+#MCMC kernel as the effect of recalculating the current energy from scratch,
+#which re-zeros any floating point error that may build up during one kernel
+#run.
 
 class FutureBuf:
     def __init__(self, buffer, event, postprocess=None):
@@ -1084,13 +1048,4 @@ if args.benchmark:
 else:
     doFit(startseq, couplings, gpus)
 print "Done!"
-
-#Note that MCMC generation is split between nloop and nsteps.
-#On some systems there is a watchdog timer that kills any kernel 
-#that takes too long to finish, thus limiting the maximum nsteps. However,
-#we avoid this by running the same kernel nloop times with smaller nsteps.
-#If you set nsteps too high you will get a CL_OUT_OF_RESOURCES error.
-#Restarting the MCMC kernel repeatedly also has the effect of recalculating
-#the current energy from scratch, which re-zeros any floating point error
-#that may build up during one kernel run.
 
