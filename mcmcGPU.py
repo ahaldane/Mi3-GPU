@@ -432,7 +432,6 @@ parser.add_argument('nloop', type=uint32)
 parser.add_argument('nsampleloops', type=uint32)
 parser.add_argument('nsamples', type=uint32)
 parser.add_argument('alpha', help="Alphabet, a sequence of letters")
-parser.add_argument('-startseq', help="Either a sequence, or 'rand'") 
 parser.add_argument('-nsteps', type=uint32, default=1,
                     help="number of MC steps per loop, in multiples of L")
 parser.add_argument('-wgsize', type=int, default=256)
@@ -442,7 +441,10 @@ parser.add_argument('-pcdamping', default=0.001)
 parser.add_argument('-Jcutoff', default=None)
 parser.add_argument('-couplings', default='none', 
                     help="One of 'zero', 'logscore', or a filename")
-parser.add_argument('-restart', default='none', 
+parser.add_argument('-startseq', help="Either a sequence, or 'rand'") 
+parser.add_argument('-start', default='none', 
+                    help="A directory name")
+parser.add_argument('-prestart', default='none', 
                     help="One of 'zero', 'logscore', or a directory name")
 parser.add_argument('-trackequil', type=uint32, default=0,
                     help='during equilibration, save bimarg every N loops')
@@ -538,18 +540,23 @@ if len(alpha) != nB:
     print "Expected alphabet size {}, got {}".format(nB, len(alpha))
     exit()
 
-if args.restart != 'none':
-    if args.couplings != 'none':
-        raise Exception("Cannot use both 'restart' and 'coupling' options")
-    if args.restart not in ['zero', 'logscore']:
-        args.couplings = os.path.join(args.restart, 'J.npy')
-    else:
-        args.couplings = args.restart
+if sum([v == 'none' for v in [args.start, args.prestart]]) > 1:
+    raise Exception("Can only specify one of: prestart start")
+startinfo = args.prestart if args.prestart != 'none' else args.start
 
-if args.couplings == 'zero':
+if args.couplings != 'none':
+    couplinginfo = args.couplings
+elif args.prestart in ['zero', 'logscore']:
+    couplinginfo = args.prestart
+elif args.start != 'none' or args.prestart != 'none':
+    couplinginfo = os.path.join(startinfo, 'J.npy')
+else:
+    raise Exception("Must supply one of: start, prestart, couplings")
+
+if couplinginfo == 'zero':
     print "Setting Initial couplings to 0"
     couplings = zeros((nPairs, nB*nB), dtype='<f4')
-elif args.couplings == 'logscore':
+elif couplinginfo == 'logscore':
     print "Setting Initial couplings to Independent Log Scores"
     ff = bimarg_target.reshape((nPairs,nB,nB))
     marg = array([sum(ff[0],axis=1)] + [sum(ff[n],axis=0) for n in range(L-1)])
@@ -558,8 +565,8 @@ elif args.couplings == 'logscore':
     h = h - mean(h, axis=1)[:,newaxis]
     couplings = fieldlessGauge(h, zeros((nPairs,nB*nB),dtype='<f4'))[1]
 else:
-    print "Reading initial couplings from file {}".format(args.couplings)
-    couplings = scipy.load(args.couplings)
+    print "Reading initial couplings from file {}".format(couplinginfo)
+    couplings = scipy.load(couplinginfo)
     if couplings.dtype != dtype('<f4'):
         raise Exception("Couplings in wrong format")
 #switch to 'even' fieldless gauge for nicer output
@@ -567,9 +574,14 @@ h0, J0 = zeroGauge(zeros((L,nB)), couplings)
 couplings = fieldlessGauge(h0, J0)[1]
 save(os.path.join(outdir, 'startJ'), couplings)
 
-if args.restart != 'none' and not args.startseq:
-    if args.restart not in ['logscore', 'rand']:
-        fn = os.path.join(args.restart, 'startseq')
+if args.startseq:
+    if args.startseq == 'rand':
+        startseq = randint(0, nB, size=L).astype('<u1')
+    else:
+        startseq = array([alpha.index(c) for c in args.startseq], dtype='<u1')
+elif args.start != 'none' or args.prestart != 'none':
+    if args.start != 'none' or (args.prestart not in ['logscore', 'rand']):
+        fn = os.path.join(startinfo, 'startseq')
         print "Reading startseq from file {}".format(fn)
         with open(fn) as f:
             startseq = f.readline().strip()
@@ -578,10 +590,7 @@ if args.restart != 'none' and not args.startseq:
         print "Start seq taken as first generated sequence during pre-opt"
         startseq = None
 else:
-    if args.startseq != 'rand':
-        startseq = array([alpha.index(c) for c in args.startseq], dtype='<u1')
-    else:
-        startseq = randint(0, nB, size=L).astype('<u1')
+    raise Exception("Must supply one of: start, prestart, startseq")
 sstype = 'random' if args.startseq == 'rand' else 'provided'
 
 print ""
@@ -879,10 +888,11 @@ def localDescent((niter, nrepeats), gamma0, gpus):
     
     for i in range(nrepeats):
         outJ, outbi = localIter(niter, gamma, gpus)
-        gpu.swapBuf('J') 
-        gpu.storeBuf('J') 
-        gpu.swapBuf('bi') 
-        gpu.storeBuf('bi') 
+        for gpu in gpus:
+            gpu.swapBuf('J') 
+            gpu.storeBuf('J') 
+            gpu.swapBuf('bi') 
+            gpu.storeBuf('bi') 
     return outJ, outbi
 
 def localIter(niter, gamma, gpus):
@@ -978,16 +988,16 @@ print "MCMC Run"
 print "========"
 
 #pre-optimization steps
-if args.restart != 'none':
+if args.prestart != 'none':
     pnseq = nsamples*nwalkers/len(gpudevices)
-    if args.restart == 'zero': 
+    if args.prestart == 'zero': 
         print "Pre-optimization (random sequences)"
         print "Generating sequences..."
         for gpu in gpus:
             seqs = numpy.random.randint(0,nB,size=(pnseq, L)).astype('<u1')
             gpu.setBuf('seq large', seqs)
         startseq = seqs[0]
-    elif args.restart == 'logscore': 
+    elif args.prestart == 'logscore': 
         print "Pre-optimization (logscore independent sequences)"
         print "Generating sequences..."
         cumprob = cumsum(marg, axis=1)
@@ -1001,9 +1011,9 @@ if args.restart != 'none':
         #Warning: input couplings should have generated input 
         #"sequences, or weird results ensue
         print "Pre-optimization (loading sequences from dir {})\n".format(
-                                                                   args.restart)
+                                                                  args.prestart)
         print "Loading sequences..."
-        seqfiles = glob.glob('{}/seqs*'.format(args.restart))
+        seqfiles = glob.glob('{}/seqs*'.format(args.prestart))
         if len(seqfiles) != len(gpus):
             raise Exception("Number of detected sequence files ({}) not equal "
                       "to number of gpus ({})".format(len(seqfiles), len(gpus)))
