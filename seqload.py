@@ -152,6 +152,7 @@ def writeSeqsF(f, seqs, names, param=None, headers=None, noheader=False):
     alphabet = array([ord(c) for c in names] + [ord('\n')], dtype='<u1')
     s = empty((chunksize, seqs.shape[1]+1), dtype=intp)
     s[:,-1] = len(names)
+    i = -chunksize # in case len(seqs) < chunksize
     for i in range(0,seqs.shape[0]-chunksize, chunksize):
         s[:,:-1] = seqs[i:i+chunksize,:]
         alphabet[s].tofile(f)

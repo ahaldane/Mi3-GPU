@@ -50,8 +50,8 @@ def printPlatform(p,n=0,f=sys.stdout):
     print >>f, "    Version: {}".format(p.version)
     print >>f, "    Extensions: {}".format(p.extensions)
 
-def printDevice(d,m=0,f=sys.stdout):
-    print >>f, "  Device {} '{}':".format(m, d.name)
+def printDevice(d, f=sys.stdout):
+    print >>f, "  Device {} '{}':".format(d.int_ptr, d.name)
     print >>f, "    Vendor: {}".format(d.vendor)
     print >>f, "    Version: {}".format(d.version)
     print >>f, "    Driver Version: {}".format(d.driver_version)
@@ -67,8 +67,8 @@ def printDevice(d,m=0,f=sys.stdout):
 def printGPUs():
     for n,p in enumerate(cl.get_platforms()):
         printPlatform(p,n)
-        for m,d in enumerate(p.get_devices()):
-            printDevice(d,m)
+        for d in p.get_devices():
+            printDevice(d)
         print ""
 
 ################################################################################
@@ -112,7 +112,7 @@ class FutureBuf:
         return self.buffer
 
 class MCMCGPU:
-    def __init__(self, (gpu, gpuid, ctx, prg), seed,  bimarg_target, 
+    def __init__(self, (gpu, ctx, prg), seed,  bimarg_target, 
                  nseq_small, nseq_large, wgsize, vsize, nhist, nsteps=1):
 
         self.L = int(((1+sqrt(1+8*bimarg_target.shape[0]))/2) + 0.5) 
@@ -123,9 +123,9 @@ class MCMCGPU:
         self.vsize = vsize
         self.kernel_seed = 0
         
-        self.logfn = os.path.join(outdir, 'gpu-{}.log'.format(gpuid))
+        self.logfn = os.path.join(outdir, 'gpu-{}.log'.format(gpu.int_ptr))
         with open(self.logfn, "wt") as f:
-            printDevice(gpu, gpuid, f)
+            printDevice(gpu, f)
 
         #setup opencl for this device
         self.prg = prg
@@ -464,6 +464,7 @@ print "---------------"
 outdir = args.outdir
 mkdir_p(outdir)
 
+print "Reading bimarg from file {}".format(args.bimarg)
 bimarg_target = scipy.load(args.bimarg)
 if bimarg_target.dtype != dtype('<f4'):
     raise Exception("Bimarg in wrong format")
@@ -615,46 +616,57 @@ with open(os.path.join(scriptPath, "metropolis.cl")) as f:
     src = f.read()
 
 #figure out which gpus to use
-gpuplatform_list = cl.get_platforms()
 gpudevices = []
 if args.gpus:
     gpustr = args.gpus
     #parse user arg
     try:
-        inds = [tuple(int(x) for x in a.split('-')) for a in gpustr.split(',')]
+        dev = [tuple(int(x) for x in a.split(':')) for a in gpustr.split(',')]
     except:
-        raise Exception("Error: GPU specification must be comma separated list "
-                        "of form '[platform#]-[device#], eg '0-0,0-1'")
-    #check for duplicates 
-    duplicates = set([i for i in inds if inds.count(i) > 1])
-    if len(duplicates) != 0:
-        raise Exception("GPUs specified twice: {}".format(list(duplicates)))
+        raise Exception("Error: GPU specification must be comma separated "
+                        " list of form 'platform:deviceid, where deviceid "
+                        "is optional, eg '0,0:27826160'")
+
+    dev_ids = [d for d in dev if len(d) == 2]
+    dev_noids = [d for d in dev if len(d) == 1]
+    platforms = [(p, p.get_devices()) for p in cl.get_platforms()]
+    platforms = [(p, dict((d.int_ptr, d) for d in p.get_devices())) 
+                                                    for p in cl.get_platforms()]
     
     #find the devices
-    for i,j in inds:
+    for p,id in dev_ids:
         try:
-            plat = gpuplatform_list[i]
-            gpu = plat[j]
-        except IndexError:
-            raise Exception("No GPU with id {}-{}".format(i,j))
-        id = "{}-{}".format(i,j)
-        print "Using GPU {} ({}) on platform {}".format(gpu.name,id,plat.name)
-        gpudevices.append((gpu, id))
+            plat, devices = platforms[p]
+            gpu = devices[id]
+            del devices[id]
+        except:
+            raise Exception("No GPU with id {}:{}".format(i,j))
+        print "Using GPU {} ({}) on platform {} ({})".format(gpu.name, 
+                                                      gpu.int_ptr, plat.name, p)
+        gpudevices.append(gpu)
+    for (p,) in dev_noids:
+        try:
+            plat, devices = platforms[p]
+            gpu = devices.popitem()[1]
+        except:
+            raise Exception("No GPU with specification {}".format(p))
+        print "Using GPU {} ({}) on platform {} ({})".format(gpu.name, 
+                                                      gpu.int_ptr, plat.name, p)
+        gpudevices.append(gpu)
 else:
     #use all gpus
-    for m,plat in enumerate(gpuplatform_list):
-        for n,gpu in enumerate(plat.get_devices()):
-            id = "{}-{}".format(m,n)
-            print "Using GPU {} ({}) on platform {}".format(gpu.name, id,
-                                                            plat.name)
-            gpudevices.append((gpu, id))
+    for m,plat in enumerate(cl.get_platforms()):
+        for gpu in plat.get_devices():
+            print "Using GPU {} ({}) on platform {} ({})".format(gpu.name, 
+                                                      gpu.int_ptr, plat.name, p)
+            gpudevices.append(gpu)
 
 if len(gpudevices) == 0:
     raise Exception("Error: No GPUs found")
 
 #set up OpenCL. Assumes all gpus are identical
 print "Getting CL Context"
-cl_ctx = cl.Context([device for device,id in gpudevices])
+cl_ctx = cl.Context(gpudevices)
 
 #divide up seqs to gpus
 wgsize = args.wgsize #OpenCL work group size for MCMC kernel. 
@@ -697,8 +709,8 @@ while len(set(gpuseeds)) != len(gpudevices):
 
 gpus = []
 print "Initializing Devices..."
-for (device, id), seed in zip(gpudevices, gpuseeds): 
-    gpu = MCMCGPU((device, id, cl_ctx, cl_prg), seed, bimarg_target,
+for device, seed in zip(gpudevices, gpuseeds): 
+    gpu = MCMCGPU((device, cl_ctx, cl_prg), seed, bimarg_target,
                   nwalkers_gpu, nsamples*nwalkers_gpu, wgsize, vsize, nhist, 
                   nsteps)
     gpus.append(gpu)
