@@ -51,7 +51,7 @@ def printPlatform(p,n=0,f=sys.stdout):
     print >>f, "    Extensions: {}".format(p.extensions)
 
 def printDevice(d, f=sys.stdout):
-    print >>f, "  Device {} '{}':".format(d.int_ptr, d.name)
+    print >>f, "  Device '{}':".format(d.name)
     print >>f, "    Vendor: {}".format(d.vendor)
     print >>f, "    Version: {}".format(d.version)
     print >>f, "    Driver Version: {}".format(d.driver_version)
@@ -112,8 +112,8 @@ class FutureBuf:
         return self.buffer
 
 class MCMCGPU:
-    def __init__(self, (gpu, ctx, prg), seed,  bimarg_target, 
-                 nseq_small, nseq_large, wgsize, vsize, nhist, nsteps=1):
+    def __init__(self, (gpu, gpuid, ctx, prg), seed,  bimarg_target, nseq_small,
+                 nseq_large, wgsize, vsize, nhist, nsteps=1, profile=False):
 
         self.L = int(((1+sqrt(1+8*bimarg_target.shape[0]))/2) + 0.5) 
         self.nB = int(sqrt(bimarg_target.shape[1]) + 0.5) #+0.5 for rounding 
@@ -122,15 +122,21 @@ class MCMCGPU:
         self.nhist = nhist
         self.vsize = vsize
         self.kernel_seed = 0
+        self.events = []
         
-        self.logfn = os.path.join(outdir, 'gpu-{}.log'.format(gpu.int_ptr))
+        self.logfn = os.path.join(outdir, 'gpu-{}.log'.format(gpuid))
         with open(self.logfn, "wt") as f:
             printDevice(gpu, f)
 
         #setup opencl for this device
         self.prg = prg
         self.log("Getting CL Queue")
-        self.queue = cl.CommandQueue(ctx, device=gpu)
+        self.profile = profile
+        if profile:
+            qprop = cl.command_queue_properties.PROFILING_ENABLE
+            self.queue = cl.CommandQueue(ctx, device=gpu, properties=qprop)
+        else:
+            self.queue = cl.CommandQueue(ctx, device=gpu)
         self.log("\nOpenCL Device Compilation Log:")
         self.log(self.prg.get_build_info(gpu, cl.program_build_info.LOG))
         maxwgs = self.prg.metropolis.get_work_group_info(
@@ -195,7 +201,16 @@ class MCMCGPU:
     def log(self, str):
         #logs are rare, so just open the file every time
         with open(self.logfn, "at") as f:
-            print >>f, str
+            print >>f, time.clock(), str
+
+    def logProfile(self):
+        if not self.profile:
+            return
+        with open(self.logfn, "at") as f:
+            while self.events != []:
+                dat = self.events.pop(0)
+                evt, name, size = dat[0],dat[1],(dat[2] if len(dat)==3 else '')
+                print >>f, "EVT", name, evt.profile.start, evt.profile.end, size
 
     #converts seqs to uchars, padded to 32bits, assume GPU is little endian
     def packSeqs(self, seqs):
@@ -232,18 +247,20 @@ class MCMCGPU:
 
         nB, nPairs = self.nB, self.nPairs
         J_dev = self.Jbufs[Jbufname]
-        self.prg.packfV(self.queue, (nPairs*nB*nB,), (nB*nB,), 
+        evt = self.prg.packfV(self.queue, (nPairs*nB*nB,), (nB*nB,), 
                         J_dev, self.bufs['Jpacked'])
+        self.events.append((evt, 'packJ'))
         self.packedJ = Jbufname
 
     def runMCMC(self):
         self.log("runMCMC")
         nseq = self.nseq['small']
         self.packJ('main')
-        self.prg.metropolis(self.queue, (nseq,), (self.wgsize,), 
+        evt = self.prg.metropolis(self.queue, (nseq,), (self.wgsize,), 
                             self.bufs['Jpacked'], self.bufs['runseed'], 
                             self.bufs['gpuseed'], self.bufs['nsteps'], 
                             self.Ebufs['small'], self.seqbufs['small'])
+        self.events.append((evt, 'metropolis'))
 
     def measureFPerror(self, nloops=3):
         print "Measuring FP Error"
@@ -270,9 +287,10 @@ class MCMCGPU:
         seq_dev = self.seqbufs[seqbufname]
         self.setBuf('nseq', nseq)
 
-        self.prg.countBimarg(self.queue, (nPairs*nhist,), (nhist,), 
+        evt = self.prg.countBimarg(self.queue, (nPairs*nhist,), (nhist,), 
                      self.bufs['bicount'], self.bibufs['main'], 
                      self.bufs['nseq'], seq_dev)
+        self.events.append((evt, 'calcBimarg'))
 
     def calcEnergies(self, seqbufname, Jbufname):
         self.log("calcEnergies " + seqbufname + " " + Jbufname)
@@ -281,8 +299,9 @@ class MCMCGPU:
         seq_dev = self.seqbufs[seqbufname]
         nseq = self.nseq[seqbufname]
         self.packJ(Jbufname)
-        self.prg.getEnergies(self.queue, (nseq,), (self.wgsize,), 
+        evt = self.prg.getEnergies(self.queue, (nseq,), (self.wgsize,), 
                              self.bufs['Jpacked'], seq_dev, energies_dev)
+        self.events.append((evt, 'getEnergies'))
 
     # update front bimarg buffer using back J buffer and large seq buffer
     def perturbMarg(self): 
@@ -299,13 +318,14 @@ class MCMCGPU:
         self.packJ('back')
         self.setBuf('nseq', nseq)
 
-        self.prg.perturbedWeights(self.queue, (nseq,), (self.wgsize,), 
+        evt = self.prg.perturbedWeights(self.queue, (nseq,), (self.wgsize,), 
                        self.bufs['Jpacked'], self.seqbufs['large'],
                        self.bufs['weights'], self.Ebufs['large'])
-        self.prg.sumWeights(self.queue, (self.vsize,), (self.vsize,), 
+        self.events.append((evt, 'perturbedWeights'))
+        evt = self.prg.sumWeights(self.queue, (self.vsize,), (self.vsize,), 
                             self.bufs['weights'], self.bufs['neff'], 
                             self.bufs['nseq'])
-        self.weightedMarg()
+        self.events.append((evt, 'sumWeights'))
     
     def weightedMarg(self):
         self.log("weightedMarg")
@@ -316,10 +336,11 @@ class MCMCGPU:
         #neff. Usually not used by user, but is called from
         #perturbMarg
         self.setBuf('nseq', self.nseq['large'])
-        self.prg.weightedMarg(self.queue, (nPairs*nhist,), (nhist,),
+        evt = self.prg.weightedMarg(self.queue, (nPairs*nhist,), (nhist,),
                         self.bibufs['front'], self.bufs['weights'], 
                         self.bufs['neff'], self.bufs['nseq'], 
                         self.seqbufs['large'])
+        self.events.append((evt, 'weightedMarg'))
 
     # updates front J buffer using back J and bimarg buffers, possibly clamped
     # to orig coupling
@@ -328,10 +349,11 @@ class MCMCGPU:
         nB, nPairs = self.nB, self.nPairs
         #find next highest multiple of wgsize, for num work units
         nworkunits = self.wgsize*((nPairs*nB*nB-1)//self.wgsize+1)
-        self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,), 
+        evt = self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,), 
                           self.bibufs['target'], self.bibufs['back'], 
                           self.Jbufs['main'], self.bufs['gamma'], 
                           self.Jbufs['back'], self.Jbufs['front'])
+        self.events.append((evt, 'updateJPerturb'))
         if self.packedJ == 'front':
             self.packedJ = None
 
@@ -341,6 +363,7 @@ class MCMCGPU:
         mem = zeros(bufshape, dtype=buftype)
         evt = cl.enqueue_copy(self.queue, mem, self.bufs[bufname], 
                               is_blocking=False)
+        self.events.append((evt, 'getBuf', mem.nbytes))
         if bufname.split()[0] == 'seq':
             return FutureBuf(mem, evt, self.unpackSeqs)
         return FutureBuf(mem, evt)
@@ -357,7 +380,9 @@ class MCMCGPU:
         assert(buftype == buf.dtype.str)
         assert((bufshape == buf.shape) or (bufshape == 1 and buf.size == 1))
 
-        cl.enqueue_copy(self.queue, self.bufs[bufname], buf, is_blocking=False)
+        evt = cl.enqueue_copy(self.queue, self.bufs[bufname], buf, 
+                              is_blocking=False)
+        self.events.append((evt, 'setBuf', buf.nbytes))
         
         #unset packedJ flag if we modified that J buf
         if bufname.split()[0] == 'J':
@@ -387,7 +412,8 @@ class MCMCGPU:
         assert(self.buf_spec[srcname][1] == self.buf_spec[dstname][1])
         srcbuf = self.bufs[srcname]
         dstbuf = self.bufs[dstname]
-        cl.enqueue_copy(self.queue, dstbuf, srcbuf)
+        evt = cl.enqueue_copy(self.queue, dstbuf, srcbuf)
+        self.events.append((evt, 'copyBuf'))
         if dstname.split()[0] == 'J' and self.packedJ == dstname.split()[1]:
             self.packedJ = None
 
@@ -401,9 +427,10 @@ class MCMCGPU:
         self.log("storeSeqs " + str(offset))
         nseq = self.nseq['small']
         self.setBuf('offset', offset*nseq)
-        self.prg.storeSeqs(self.queue, (nseq,), (self.wgsize,), 
+        evt = self.prg.storeSeqs(self.queue, (nseq,), (self.wgsize,), 
                            self.seqbufs['small'], self.seqbufs['large'], 
                            self.bufs['offset'])
+        self.events.append((evt, 'storeSeqs'))
 
     def wait(self):
         self.log("wait")
@@ -450,6 +477,7 @@ parser.add_argument('-trackequil', type=uint32, default=0,
                     help='during equilibration, save bimarg every N loops')
 parser.add_argument('-gpus')
 parser.add_argument('-benchmark', action='store_true')
+parser.add_argument('-profile', action='store_true')
 parser.add_argument('-measureFPerror', action='store_true')
 parser.add_argument('-perturbSteps', default='128')
 parser.add_argument('-regularizationScale', default=0.5)
@@ -617,6 +645,7 @@ with open(os.path.join(scriptPath, "metropolis.cl")) as f:
 
 #figure out which gpus to use
 gpudevices = []
+platforms = [(p, p.get_devices()) for p in cl.get_platforms()]
 if args.gpus:
     gpustr = args.gpus
     #parse user arg
@@ -624,42 +653,21 @@ if args.gpus:
         dev = [tuple(int(x) for x in a.split(':')) for a in gpustr.split(',')]
     except:
         raise Exception("Error: GPU specification must be comma separated "
-                        " list of form 'platform:deviceid, where deviceid "
-                        "is optional, eg '0,0:27826160'")
+                        " list of platforms, eg '0,0'")
 
-    dev_ids = [d for d in dev if len(d) == 2]
-    dev_noids = [d for d in dev if len(d) == 1]
-    platforms = [(p, p.get_devices()) for p in cl.get_platforms()]
-    platforms = [(p, dict((d.int_ptr, d) for d in p.get_devices())) 
-                                                    for p in cl.get_platforms()]
-    
-    #find the devices
-    for p,id in dev_ids:
-        try:
-            plat, devices = platforms[p]
-            gpu = devices[id]
-            del devices[id]
-        except:
-            raise Exception("No GPU with id {}:{}".format(i,j))
-        print "Using GPU {} ({}) on platform {} ({})".format(gpu.name, 
-                                                      gpu.int_ptr, plat.name, p)
-        gpudevices.append(gpu)
-    for (p,) in dev_noids:
+    for p in dev:
         try:
             plat, devices = platforms[p]
             gpu = devices.popitem()[1]
         except:
             raise Exception("No GPU with specification {}".format(p))
-        print "Using GPU {} ({}) on platform {} ({})".format(gpu.name, 
-                                                      gpu.int_ptr, plat.name, p)
+        print "Using GPU {} on platform {} ({})".format(gpu.name, plat.name, p)
         gpudevices.append(gpu)
 else:
     #use all gpus
-    for m,plat in enumerate(cl.get_platforms()):
-        for gpu in plat.get_devices():
-            print "Using GPU {} ({}) on platform {} ({})".format(gpu.name, 
-                                                      gpu.int_ptr, plat.name, p)
-            gpudevices.append(gpu)
+    for gpu, plat in [(g,p) for p in platforms for g in p]:
+        print "Using GPU {} on platform {} ({})".format(gpu.name, plat.name, p)
+        gpudevices.append(gpu)
 
 if len(gpudevices) == 0:
     raise Exception("Error: No GPUs found")
@@ -708,11 +716,12 @@ while len(set(gpuseeds)) != len(gpudevices):
     gpuseeds = [randint(2**32) for n in range(len(gpudevices))]
 
 gpus = []
+profile = args.profile
 print "Initializing Devices..."
-for device, seed in zip(gpudevices, gpuseeds): 
-    gpu = MCMCGPU((device, cl_ctx, cl_prg), seed, bimarg_target,
+for device, devid, seed in zip(gpudevices, range(len(gpudevices)), gpuseeds): 
+    gpu = MCMCGPU((device, devid, cl_ctx, cl_prg), seed, bimarg_target,
                   nwalkers_gpu, nsamples*nwalkers_gpu, wgsize, vsize, nhist, 
-                  nsteps)
+                  nsteps, profile=profile)
     gpus.append(gpu)
 
 ################################################################################
@@ -871,7 +880,10 @@ def localStep(n, lastssd, gpus):
     print "   weights:", printsome(weights)
 
     if isinf(Neff) or Neff == 0:
-        raise Exception("Error: Divergence. Decrease gamma or increase pc")
+        raise Exception("Error: Divergence. Decrease gamma or increase pc-damp")
+
+    for gpu in gpus:
+        gpu.logProfile()
 
     #check if we accept or reject step
     if ssd > lastssd: 
@@ -926,31 +938,31 @@ def localIter(niter, gamma, gpus):
     print "Local optimization:"
     n = 1
     lastssd = inf
-    for i in range(niter/gammasteps): 
-        nrepeats = 0
-        for k in range(gammasteps):
-            result, lastssd = localStep(n, lastssd, gpus)
-            if result == 'accepted':
-                n += 1
-            if result == 'rejected':
-                gamma = gamma/2
-                for gpu in gpus:
-                    gpu.setBuf('gamma', gamma)
-                print "Reducing gamma to {} and repeating step".format(gamma)
-                nrepeats += 1
-            elif result == 'finished':
-                print "Sequence weights diverging. Stopping local fit."
-                return (gpus[0].getBuf('J front').read(), 
-                        gpus[0].getBuf('bi back').read())
+    nrepeats = 0
+    for i in range(niter): 
+        if i != 0 and i % gammasteps == 0:
+            if nrepeats == gammasteps:
+                print "Too many ssd increases. Stopping local fit."
+                break
+            gamma = gamma*2
+            for gpu in gpus:
+                gpu.setBuf('gamma', gamma)
+            print "Increasing gamma to {}".format(gamma)
+            nrepeats = 0
 
-        if nrepeats == gammasteps:
-            print "Too many ssd increases. Stopping local fit."
-            break
-
-        gamma = gamma*2
-        for gpu in gpus:
-            gpu.setBuf('gamma', gamma)
-        print "Increasing gamma to {}".format(gamma)
+        result, lastssd = localStep(n, lastssd, gpus)
+        if result == 'accepted':
+            n += 1
+        if result == 'rejected':
+            gamma = gamma/2
+            for gpu in gpus:
+                gpu.setBuf('gamma', gamma)
+            print "Reducing gamma to {} and repeating step".format(gamma)
+            nrepeats += 1
+        elif result == 'finished':
+            print "Sequence weights diverging. Stopping local fit."
+            return (gpus[0].getBuf('J front').read(), 
+                    gpus[0].getBuf('bi back').read())
 
     #return back buffer, which contains last accepted move
     return gpus[0].getBuf('J back').read(), gpus[0].getBuf('bi back').read()
@@ -1026,9 +1038,9 @@ if args.prestart != 'none':
                                                                   args.prestart)
         print "Loading sequences..."
         seqfiles = glob.glob('{}/seqs*'.format(args.prestart))
-        if len(seqfiles) != len(gpus):
-            raise Exception("Number of detected sequence files ({}) not equal "
-                      "to number of gpus ({})".format(len(seqfiles), len(gpus)))
+        #if len(seqfiles) != len(gpus):
+        #    raise Exception("Number of detected sequence files ({}) not equal "
+        #              "to number of gpus ({})".format(len(seqfiles), len(gpus)))
         for seqfile,gpu in zip(seqfiles,gpus):
             seqs = seqload.loadSeqs(seqfile, names=alpha)[0].astype('<u1')
             if seqs.shape[0] != pnseq:
