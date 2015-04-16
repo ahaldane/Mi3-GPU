@@ -45,9 +45,8 @@ void packfV(__global float *v,
 __kernel 
 void storeSeqs(__global uint *smallbuf, 
                __global uint *largebuf,
-               __global uint *offset_p){
-    uint w, n, offset;
-    offset = *offset_p;
+                        uint offset){
+    uint w, n;
 
     #define SWORDS ((L-1)/4+1) 
     for(w = 0; w < SWORDS; w++){
@@ -87,24 +86,6 @@ inline float getEnergiesf(__global float *J,
             m = n+1;
             while(m < L){
                 uint sbm = seqmem[(m/4)*get_global_size(0) + get_global_id(0)]; 
-                
-                ////temporary code which does not work
-                //uint moff = m%4; //offset within the byte where we start
-                ////pre-load next 4 rows of couplings (minus offset)
-                //for(k = get_local_id(0) + (nB*nB*moff); 
-                //    k < min((uint)4, L-m)*nB*nB; 
-                //    k += get_local_size(0)){
-                //    lcouplings[k] = J[(n*L + m-moff)*nB*nB + k]; 
-                //}
-                //barrier(CLK_LOCAL_MEM_FENCE);
-                
-                ////calculate contribution of next 4 letters
-                //#pragma unroll
-                //for(cm = moff; cm < 4 && m < L; cm++, m++){
-                //    seqm = ((uchar*)(&sbm))[cm];
-                //    energy += lcouplings[nB*nB*cm + nB*seqn + seqm];
-                //}
-                //barrier(CLK_LOCAL_MEM_FENCE);
 
                 #pragma unroll
                 for(cm = m%4; cm < 4 && m < L; cm++, m++){
@@ -114,7 +95,7 @@ inline float getEnergiesf(__global float *J,
                     barrier(CLK_LOCAL_MEM_FENCE);
 
                     seqm = ((uchar*)(&sbm))[cm];
-                    energy = energy+lcouplings[nB*seqn + seqm];
+                    energy = energy + lcouplings[nB*seqn + seqm];
                     barrier(CLK_LOCAL_MEM_FENCE);
                 }
             }
@@ -131,6 +112,15 @@ void getEnergies(__global float *J,
     energies[get_global_id(0)] = getEnergiesf(J, seqmem, lcouplings);
 }
 
+__kernel
+void initRNG(__global mwc64xvec2_state_t *rngstates,
+                      ulong offset,
+                      ulong nsamples){
+    mwc64xvec2_state_t rstate;
+    MWC64XVEC2_SeedStreams(&rstate, offset, nsamples);
+    rngstates[get_global_id(0)] = rstate;
+}
+
 //#define getbyte(mem, n) (((mem>>(8*n))&0xff))
 //#define setbyte(mem, n, val) {mem = mem ^ ((val ^ getbyte(mem,n))<<(8*n));}
 
@@ -140,19 +130,12 @@ void getEnergies(__global float *J,
 
 __kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
 void metropolis(__global float *J,
-                __global uint *run_seed, 
-                __global uint *gpu_seed, 
-                __global uint *nsteps_p, 
+                __global mwc64xvec2_state_t *rngstates, 
+                         uint nsteps, 
                 __global float *energies,
                 __global uint *seqmem){
     
-    *run_seed += 1;
-    uint nsteps = *nsteps_p;
-
-    //init rng
-	mwc64xvec2_state_t rstate = {(uint2)(get_local_id(0), get_global_id(0)),
-                                 (uint2)(*run_seed, *gpu_seed)};
-    MWC64XVEC2_NextUint2(&rstate); //step once past seed
+	mwc64xvec2_state_t rstate = rngstates[get_global_id(0)];
 
     //set up local mem 
     __local float lcouplings[nB*nB*4];
@@ -243,6 +226,8 @@ void metropolis(__global float *J,
         pos = (pos+1)%L;
     }
 
+    rngstates[get_global_id(0)] = rstate;
+
 #ifdef MEASURE_FP_ERROR
     energies[get_global_id(0)] = energy;
 #endif
@@ -251,12 +236,11 @@ void metropolis(__global float *J,
 __kernel //call with group size = NHIST, for nPair groups
 void countBimarg(__global uint *bicount,
                  __global float *bimarg, 
-                 __global uint *nseq_p, 
+                          uint nseq,
                  __global uint *seqmem) {
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
     uint i,j,n,m;
-    uint nseq = *nseq_p;
     
     //figure out which i,j pair we are
     i = 0;
@@ -313,10 +297,9 @@ void perturbedWeights(__global float *J,
 __kernel //simply sums a vector. Call with single group of size VSIZE
 void sumWeights(__global float *weights,
                 __global float *sumweights,
-                __global uint *nseq_p){
+                uint nseq){
     uint li = get_local_id(0);
     uint n;
-    uint nseq = *nseq_p;
 
     __local float sums[VSIZE];
     sums[li] = 0;
@@ -340,12 +323,11 @@ __kernel //call with group size = NHIST, for nPair groups
 void weightedMarg(__global float *bimarg_new, 
                   __global float *weights, 
                   __global float *sumweights,
-                  __global uint *nseq_p, 
+                           uint nseq, 
                   __global uint *seqmem) {
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
     uint i,j,n,m;
-    uint nseq = *nseq_p;
     
     //figure out which i,j pair we are
     i = 0;
@@ -392,7 +374,7 @@ __kernel
 void updatedJ(__global float *bimarg_target,
               __global float *bimarg,
               __global float *J_orig,
-              __global float *gamma,
+                       float gamma,
               __global float *Ji,
               __global float *Jo){
     uint n = get_global_id(0);
@@ -401,7 +383,7 @@ void updatedJ(__global float *bimarg_target,
         return;
     }
 
-    Jo[n] = Ji[n] - (*gamma)*(bimarg_target[n] - bimarg[n])/(bimarg[n] + PC);
+    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + PC);
 
     #ifdef JCUTOFF
     Jo[n] = clamp(Jo[n], J_orig[n] - (float)JCUTOFF, 
