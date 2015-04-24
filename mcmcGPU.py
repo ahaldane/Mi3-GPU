@@ -250,15 +250,18 @@ class MCMCGPU:
     def initRNG(self):
         self.log("initRNG")
 
-        nsamples = uint64(2**40) #upper bound for # of rngs generated
+        nsamples = uint64(2**40) #upper bound for # of uint2 rngs generated
         nseq = self.nseq['small']
-        offset = uint64(nsamples*nseq*self.gpunum)
+        offset = uint64(nsamples*nseq*self.gpunum*2) 
+        offset = uint64(nsamples*nseq*self.gpunum) #XXX temp 
+        # each gpu uses perStreamOffset*get_global_id(0)*vectorSize samples
+        #               (nsamples      *   nseq         *    2)
         
         # read mwc64 docs for description of nsamples.
-        # Num samples should be chosen such that 2**64/nsamples is greater
+        # Num samples should be chosen such that 2**64/(2*nsamples) is greater
         # than # walkers. nsamples should be > #MC steps performed per walker
         # (which is nsteps*L*nloop*gdsteps)
-        if not (self.nsteps*nloop*gdsteps < nsamples < 2**64/nwalkers):
+        if not (self.nsteps*nloop*gdsteps < nsamples < 2**64/(2*nwalkers)):
             print "Warning: RNG sampling problem. RNGs may not be independent."
         #if this is a problem rethink the value 2**40 above, or consider using
         #an rng with a greater period, eg the "Warp" generator.
@@ -440,7 +443,7 @@ class MCMCGPU:
         nseq = self.nseq['small']
         evt = self.prg.storeSeqs(self.queue, (nseq,), (self.wgsize,), 
                            self.seqbufs['small'], self.seqbufs['large'], 
-                           array(offset*nseq, dtype=uint32))
+                           uint32(offset*nseq))
         self.events.append((evt, 'storeSeqs'))
 
     def wait(self):
@@ -805,19 +808,23 @@ def singleStep(runName, couplings, startseq, gpus):
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
         mkdir_p(os.path.join(outdir, runName, 'equilibration'))
-        #mkdir_p(os.path.join(outdir, runName, 'eqseqs'))
+        mkdir_p(os.path.join(outdir, runName, 'eqseqs'))
+        #mkdir_p(os.path.join(outdir, runName, 'eqen'))
         for j in range(nloop/args.trackequil):
             for i in range(args.trackequil):
                 for gpu in gpus:
                     gpu.runMCMC()
             for gpu in gpus:
                 gpu.calcBimarg('small')
-            #res = readGPUbufs(['bi main', 'seq small'], gpus)
-            #bimarg_model = meanarr(res[0])
-            #pseq = res[1]
-            #for n,seqbuf in enumerate(pseq):
-            #    seqload.writeSeqs(os.path.join(outdir, runName, 'eqseqs', 'seqs-{}-{}'.format(n, j)), seqbuf, alpha)
-            bimarg_model = meanarr(readGPUbufs(['bi main'], gpus)[0])
+                #gpu.calcEnergies('small', 'main')
+            #res = readGPUbufs(['bi main', 'seq small', 'E small'], gpus)
+            res = readGPUbufs(['bi main', 'seq small'], gpus)
+            bimarg_model = meanarr(res[0])
+            pseq = res[1]
+            for n,seqbuf in enumerate(pseq):
+                #save(os.path.join(outdir, runName, 'eqen', 'en-{}-{}'.format(n,j)), res[2][n])
+                seqload.writeSeqs(os.path.join(outdir, runName, 'eqseqs', 'seqs-{}-{}'.format(n, j)), seqbuf, alpha)
+            #bimarg_model = meanarr(readGPUbufs(['bi main'], gpus)[0])
             save(os.path.join(outdir, runName, 
                  'equilibration', 'bimarg_{}'.format(j)), bimarg_model)
 
@@ -847,6 +854,7 @@ def singleStep(runName, couplings, startseq, gpus):
     
     #compute new J using local optimization
     couplings, bimarg_p = localDescent(perturbSteps, gamma0, gpus)
+    save(os.path.join(outdir, runName, 'predictedBimarg'), bimarg_p)
 
     #figure out minimum sequence
     minind = argmin(sampledenergies)
