@@ -737,13 +737,12 @@ for devnum, device in enumerate(gpudevices):
 ################################################################################
 #Helper funcs
 
-def writeStatus(name, rmsd, ssd, bicount, bimarg_model, couplings, 
+def writeStatus(name, rmsd, ssd, wdf, bicount, bimarg_model, couplings, 
                 seqs, startseq, energies):
 
     #print some details 
     disp = ["Start Seq: " + "".join([alpha[c] for c in startseq]),
-            "RMSD: {}".format(rmsd),
-            "SSD: {}".format(ssd),
+            "RMSD: {: 9.7f}  SSD: {: 9.5f}  wDf: {: 9.5f}".format(rmsd,ssd,wdf),
             "Bicounts: " + printsome(bicount) + '...',
             "Marginals: " + printsome(bimarg_model) + '...',
             "Couplings: " + printsome(couplings) + "...",
@@ -808,7 +807,7 @@ def singleStep(runName, couplings, startseq, gpus):
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
         mkdir_p(os.path.join(outdir, runName, 'equilibration'))
-        mkdir_p(os.path.join(outdir, runName, 'eqseqs'))
+        #mkdir_p(os.path.join(outdir, runName, 'eqseqs'))
         #mkdir_p(os.path.join(outdir, runName, 'eqen'))
         for j in range(nloop/args.trackequil):
             for i in range(args.trackequil):
@@ -818,13 +817,13 @@ def singleStep(runName, couplings, startseq, gpus):
                 gpu.calcBimarg('small')
                 #gpu.calcEnergies('small', 'main')
             #res = readGPUbufs(['bi main', 'seq small', 'E small'], gpus)
-            res = readGPUbufs(['bi main', 'seq small'], gpus)
-            bimarg_model = meanarr(res[0])
-            pseq = res[1]
-            for n,seqbuf in enumerate(pseq):
-                #save(os.path.join(outdir, runName, 'eqen', 'en-{}-{}'.format(n,j)), res[2][n])
-                seqload.writeSeqs(os.path.join(outdir, runName, 'eqseqs', 'seqs-{}-{}'.format(n, j)), seqbuf, alpha)
-            #bimarg_model = meanarr(readGPUbufs(['bi main'], gpus)[0])
+            #res = readGPUbufs(['bi main', 'seq small'], gpus)
+            #bimarg_model = meanarr(res[0])
+            #pseq = res[1]
+            #for n,seqbuf in enumerate(pseq):
+            #    #save(os.path.join(outdir, runName, 'eqen', 'en-{}-{}'.format(n,j)), res[2][n])
+            #    seqload.writeSeqs(os.path.join(outdir, runName, 'eqseqs', 'seqs-{}-{}'.format(n, j)), seqbuf, alpha)
+            bimarg_model = meanarr(readGPUbufs(['bi main'], gpus)[0])
             save(os.path.join(outdir, runName, 
                  'equilibration', 'bimarg_{}'.format(j)), bimarg_model)
 
@@ -849,19 +848,20 @@ def singleStep(runName, couplings, startseq, gpus):
     #get summary statistics and output them
     rmsd = sqrt(mean((bimarg_target - bimarg_model)**2))
     ssd = sum((bimarg_target - bimarg_model)**2)
-    writeStatus(runName, rmsd, ssd, bicount, bimarg_model, 
+    wdf = sum(bimarg_target*abs(bimarg_target - bimarg_model))
+    writeStatus(runName, rmsd, ssd, wdf, bicount, bimarg_model, 
                 couplings, sampledseqs, startseq, sampledenergies)
     
     #compute new J using local optimization
     couplings, bimarg_p = localDescent(perturbSteps, gamma0, gpus)
     save(os.path.join(outdir, runName, 'predictedBimarg'), bimarg_p)
 
-    #figure out minimum sequence
-    minind = argmin(sampledenergies)
+    #choose seed sequence for next round
+    rseq_ind = numpy.random.randint(0, len(sampledenergies))
     nseq = gpus[0].nseq['large'] #assumes all gpus the same
-    minseq = sampledseqs[minind/nseq][minind%nseq]
+    rseq = sampledseqs[rseq_ind/nseq][rseq_ind%nseq]
 
-    return minseq, couplings
+    return rseq, couplings
 
 ################################################################################
 #local optimization related code
@@ -878,6 +878,11 @@ def localStep(n, gamma, lastssd, gpus):
     for gpu in gpus:
         #note: updateJPerturb should give same result on all GPUs
         gpu.updateJPerturb(gamma) #overwrite J front using bi back and J back
+    #trialJ = gpus[0].getBuf('J front').read()
+    #trialJ = Jbias(trialJ, 0.04)
+
+    for gpu in gpus:
+        #gpu.setBuf('J front', trialJ)
         gpu.swapBuf('J') #temporarily put trial J in back buffer
         gpu.perturbMarg() #overwrites bi front using J back
         gpu.swapBuf('J')
@@ -1050,12 +1055,12 @@ if args.prestart != 'none':
         print "Pre-optimization (loading sequences from dir {})\n".format(
                                                                   args.prestart)
         print "Loading sequences..."
-        seqfiles = glob.glob('{}/seqs*'.format(args.prestart))
-        if len(seqfiles) != len(gpus):
-            raise Exception("Number of detected sequence files ({}) not equal "
-                      "to number of gpus ({})".format(len(seqfiles),len(gpus)))
-        for seqfile,gpu in zip(seqfiles,gpus):
-            seqs = seqload.loadSeqs(seqfile, names=alpha)[0].astype('<u1')
+        for n,gpu in enumerate(gpus):
+            seqfile = os.path.join(args.prestart, 'seqs-{}'.format(n))
+            try:
+                seqs = seqload.loadSeqs(seqfile, names=alpha)[0].astype('<u1')
+            except:
+                raise Exception("Error loading file {}".format(seqfile))
             if seqs.shape[0] != pnseq:
                 raise Exception(("Error: Need {} restart sequences, "
                              "got {}").format(pnseq, seqs.shape[0]))
@@ -1075,13 +1080,13 @@ if args.prestart != 'none':
     save(os.path.join(outdir, 'preopt', 'initbimarg'), bimarg)
     save(os.path.join(outdir, 'preopt', 'initBicont'), bicount)
     for n,s in enumerate(seqs):
-        seqload.writeSeqs(os.path.join(outdir, 'preopt', 'seqs'+str(n)), 
+        seqload.writeSeqs(os.path.join(outdir, 'preopt', 'seqs-'+str(n)), 
                           s, alpha)
 
     rmsd = sqrt(mean((bimarg_target - bimarg)**2))
     ssd = sum((bimarg_target - bimarg)**2)
-    print "RMSD: ", rmsd
-    print "SSD: ", ssd
+    wdf = sum(bimarg_target*abs(bimarg_target - bimarg))
+    print "S RMSD: {: 9.7f}  SSD: {: 9.5f}  wDf: {: 9.5f}".format(rmsd,ssd,wdf)
 
     #modify couplings a little
     couplings, bimarg_p = localDescent(perturbSteps, gamma0, gpus)

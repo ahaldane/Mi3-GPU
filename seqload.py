@@ -37,9 +37,9 @@ def mapSeqs(fn, names, mapper):
         mapper = lambda x: x
     
     with Opener(fn) as f:
-        gen = loadSeqsChunked(fn,names)
+        gen = loadSeqsChunked(f, names)
         param, headers = gen.next()
-        seqs = concatenate(mapper(s) for s in gen)
+        seqs = concatenate([mapper(s) for s in gen])
     return seqs, param, headers
 
 def parseHeader(hd):
@@ -72,7 +72,7 @@ def loadSeqsChunked(f, names=None, chunksize=None):
         header.append(l)
         pos = f.tell()
         l = f.readline()
-    L = len(l[:-1])
+    L = len(l[:-1]) + (1 if l[-1] != '\n' else 0)
     f.seek(pos)
     
     #get alphabet
@@ -115,7 +115,7 @@ def loadSeqsChunked(f, names=None, chunksize=None):
 
     #load in chunks
     if chunksize is None:
-        chunksize = 16384/(L+1)
+        chunksize = 4*1024*1024/(L+1)
     chunks = []
     dat = fromfile(f, dtype=uint8, count=chunksize*(L+1))
     while dat.size == chunksize*(L+1):
@@ -148,7 +148,7 @@ def writeSeqsF(f, seqs, names, param=None, headers=None, noheader=False):
             for line in headers[head]:
                 f.write('#{} {0}\n'.format(head, line))
 
-    chunksize = 4096
+    chunksize = 1024*1024
     alphabet = array([ord(c) for c in names] + [ord('\n')], dtype='<u1')
     s = empty((chunksize, seqs.shape[1]+1), dtype=intp)
     s[:,-1] = len(names)

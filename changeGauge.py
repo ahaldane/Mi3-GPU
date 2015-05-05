@@ -15,7 +15,26 @@ def getCouplingMatrix(couplings):
         C[j,:,i,:] = block.T
     return C
 
-def zeroGauge(hs, Js):
+def weightedGauge(hs, Js, weights=None):
+    if weights == None:
+        raise Exception("weights must be supplied to get weighted gauge")
+
+    L, nB = hs.shape
+    weightsx = weights.reshape((L*(L-1)/2, nB, nB))
+    Jx = Js.reshape((L*(L-1)/2, nB, nB))
+    #weightsxC = nan_to_num(getCouplingMatrix(weights))
+    #JxC = nan_to_num(getCouplingMatrix(Js))
+
+    J0 = (Jx - average(Jx, weights=weightsx, axis=1)[:,newaxis,:] 
+             - average(Jx, weights=weightsx, axis=2)[:,:,newaxis] 
+             + average(Jx, weights=weightsx, axis=(1,2))[:,newaxis,newaxis])
+    #computation of hs has not been checked.. probably wrong
+    #h0 = hs + sum(average(JxC, weights=weightsxC, axis=1), axis=0)
+    h0 = hs
+    J0 = J0.reshape((J0.shape[0], nB**2))
+    return h0, J0
+
+def zeroGauge(hs, Js, weights=None):
     #sets the mean h-rows and J rows/cols to 0
     #this is a fully constrained gauge
     if any(isinf(Js)) or any(isinf(hs)):
@@ -29,12 +48,12 @@ def zeroGauge(hs, Js):
     J0 = (Jx - mean(Jx, axis=1)[:,newaxis,:] 
              - mean(Jx, axis=2)[:,:,newaxis] 
              + mean(Jx, axis=(1,2))[:,newaxis,newaxis])
-    h0 = sum(mean(JxC, axis=1), axis=0)
+    h0 = hs + sum(mean(JxC, axis=1), axis=0)
     h0 = h0 - mean(h0, axis=1)[:,newaxis]
     J0 = J0.reshape((J0.shape[0], nB**2))
     return h0, J0
 
-def zeroJGauge(hs, Js): 
+def zeroJGauge(hs, Js, weights=None): 
     #only set mean J to 0, but choose fields so sequence energies do not change
     if any(isinf(Js)) or any(isinf(hs)):
         raise Exception("Error: Cannot convert to zero gauge because "
@@ -48,12 +67,12 @@ def zeroJGauge(hs, Js):
              + mean(Jx, axis=(1,2))[:,newaxis,newaxis])
 
     JxC = nan_to_num(getCouplingMatrix(Js))
-    h0 = (sum(mean(JxC, axis=1), axis=0) - 
+    h0 = hs+(sum(mean(JxC, axis=1), axis=0) - 
           (sum(mean(JxC, axis=(1,3)), axis=0)/2)[:,newaxis])
     J0 = J0.reshape((J0.shape[0], nB**2))
     return h0, J0
 
-def fieldlessGauge(hs, Js): #convert to a fieldless gauge
+def fieldlessGaugeEven(hs, Js, weights=None): #convert to a fieldless gauge
     #note: Fieldless gauge is not fully constrained: There are many possible 
     #choices that are fieldless, this just returns one of them
     #This function tries to distribute the fields evenly
@@ -65,10 +84,9 @@ def fieldlessGauge(hs, Js): #convert to a fieldless gauge
         J0[n,:] += tile(hd[j,:], nB)
     return zeros(hs.shape), J0
 
-def fieldlessGaugeQuick(hs, Js):
+def fieldlessGauge(hs, Js, weights=None):
     #note: Fieldless gauge is not fully constrained: There are many possible 
     #choices that are fieldless, this just returns one of them
-    #This function puts all the fields in the first couplings
     seqLen, nBases = hs.shape
     J0 = Js.copy()
     J0[0,:] += repeat(hs[0,:], nBases)
@@ -84,12 +102,13 @@ def tryload(fn):
 
 def main():
     parser = argparse.ArgumentParser(description='Script to switch Gauges')
-    parser.add_argument('gauge', choices=['fieldless', 'fieldlessQuick', 
-                                          'zero', 'zeroJ'])
+    parser.add_argument('gauge', choices=['fieldless', 'fieldlessEven', 
+                                 'weighted', 'zero', 'minJ', 'zeroJ'])
     parser.add_argument('-hin')
     parser.add_argument('-Jin')
     parser.add_argument('-hout')
     parser.add_argument('-Jout')
+    parser.add_argument('-weights')
     parser.add_argument('--bin', action='store_true', 
                                  help='save in binary format')
     args = parser.parse_args()
@@ -122,12 +141,16 @@ def main():
         if hL != jL or hnB != jnB:
             raise Exception("Error: Size of h does not match size of J")
         L,nB = jL,jnB
+    weights = None
+    if args.weights != None:
+        weights = load(args.weights)
 
     gfuncs = {'fieldless':     fieldlessGauge,
-              'fieldlessQuick': fieldlessGaugeQuick,
+              'fieldlessEven': fieldlessGaugeEven,
+              'weighted':      weightedGauge,
               'zero':          zeroGauge,
               'zeroJ':         zeroJGauge}
-    h1, J1 = gfuncs[args.gauge](h0, J0)
+    h1, J1 = gfuncs[args.gauge](h0, J0, weights)
 
     savefunc = save if args.bin else savetxt
     if args.hout:
