@@ -86,40 +86,39 @@ def loadSeqsChunked(f, names=None, chunksize=None):
     yield param, headers
     
     #set up translation table
-    nucNums = -ones(256, uint8) #nucNums is a map from ascii to base number
+    nucNums = 255*ones(256, uint8) #nucNums is a map from ascii to base number
     nucNums[frombuffer(names, uint8)] = arange(len(names))
     
     #do translation
-    def translateSeqs(seqmat):
+    def translateSeqs(seqmat, pos):
         seqmat = seqmat.reshape(seqmat.size/(L+1), L+1)
         
         #sanity checks on the sequences
         if any(seqmat[:,-1] != ord('\n')):
-            badline = sum([c.shape[0] for c in chunks])
-            badline += argwhere(seqmat[:,-1] != ord('\n'))[0]
+            badline = pos[0] + argwhere(seqmat[:,-1] != ord('\n'))[0] 
             raise Exception("Sequence {} has different length".format(badline))
 
         #fancy indexing casts indices to intp.... annoying slowdown
-        seqmat = nucNums[seqmat[:,:-1]] 
+        seqs = nucNums[seqmat[:,:-1]] 
 
-        if any(seqmat.flatten() < 0):
-            badpos = argwhere(seqmat.flatten() < 0)[0]
-            badchar = seqmat.flatten()[badpos]
-            if badchar == ord('\n'):
-                badline = sum([c.shape[0] for c in chunks])
-                badline += badpos/L
+        if any(seqs.flatten() == 255):
+            badpos = argwhere(seqs.flatten() == 255)[0]
+            badchar = chr(seqmat.flatten()[badpos])
+            if badchar == '\n':
+                badline = pos[0] + badpos/L
                 raise Exception("Sequence {} has wrong length".format(badline))
             else:
                 raise Exception("Invalid residue: {0}".format(badchar))
-        return seqmat
+        pos[0] += seqmat.shape[0]
+        return seqs
 
     #load in chunks
     if chunksize is None:
         chunksize = 4*1024*1024/(L+1)
-    chunks = []
     dat = fromfile(f, dtype=uint8, count=chunksize*(L+1))
+    pos = [0]
     while dat.size == chunksize*(L+1):
-        yield translateSeqs(dat)
+        yield translateSeqs(dat, pos)
         dat = fromfile(f, dtype=uint8, count=chunksize*(L+1))
     
     #process last partial chunk if present
@@ -132,7 +131,7 @@ def loadSeqsChunked(f, names=None, chunksize=None):
                 dat = concatenate([dat, [ord("\n")]])
             else:
                 raise Exception("Unexpected characters at eof") 
-        yield translateSeqs(dat)
+        yield translateSeqs(dat, pos)
 
 def writeSeqs(fn, seqs, names, param=None, headers=None, noheader=False):
     with Opener(fn, 'w') as f:

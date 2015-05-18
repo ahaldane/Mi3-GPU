@@ -623,7 +623,7 @@ if args.startseq:
     else:
         startseq = array([alpha.index(c) for c in args.startseq], dtype='<u1')
 elif args.start != 'none' or args.prestart != 'none':
-    if args.start != 'none' or (args.prestart not in ['logscore', 'rand']):
+    if args.start != 'none' or (args.prestart not in ['logscore', 'zero']):
         fn = os.path.join(startinfo, 'startseq')
         print "Reading startseq from file {}".format(fn)
         with open(fn) as f:
