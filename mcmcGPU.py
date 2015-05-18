@@ -737,12 +737,12 @@ for devnum, device in enumerate(gpudevices):
 ################################################################################
 #Helper funcs
 
-def writeStatus(name, rmsd, ssd, wdf, bicount, bimarg_model, couplings, 
+def writeStatus(name, rmsd, ssr, wdf, bicount, bimarg_model, couplings, 
                 seqs, startseq, energies):
 
     #print some details 
     disp = ["Start Seq: " + "".join([alpha[c] for c in startseq]),
-            "RMSD: {: 9.7f}  SSD: {: 9.5f}  wDf: {: 9.5f}".format(rmsd,ssd,wdf),
+            "RMSD: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(rmsd,ssr,wdf),
             "Bicounts: " + printsome(bicount) + '...',
             "Marginals: " + printsome(bimarg_model) + '...',
             "Couplings: " + printsome(couplings) + "...",
@@ -847,9 +847,9 @@ def singleStep(runName, couplings, startseq, gpus):
 
     #get summary statistics and output them
     rmsd = sqrt(mean((bimarg_target - bimarg_model)**2))
-    ssd = sum((bimarg_target - bimarg_model)**2)
+    ssr = sum((bimarg_target - bimarg_model)**2)
     wdf = sum(bimarg_target*abs(bimarg_target - bimarg_model))
-    writeStatus(runName, rmsd, ssd, wdf, bicount, bimarg_model, 
+    writeStatus(runName, rmsd, ssr, wdf, bicount, bimarg_model, 
                 couplings, sampledseqs, startseq, sampledenergies)
     
     #compute new J using local optimization
@@ -873,7 +873,7 @@ def Jbias(J, scale=0.5):
     J0 = J0*((1-exp(-fb/(scale*mean(fb))))[:,newaxis])
     return fieldlessGauge(h0, J0)[1]
 
-def localStep(n, gamma, lastssd, gpus):
+def localStep(n, gamma, lastssr, gpus):
     #calculate perturbed marginals
     for gpu in gpus:
         #note: updateJPerturb should give same result on all GPUs
@@ -894,13 +894,13 @@ def localStep(n, gamma, lastssd, gpus):
     Neff = sum(Neffs)
     bimarg_model = sumarr([N*buf for N,buf in zip(Neffs, bimargb)])/Neff
     weights = concatenate(weightb)
-    ssd = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
+    ssr = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
     trialJ = gpus[0].getBuf('J front').read()
     
     #display result
     print ""
-    print ("{}  ssd: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
-           n, ssd, Neff, min(weights), max(weights))
+    print ("{}  ssr: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
+           n, ssr, Neff, min(weights), max(weights))
     print "    trialJ:", printsome(trialJ)
     print "    bimarg:", printsome(bimarg_model)
     print "   weights:", printsome(weights)
@@ -912,8 +912,8 @@ def localStep(n, gamma, lastssd, gpus):
         gpu.logProfile()
 
     #check if we accept or reject step
-    if ssd > lastssd: 
-        return 'rejected', lastssd
+    if ssr > lastssr: 
+        return 'rejected', lastssr
     else: 
         #keep this step, and store current J and bm to back buffer
         for gpu in gpus:
@@ -922,9 +922,9 @@ def localStep(n, gamma, lastssd, gpus):
             gpu.storeBuf('bi')
 
         #if Neff < nsamples*nwalkers/2 or max(weights) > 64:
-        #    return 'finished', ssd
+        #    return 'finished', ssr
 
-        return 'accepted', ssd
+        return 'accepted', ssr
 
 def localDescent((niter, nrepeats), gamma0, gpus):
     gamma = gamma0
@@ -959,18 +959,18 @@ def localIter(niter, gamma, gpus):
     print "Local target: ", printsome(bimarg_target)
     print "Local optimization:"
     n = 1
-    lastssd = inf
+    lastssr = inf
     nrepeats = 0
     for i in range(niter): 
         if i != 0 and i % gammasteps == 0:
             if nrepeats == gammasteps:
-                print "Too many ssd increases. Stopping local fit."
+                print "Too many ssr increases. Stopping local fit."
                 break
             gamma = gamma*2
             print "Increasing gamma to {}".format(gamma)
             nrepeats = 0
 
-        result, lastssd = localStep(n, gamma, lastssd, gpus)
+        result, lastssr = localStep(n, gamma, lastssr, gpus)
         if result == 'accepted':
             n += 1
         if result == 'rejected':
@@ -1084,9 +1084,9 @@ if args.prestart != 'none':
                           s, alpha)
 
     rmsd = sqrt(mean((bimarg_target - bimarg)**2))
-    ssd = sum((bimarg_target - bimarg)**2)
+    ssr = sum((bimarg_target - bimarg)**2)
     wdf = sum(bimarg_target*abs(bimarg_target - bimarg))
-    print "S RMSD: {: 9.7f}  SSD: {: 9.5f}  wDf: {: 9.5f}".format(rmsd,ssd,wdf)
+    print "S RMSD: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(rmsd,ssr,wdf)
 
     #modify couplings a little
     couplings, bimarg_p = localDescent(perturbSteps, gamma0, gpus)
