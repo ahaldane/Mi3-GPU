@@ -22,7 +22,7 @@ def mkdir_p(path):
             raise
 scriptPath = os.path.dirname(os.path.realpath(__file__))
 outdir = 'output'
-printsome = lambda a: " ".join(map(str,a.flatten()[:5]))
+printsome = lambda a: " ".join(map(str,a.flatten()[-5:]))
 
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '0'
 os.environ['PYOPENCL_NO_CACHE'] = '1'
