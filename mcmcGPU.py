@@ -253,7 +253,6 @@ class MCMCGPU:
         nsamples = uint64(2**40) #upper bound for # of uint2 rngs generated
         nseq = self.nseq['small']
         offset = uint64(nsamples*nseq*self.gpunum*2) 
-        offset = uint64(nsamples*nseq*self.gpunum) #XXX temp 
         # each gpu uses perStreamOffset*get_global_id(0)*vectorSize samples
         #               (nsamples      *   nseq         *    2)
         
@@ -491,6 +490,7 @@ parser.add_argument('-trackequil', type=uint32, default=0,
                     help='during equilibration, save bimarg every N loops')
 parser.add_argument('-gpus')
 parser.add_argument('-benchmark', action='store_true')
+parser.add_argument('-randsim', action='store_true')
 parser.add_argument('-profile', action='store_true')
 parser.add_argument('-measureFPerror', action='store_true')
 parser.add_argument('-perturbSteps', default='128')
@@ -945,7 +945,7 @@ def localDescent((niter, nrepeats), gamma0, gpus):
             gpu.storeBuf('bi') 
     return outJ, outbi
 
-def localIter(niter, gamma, gpus):
+def localIter(niter, gamma0, gpus):
     gammasteps = 16
     
     if regularizationScale != 0:
@@ -961,6 +961,7 @@ def localIter(niter, gamma, gpus):
     n = 1
     lastssr = inf
     nrepeats = 0
+    gamma = gamma0
     for i in range(niter): 
         if i != 0 and i % gammasteps == 0:
             if nrepeats == gammasteps:
@@ -977,6 +978,9 @@ def localIter(niter, gamma, gpus):
             gamma = gamma/2
             print "Reducing gamma to {} and repeating step".format(gamma)
             nrepeats += 1
+            if gamma < gamma0/64:
+                print "gamma decreased too much relative to gamma0. Stopping"
+                break
         elif result == 'finished':
             print "Sequence weights diverging. Stopping local fit."
             return (gpus[0].getBuf('J front').read(), 
@@ -1021,6 +1025,46 @@ def MCMCbenchmark(startseq, couplings, gpus):
     print "Time per loop: ", (end - start)/nloop
     steps_per_second = (nwalkers*nloop*nsteps*L)/(end-start)
     print "MC steps per second: {:g}".format(steps_per_second)
+
+def MCMCrandsim():
+    print "Initializing to random sequences and equilibrating"
+
+    pnseq = nwalkers/len(gpudevices)
+    for gpu in gpus:
+        seqs = numpy.random.randint(0,nB,size=(pnseq, L)).astype('<u1')
+        gpu.setBuf('seq small', seqs)
+        gpu.setBuf('J main', couplings)
+    startseq = seqs[0]
+
+    mkdir_p(os.path.join(outdir, 'equilibration'))
+    mkdir_p(os.path.join(outdir, 'eqseqs'))
+    mkdir_p(os.path.join(outdir, 'eqen'))
+
+    print "Equilibrating ..."
+    for j in range(nloop/args.trackequil):
+        for i in range(args.trackequil):
+            for gpu in gpus:
+                gpu.runMCMC()
+        for gpu in gpus:
+            gpu.calcBimarg('small')
+            gpu.calcEnergies('small', 'main')
+        res = readGPUbufs(['bi main', 'seq small', 'E small'], gpus)
+        bimarg_model = meanarr(res[0])
+        sampledseqs, sampledenergies = concatenate(res[1]), concatenate(res[2])
+        save(os.path.join(outdir, 'eqen', 'en-{}'.format(j)), sampledenergies)
+        seqload.writeSeqs(os.path.join(outdir, 'eqseqs', 'seqs-{}'.format(j)), 
+                          sampledseqs, alpha)
+        save(os.path.join(outdir, 'equilibration', 'bimarg_{}'.format(j)), 
+             bimarg_model)
+
+    bicount = sumarr(readGPUbufs(['bicount'], gpus)[0])
+
+    #get summary statistics and output them
+    rmsd = sqrt(mean((bimarg_target - bimarg_model)**2))
+    ssr = sum((bimarg_target - bimarg_model)**2)
+    wdf = sum(bimarg_target*abs(bimarg_target - bimarg_model))
+    writeStatus('.', rmsd, ssr, wdf, bicount, bimarg_model, 
+                couplings, [sampledseqs], startseq, sampledenergies)
 
 ################################################################################
 #Run it!!!
@@ -1099,6 +1143,8 @@ if args.benchmark:
     MCMCbenchmark(startseq, couplings, gpus)
 elif args.measureFPerror:
     gpus[0].measureFPerror()
+elif args.randsim:
+    MCMCrandsim()
 else:
     doFit(startseq, couplings, gpus)
 
