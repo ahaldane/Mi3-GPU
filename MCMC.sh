@@ -7,4 +7,4 @@
 
 cd $PBS_O_WORKDIR
 
-stdbuf -i0 -o0 -e0 ./mcmcGPU.py bimarg.npy 0.0004 100 32768 512 16 32 ABCDEFGH -restart logscore -pc 1e-5 -pcdamping 0.1 -regularizationScale 0.1 -nsteps 16 -perturbSteps 64 -trackequil 16 -o outdir >log
+stdbuf -i0 -o0 -e0 ./mcmcGPU.py bimarg.npy 0.0004 100 32768 512 16 32 ABCDEFGH -prestart logscore -pcdamping 0.1 -nsteps 16 -perturbSteps 64 -trackequil 16 -o outdir >log

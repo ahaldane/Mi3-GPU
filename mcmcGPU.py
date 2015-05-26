@@ -9,7 +9,7 @@ import pyopencl.array as cl_array
 import sys, os, errno, glob, argparse, time
 import seqload
 from scipy.optimize import leastsq
-from changeGauge import zeroGauge, zeroJGauge, fieldlessGauge
+from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
 
 ################################################################################
 # Set up enviroment and some helper functions
@@ -70,7 +70,7 @@ def printGPUs():
 ################################################################################
 
 #The GPU performs two types of computation: MCMC runs, and perturbed
-#coupling updates.  All GPU methods are asynchronous. Functions that return
+#coupling updates.  All MCMCGPU methods are asynchronous. Functions that return
 #data do not return the data directly, but return a FutureBuf object. The data
 #may be obtained by FutureBuf.read(), which is blocking.
 
@@ -146,7 +146,7 @@ class MCMCGPU:
         self.SWORDS = ((L-1)/4+1)     #num words needed to store a sequence
         self.SBYTES = (4*self.SWORDS) #num bytes needed to store a sequence
         self.nseq = {'small': nseq_small,
-                      'large': nseq_large}
+                     'large': nseq_large}
         nPairs, SWORDS = self.nPairs, self.SWORDS
 
         self.buf_spec = {   'Jpacked': ('<f4',  (L*L, nB*nB)),
@@ -494,7 +494,7 @@ parser.add_argument('-randsim', action='store_true')
 parser.add_argument('-profile', action='store_true')
 parser.add_argument('-measureFPerror', action='store_true')
 parser.add_argument('-perturbSteps', default='128')
-parser.add_argument('-regularizationScale', default=0.5)
+parser.add_argument('-regularizationScale', default=0)
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -606,7 +606,7 @@ elif couplinginfo == 'logscore':
     marg = marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
     h = -log(marg)
     h = h - mean(h, axis=1)[:,newaxis]
-    couplings = fieldlessGauge(h, zeros((nPairs,nB*nB),dtype='<f4'))[1]
+    couplings = fieldlessGaugeEven(h, zeros((nPairs,nB*nB),dtype='<f4'))[1]
 else:
     print "Reading initial couplings from file {}".format(couplinginfo)
     couplings = scipy.load(couplinginfo)
@@ -614,7 +614,7 @@ else:
         raise Exception("Couplings in wrong format")
 #switch to 'even' fieldless gauge for nicer output
 h0, J0 = zeroGauge(zeros((L,nB)), couplings)
-couplings = fieldlessGauge(h0, J0)[1]
+couplings = fieldlessGaugeEven(h0, J0)[1]
 save(os.path.join(outdir, 'startJ'), couplings)
 
 if args.startseq:
@@ -871,7 +871,7 @@ def Jbias(J, scale=0.5):
     #J0 = J0*(1-exp(-abs(J0)/(scale*std(J0.flatten()))))
     fb = sqrt(sum(J0**2, axis=1))
     J0 = J0*((1-exp(-fb/(scale*mean(fb))))[:,newaxis])
-    return fieldlessGauge(h0, J0)[1]
+    return fieldlessGaugeEven(h0, J0)[1]
 
 def localStep(n, gamma, lastssr, gpus):
     #calculate perturbed marginals
@@ -879,7 +879,7 @@ def localStep(n, gamma, lastssr, gpus):
         #note: updateJPerturb should give same result on all GPUs
         gpu.updateJPerturb(gamma) #overwrite J front using bi back and J back
     #trialJ = gpus[0].getBuf('J front').read()
-    #trialJ = Jbias(trialJ, 0.04)
+    #trialJ = Jbias(trialJ, regularizationScale)
 
     for gpu in gpus:
         #gpu.setBuf('J front', trialJ)

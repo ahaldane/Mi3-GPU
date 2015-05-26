@@ -131,7 +131,7 @@ void initRNG(__global mwc64xvec2_state_t *rngstates,
 __kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
 void metropolis(__global float *J,
                 __global mwc64xvec2_state_t *rngstates, 
-                         uint nsteps, 
+                         uint nsteps, // must be multiple of L
                 __global float *energies,
                 __global uint *seqmem){
     
@@ -169,7 +169,8 @@ void metropolis(__global float *J,
     uint i;
     for(i = 0; i < nsteps; i++){
         uint2 rng = MWC64XVEC2_NextUint2(&rstate);
-        uint mutres = rng.x%nB; //small error here if MAX_INT%nB != 0
+        uint mutres = rng.x%nB; // small error here if MAX_INT%nB != 0
+                                // of order 1/MAX_INT in marginals
         
         //calculate new energy
         float newenergy = energy; 
@@ -195,8 +196,8 @@ void metropolis(__global float *J,
             else{
                 //bottleneck of this kernel
                 sbm = seqmem[(m/4)*NSEQS + get_global_id(0)]; 
-                barrier(CLK_LOCAL_MEM_FENCE);
             }
+            barrier(CLK_LOCAL_MEM_FENCE); // for lcouplings and sbm
             
             //calculate contribution of those 4 rows to energy
             for(n = 0; n < 4 && m < L; n++, m++){
@@ -225,6 +226,9 @@ void metropolis(__global float *J,
         //this helps the sequence & J loads to be coalesced
         pos = (pos+1)%L;
     }
+
+    //note: if nsteps were not a multiple of L, need to add code here to
+    //store final 4 bytes
 
     rngstates[get_global_id(0)] = rstate;
 

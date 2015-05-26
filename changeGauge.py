@@ -72,10 +72,10 @@ def zeroJGauge(hs, Js, weights=None):
     J0 = J0.reshape((J0.shape[0], nB**2))
     return h0, J0
 
-def fieldlessGaugeEven(hs, Js, weights=None): #convert to a fieldless gauge
-    #note: Fieldless gauge is not fully constrained: There are many possible 
-    #choices that are fieldless, this just returns one of them
+
+def fieldlessGaugeDistributed(hs, Js, weights=None): #convert to a fieldless gauge
     #This function tries to distribute the fields evenly
+    #but does not first re-zero the fields/couplings
     L, nB = hs.shape
     J0 = Js.copy()
     hd = hs/(L-1)
@@ -83,6 +83,12 @@ def fieldlessGaugeEven(hs, Js, weights=None): #convert to a fieldless gauge
         J0[n,:] += repeat(hd[i,:], nB)
         J0[n,:] += tile(hd[j,:], nB)
     return zeros(hs.shape), J0
+
+def fieldlessGaugeEven(hs, Js, weights=None): #convert to a fieldless gauge
+    #note: Fieldless gauge is not fully constrained: There are many possible 
+    #choices that are fieldless, this just returns one of them
+    #This function tries to distribute the fields evenly
+    return fieldlessGaugeDistributed(*zeroGauge(hs, Js))
 
 def fieldlessGauge(hs, Js, weights=None):
     #note: Fieldless gauge is not fully constrained: There are many possible 
