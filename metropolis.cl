@@ -57,6 +57,21 @@ void storeSeqs(__global uint *smallbuf,
     #undef SWORDS
 }
 
+__kernel 
+void restoreSeqs(__global uint *smallbuf, 
+                 __global uint *largebuf,
+                          uint offset){
+    uint w, n;
+
+    #define SWORDS ((L-1)/4+1) 
+    for(w = 0; w < SWORDS; w++){
+        for(n = get_local_id(0); n < NSEQS; n += WGSIZE){
+            smallbuf[w*NSEQS + n] = largebuf[w*NSAMPLES*NSEQS + offset + n];
+        }
+    }
+    #undef SWORDS
+}
+
 //only call from kernels with NSEQ work units!!!!!!
 inline float getEnergiesf(__global float *J,
                           __global uint *seqmem,
@@ -133,7 +148,8 @@ void metropolis(__global float *J,
                 __global mwc64xvec2_state_t *rngstates, 
                          uint nsteps, // must be multiple of L
                 __global float *energies,
-                __global uint *seqmem){
+                __global uint *seqmem,
+                __constant uchar *fixedpos){
     
 	mwc64xvec2_state_t rstate = rngstates[get_global_id(0)];
 
@@ -222,9 +238,12 @@ void metropolis(__global float *J,
             seqmem[(pos/4)*NSEQS + get_global_id(0)] = sbn;
         }
         
-        //pos cycles repeatedly through all positions, in order.
-        //this helps the sequence & J loads to be coalesced
-        pos = (pos+1)%L;
+        do{
+            //pos cycles repeatedly through all positions, in order.
+            //this helps the sequence & J loads to be coalesced
+            pos = (pos+1)%L;
+            //(fixedpos is used to do sims with a fixed subsequence)
+        }while(fixedpos[pos]);
     }
 
     //note: if nsteps were not a multiple of L, need to add code here to
@@ -379,6 +398,8 @@ void updatedJ(__global float *bimarg_target,
               __global float *bimarg,
               __global float *J_orig,
                        float gamma,
+                       float pc,
+                       float jclamp,
               __global float *Ji,
               __global float *Jo){
     uint n = get_global_id(0);
@@ -387,11 +408,11 @@ void updatedJ(__global float *bimarg_target,
         return;
     }
 
-    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + PC);
+    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc);
 
-    #ifdef JCUTOFF
-    Jo[n] = clamp(Jo[n], J_orig[n] - (float)JCUTOFF, 
-                         J_orig[n] + (float)JCUTOFF);
-    #endif
+    if(jclamp != 0){
+        Jo[n] = clamp(Jo[n], J_orig[n] - jclamp, 
+                             J_orig[n] + jclamp);
+    }
 }
 
