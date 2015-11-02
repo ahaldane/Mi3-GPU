@@ -12,6 +12,7 @@ import ConfigParser
 import seqload
 from scipy.optimize import leastsq
 from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
+from mcmcGPU import readGPUbufs
 
 ################################################################################
 # Set up enviroment and some helper functions
@@ -29,7 +30,7 @@ printsome = lambda a: " ".join(map(str,a.flatten()[-5:]))
 #Helper funcs
 
 def writeStatus(name, rmsd, ssr, wdf, bicount, bimarg_model, couplings, 
-                seqs, startseq, energies, log):
+                seqs, startseq, energies, alpha, outdir, log):
 
     #print some details 
     disp = ["Start Seq: " + "".join([alpha[c] for c in startseq]),
@@ -66,7 +67,7 @@ def meanarr(arrlist):
 ################################################################################
 #local optimization related code
 
-def newtonStep(n, bimarg_target, gamma, pc, gpus, log):
+def newtonStep(n, bimarg_target, gamma, pc, jclamp, gpus, log):
     # expects the back buffers to contain current couplings & bimarg,
     # will overwrite front buffers
 
@@ -74,7 +75,7 @@ def newtonStep(n, bimarg_target, gamma, pc, gpus, log):
     for gpu in gpus:
         # note: updateJPerturb should give same result on all GPUs
         # overwrites J front using bi back and J back
-        gpu.updateJPerturb(gamma, pc) 
+        gpu.updateJPerturb(gamma, pc, jclamp) 
 
     for gpu in gpus:
         gpu.swapBuf('J') #temporarily put trial J in back buffer
@@ -94,7 +95,7 @@ def newtonStep(n, bimarg_target, gamma, pc, gpus, log):
     #display result
     log("")
     log(("{}  ssr: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
-         n, SSR, Neff, min(weights), max(weights))
+         n, SSR, Neff, min(weights), max(weights)))
     log("    trialJ:", printsome(trialJ))
     log("    bimarg:", printsome(bimarg_model))
     log("   weights:", printsome(weights))
@@ -107,14 +108,14 @@ def newtonStep(n, bimarg_target, gamma, pc, gpus, log):
     for gpu in gpus:
         gpu.logProfile()
 
-    return SSR
+    return SSR, bimarg_model
 
 def iterNewton(param, gpus, log):
     gamma = gamma0 = param.gamma0
-    perturbSteps = param.perturbSteps
-    pc = param.pcdamping
+    newtonSteps = param.newtonSteps
+    pc, jclamp = param.pcdamping, param.jclamp
     gammasteps = 16
-    bimarg_target = param.bimarg_target
+    bimarg_target = param.bimarg
 
     # setup front and back buffers. Back buffers should contain last accepted
     # values, front buffers vonctain trial values.
@@ -124,14 +125,14 @@ def iterNewton(param, gpus, log):
         gpu.copyBuf('J main', 'J front')
         gpu.copyBuf('bi main', 'bi back')
 
-    log("Local target: ", printsome(param.bimarg_target))
+    log("Local target: ", printsome(bimarg_target))
     log("Local optimization:")
     
     # newton updates
     n = 1
     lastSSR = inf
     nrejects = 0
-    for i in range(perturbSteps): 
+    for i in range(newtonSteps): 
 
         # increase gamma every gammasteps steps
         if i != 0 and i % gammasteps == 0:
@@ -143,8 +144,8 @@ def iterNewton(param, gpus, log):
             nrejects = 0
         
         # do newton step
-        result, lastSSR = newtonStep(n, bimarg_target, gamma, pc, 
-                                     lastSSR, gpus, log)
+        ssr, bimarg_model = newtonStep(n, bimarg_target, gamma, pc, jclamp, 
+                                       gpus, log)
 
         # accept move if ssr decreases, reject otherwise
         if ssr <= lastSSR:  # accept move
@@ -154,6 +155,7 @@ def iterNewton(param, gpus, log):
                 gpu.setBuf('bi front', bimarg_model)
                 gpu.storeBuf('bi')
             n += 1
+            lastSSR = ssr
         else: # reject move
             gamma = gamma/2
             log("Reducing gamma to {} and repeating step".format(gamma))
@@ -203,6 +205,9 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
     nsamples = param.nsamples
     nsampleloops = param.nsampleloops
     trackequil = param.trackequil
+    outdir = param.outdir
+    alpha, L, nB = param.alpha, param.L, param.nB
+    bimarg_target = param.bimarg
     outdir = param.outdir
 
     log("")
@@ -260,7 +265,8 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
     ssr = sum((bimarg_target - bimarg_model)**2)
     wdf = sum(bimarg_target*abs(bimarg_target - bimarg_model))
     writeStatus(runName, rmsd, ssr, wdf, bicount, bimarg_model, 
-                couplings, sampledseqs, startseq, sampledenergies, log)
+                couplings, sampledseqs, startseq, sampledenergies, 
+                alpha, outdir, log)
     
     #compute new J using local newton updates (in-place on GPU)
     couplings, bimarg_p = iterNewton(param, gpus, log)
@@ -273,19 +279,25 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
 
     return rseq, couplings
 
-def solvePotts(param, gpus, log):
+def newtonMCMC(param, gpus, log):
     startseq = param.startseq
     couplings = param.couplings
+
+    if startseq is None:
+        raise Exception("Error: Potts inference requires a starting sequence")
     
     # pre-optimization
-    if param.prestart == 'none':
+    if param.preopt:
+        if not param.lseq_loaded:
+            raise Exception("Error: Large sequence buffers must be filled for "
+                            "pre-optimization")
         preOpt(param, gpus, log)
     else:
         log("No Pre-optimization")
     
     # copy target bimarg to gpus
-    for g in gpus:
-        gpu.setBuf('bi target', bimarg_target)
+    for gpu in gpus:
+        gpu.setBuf('bi target', param.bimarg)
     
     # solve using newton-MCMC
     for i in range(param.mcmcsteps):

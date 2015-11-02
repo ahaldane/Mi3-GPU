@@ -12,7 +12,8 @@ import ConfigParser
 import seqload
 from scipy.optimize import leastsq
 from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
-from mcmcGPU import initGPUs
+from mcmcGPU import initGPUs, printGPUs
+from NewtonSteps import newtonMCMC
 
 ################################################################################
 # Set up enviroment and some helper functions
@@ -46,13 +47,22 @@ def getUnimarg(bimarg):
 
 ################################################################################
 
-def solvePotts(parser, args, log):
+def inverseIsing(args, log):
+    descr = ('Inverse Ising inference using a quasi-Newton MCMC algorithm '
+             'on the GPU')
+    parser = argparse.ArgumentParser(prog='IvoGPU.py inverseIsing',
+                                     description=descr)
     GPUParam.add_arguments(parser)
     SeqParam.add_arguments(parser)
     NewtonParam.add_arguments(parser)
     SampleParam.add_arguments(parser)
     PottsParam.add_arguments(parser)
-    parser.add_argument('--outdir', default='output')
+    add = parser.add_argument
+    add('--outdir', default='output', help='Output Directory')
+    add('--seqmodel', default='none',
+        help=("One of 'zero', 'logscore', or a directory name. Generates or "
+              "loads 'couplings', 'startseq' and 'seqs', if not otherwise "
+              "supplied.") )
     
     args = parser.parse_args(args)
     args.nlargebuf = args.nsamples
@@ -70,52 +80,137 @@ def solvePotts(parser, args, log):
         param['L'], param['nB'] = seqsize_from_param_shape(param.bimarg.shape)
     param.update(PottsParam.process_args(args, param, log))
     log("")
-    param, gpus = GPUParam.process_args(args, param, log)
-    log("")
     param.update(SampleParam.process_args(args, param, log))
+    log("")
+    rngPeriod = param.nloop*param.mcmcsteps
+    gpuparam, gpus = GPUParam.process_args(args, param, rngPeriod, log)
+    param.update(gpuparam)
+    log("")
+    param.update(SeqParam.process_args(args, param, gpus, log))
+    log("")
+    log("")
+
+    p = param
+    log("Computation Overview")
+    log("====================")
+    log("Running {} Newton-MCMC rounds, with {} parameter update steps per "
+        "round.".format(p.mcmcsteps, p.newtonSteps))
+    log(("In each round, running {} MC walkers for {} equilibration loops then "
+         "sampling every {} loops to get {} samples ({} total seqs) with {} MC "
+         "steps per loop (Each walker equilibrated a total of {} MC steps)."
+         ).format(p.nwalkers, p.nloop, p.nsampleloops, p.nsamples, 
+                p.nsamples*p.nwalkers, p.nsteps*p.L, p.nsteps*p.L*p.nloop))
+    log("")
+    log("")
+    log("MCMC Run")
+    log("========")
+
+    newtonMCMC(param, gpus, log)
+
+def getEnergies(args, log):
+    descr = ('Compute Potts Energy of a set of sequences')
+    parser = argparse.ArgumentParser(prog='IvoGPU.py getEnergies',
+                                     description=descr)
+    add = parser.add_argument
+    add('--out', default='output', help='Output File')
+    add('--seqmodel', default='none',
+        help=("One of 'zero', 'logscore', or a directory name. Generates or "
+              "loads 'couplings', 'startseq' and 'seqs', if not otherwise "
+              "supplied.") )
+
+    #genenergies uses a subset of the full inverse ising parameters,
+    #so use custom set of params here
+
+    # instead of GPUParam
+    group = parser.add_argument_group('GPU options')
+    add = group.add_argument
+    add('--wgsize', type=int, default=256, 
+        help="GPU workgroup size")
+    add('--gpus', 
+        help="GPUs to use (comma-sep list of platforms #s, eg '0,0')")
+    add('--profile', action='store_true', 
+        help="enable OpenCL profiling")
+
+    # instead of PottsParam
+    group = parser.add_argument_group('Potts Model options')
+    add = group.add_argument
+    add('--alpha', required=True,
+        help="Alphabet, a sequence of letters")
+    add('--couplings', 
+        help="One of 'zero', 'logscore', or a filename")
+    
+    #instead of SeqParam
+    group = parser.add_argument_group('Sequence options')
+    add = group.add_argument
+    add('--seqs', help="File containing sequences to pre-load to GPU") 
+
+    args = parser.parse_args(args)
+    args.nwalkers = args.nseq
+    args.nsteps = 1
+
+    if args.out is None:
+        raise Exception("no output file specified") #XXX better error
+
+    param.update(PottsParam.process_args(args, param, log))
+    log("")
+    gpuparam, gpus = GPUParam.process_args(args, param, 2*nloop, log)
+    param.update(gpuparam)
+    log("")
+    param.update(SeqParam.process_args(args, param, gpus, log))
+    log("")
+    log("")
+
+    if not param.sseq_l:
+        raise Exception("Need to supply sequences")
+
+    for gpu in gpus:
+        gpu.setBuf('J main', param.couplings)
+    
+    for gpu in gpus:
+        gpu.calcEnergies('small', 'main')
+    es = readGPUbufs(['E small'], gpus)
+    
+    log("Saving results to file '{}'".format(param.out))
+    save(param.out, es)
+
+
+def MCMCbenchmark(parser, args, log):
+    add = parser.add_argument
+    
+    SeqParam.add_arguments(parser)
+    PottsParam.add_arguments(parser)
+    add('--nloop', type=uint32, required=True, 
+        help="Number of kernel calls to benchmark")
+    add('--outdir', default='output')
+
+    args = parser.parse_args(args)
+    nloop = args.nsteps
+    args.nlargebuf = 1
+    
+    param = attrdict({'outdir': args.outdir})
+    mkdir_p(args.outdir)
+    param.update(PottsParam.process_args(args, param, log))
+    log("")
+    gpuparam, gpus = GPUParam.process_args(args, param, 2*nloop, log)
+    param.update(gpuparam)
     log("")
     param.update(SeqParam.process_args(args, param, gpus, log))
     log("")
 
     p = param
-    if p.startseq == None and p.preopt == None:
-        raise Exception("Starting seq not found")
-    # also warn if we loaded seqs, but no preopt done
 
-    log("Action Plan")
-    log("===========")
-    log("")
-    log("Performing Inverse Potts Inference using quasi-Newton MCMC")
-    log("")
-    log("Running {} Newton-MCMC rounds, with {} parameter update steps per "
-        "round.".format(p.mcmcsteps, p.newtonSteps))
-    log("")
-    log(("In each round, running {} MC walkers for {} equilibration loops then "
-         "sampling every {} loops to get {} samples ({} total seqs) with {} MC "
-         "steps per loop (Each walker equilibrated a total of {} MC steps)."
-         ).format(p.nwalkers, p.nloop, p.nsampleloops, p.nsamples, 
-                  p.nsamples*p.nwalkers, p.nsteps*L, p.nsteps*L*p.nloop))
-    log("")
-    log("MCMC Run")
-    log("========")
-    doFit(startseq, couplings, gpus)
+    if param.sseq_l:
+        pass
+    elif param.startseq is not None:
+        log("Loading small seq buffer with startseq")
+        for gpu in gpus:
+            gpu.resetSeqs(param.startseq)
+    elif param.lseq_l:
+        raise Exception("Error: large seq buffer loaded, but need small buffer")
+    else:
+        raise Exception("Error: To benchmark, must either supply startseq or "
+                        "load seqs into small seq buffer")
 
-def getEnergies(parser, args, log):
-    GPUParam.add_arguments(parser)
-    SeqParam.add_arguments(parser)
-
-    args = parser.parse_args(args)
-
-    return
-
-    for gpu in gpus:
-        gpu.calcEnergies('small', 'main')
-
-    es = readGPUbufs(['E small'], gpus)
-
-def MCMCbenchmark(args):
-
-    gpuPrm, seqPrm, benchmarkPrm
 
     log("Benchmark")
     log("=========")
@@ -125,8 +220,7 @@ def MCMCbenchmark(args):
     
     #initialize
     for gpu in gpus:
-        gpu.resetSeqs(startseq)
-        gpu.setBuf('J main', couplings)
+        gpu.setBuf('J main', param.couplings)
     
     #warmup
     log("Warmup run...")
@@ -150,11 +244,11 @@ def MCMCbenchmark(args):
 
     log("Elapsed time: ", end - start, )
     log("Time per loop: ", (end - start)/nloop)
-    steps_per_second = (nwalkers*nloop*nsteps*L)/(end-start)
+    steps_per_second = (p.nwalkers*nloop*p.nsteps*p.L)/(end-start)
     log("MC steps per second: {:g}".format(steps_per_second))
 
 def equilibrate():
-    if sseq_loaded is None and lseq_loaded is None:
+    if sseq_l is None and lseq_l is None:
         log("Initializing all sequences to start seq")
         for gpu in gpus:
             gpu.resetSeqs(startseq)
@@ -192,6 +286,58 @@ def equilibrate():
     writeStatus('.', rmsd, ssr, wdf, bicount, bimarg_model, 
                 couplings, [sampledseqs], startseq, sampledenergies)
 
+def subseqFreq():
+    add('--fixpos', help="dd")
+
+    #load seqs to gpu buffer
+
+    #fix positions
+    for gpu in gpus:
+        gpu.setBuf('fixpos', fixedpos)
+
+    #equilibrate a little
+    for i in range(equiltime):
+        for gpu in gpus:
+            gpu.runMCMC()
+    
+    f = zeros(nseq, dtype=float64)
+
+    for i in range(niter):
+        #simulate for a little time
+        for i in range(sampletime):
+            for gpu in gpus:
+                gpu.runMCMC()
+
+        seq = getGPUBufs('seq small', seq)
+        origEs = getGPUBufs('E small', gpus)
+        origseqs = [seq.copy() for s in seq]
+
+        for n in range(nseq):
+            for seq, g in zip(seqs, gpus):
+                seq[:,fixedpos] = origseq[n,fixedpos]
+                g.setBuf('seq small', seq)
+                g.getEnergies()
+            energies = getGPUBufs('E small', gpus)
+
+            f += exp(energies - origenergies)
+
+        for seq, g in zip(origseqs, gpus):
+            g.setBuf('seq small', seq)
+    
+    # combine repeated subsequences 
+    subseq = seqs[:,fixedpos]
+    u, inds, counts = unique(subseq.view('S{}'.format(len(fixedpos))), 
+                             return_index=True, return_counts=True)
+    funique = zeros(len(u))
+    for fi,ind in zip(f, inds):
+        funique[ind] += fi
+    # when combining repeated subsequences, need to downweight repeats
+    funique = funique/counts
+    
+    #normalize and return
+    funique = funique/sum(funique)
+    return u.view('u1'), funique
+
 ################################################################################
 
 class CLInfoAction(argparse.Action):
@@ -200,7 +346,7 @@ class CLInfoAction(argparse.Action):
         super(CLInfoAction, self).__init__(option_strings=option_strings,
             dest=dest, default=default, nargs=0, help=help)
     def __call__(self, parser, namespace, values, option_string=None):
-        printGPUs()
+        printGPUs(print)
         parser.exit()
 
 class GPUParam:
@@ -210,18 +356,20 @@ class GPUParam:
         add = group.add_argument
         add('--nwalkers', type=uint32, required=True,
             help="Number of MC walkers")
+        add('--nsteps', type=uint32, default=16,
+            help="number of MC steps per kernel call, in multiples of L")
+        add('--wgsize', type=int, default=256, 
+            help="GPU workgroup size")
+        add('--gpus', 
+            help="GPUs to use (comma-sep list of platforms #s, eg '0,0')")
+        add('--profile', action='store_true', 
+            help="enable OpenCL profiling")
         # nlargebuf should be specified elsewhere (needed in process_args)
         #add('--nlargebuf', type=uint32, default=1
         #         help='size of large seq buffer, in multiples of nwalkers')
-        add('--nsteps', type=uint32, default=1,
-                 help="number of MC steps per kernel call, in multiples of L")
-        add('--wgsize', type=int, default=256, help="GPU workgroup size")
-        add('--gpus', help=("GPUs to use (comma-sep list of platforms #s, "
-                           "eg '0,0')"))
-        add('--profile', action='store_true', help="enable OpenCL profiling")
 
     @staticmethod
-    def process_args(args, param, log):
+    def process_args(args, param, rngPeriod, log):
         log("GPU setup")
         log("---------")
 
@@ -235,7 +383,15 @@ class GPUParam:
         allparam.update(param)
         
         scriptfile = os.path.join(scriptPath, "metropolis.cl")
-        gpus = initGPUs(scriptPath, scriptfile, allparam, log)
+        gpus = initGPUs(scriptPath, scriptfile, allparam, rngPeriod, log)
+
+        log("Work Group Size: {}".format(p.wgsize))
+        log(("Can run {} MCMC walkers in parallel over {} GPUs, with {} MC "
+            "steps per kernel call ({}*{})").format(p.nwalkers, len(gpus), 
+            param.L*p.nsteps, param.L, p.nsteps))
+        if p.profile:
+            log("Profiling Enabled")
+
         return p, gpus
 
 class NewtonParam:
@@ -243,17 +399,24 @@ class NewtonParam:
     def add_arguments(parser):
         group = parser.add_argument_group('Newton Step options')
         add = group.add_argument
-        add('--bimarg', required=True, help="Target bivariate marginals (npy file)")
-        add('--mcsteps', type=uint32, required=True, help="Number of rounds of MCMC generation") 
-        add('--newtonsteps', default='128', help="Number of newton steps per round.")
-        add('--gamma', type=float32, required=True, help="Initial step size")
-        add('--damping', default=0.001, help="Damping parameter")
-        add('--Jclamp', default=None, help="Clamps maximum change in couplings per newton step")
-        add('--preopt', action='store_true', help="Perform a round of newton steps before first MCMC run") 
+        add('--bimarg', required=True,
+            help="Target bivariate marginals (npy file)")
+        add('--mcsteps', type=uint32, required=True, 
+            help="Number of rounds of MCMC generation") 
+        add('--newtonsteps', default='128', type=uint32, 
+            help="Number of newton steps per round.")
+        add('--gamma', type=float32, required=True, 
+            help="Initial step size")
+        add('--damping', default=0.001, type=float32, 
+            help="Damping parameter")
+        add('--jclamp', default=0, type=float32, 
+            help="Clamps maximum change in couplings per newton step")
+        add('--preopt', action='store_true', 
+            help="Perform a round of newton steps before first MCMC run") 
 
     @staticmethod
     def process_args(args, param, log):
-        log("Newton Update Setup")
+        log("Newton Solver Setup")
         log("-------------------")
         mcmcsteps = args.mcsteps  
         log("Running {} Newton-MCMC rounds".format(mcmcsteps))
@@ -261,16 +424,16 @@ class NewtonParam:
         param = {'mcmcsteps': args.mcsteps,
                  'newtonSteps': args.newtonsteps,
                  'gamma0': args.gamma,
-                 'pcDamping': args.damping,
-                 'Jclamp': args.Jclamp,
+                 'pcdamping': args.damping,
+                 'jclamp': args.jclamp,
                  'preopt': args.preopt }
         p = attrdict(param)
 
-        cutoffstr = ('dJ clamp {}'.format(p.Jclamp) if p.Jclamp != None 
+        cutoffstr = ('dJ clamp {}'.format(p.jclamp) if p.jclamp != 0 
                      else 'no dJ clamp')
         log(("Updating J locally with gamma = {}, {}, and pc-damping {}. "
              "Running {} Newton update steps per round.").format(
-              p.gamma0, cutoffstr, p.pcDamping, p.newtonSteps))
+              p.gamma0, cutoffstr, p.pcdamping, p.newtonSteps))
 
         log("Reading target marginals from file {}".format(args.bimarg))
         bimarg = scipy.load(args.bimarg)
@@ -289,16 +452,19 @@ class PottsParam:
     def add_arguments(parser):
         group = parser.add_argument_group('Potts Model options')
         add = group.add_argument
-        add('--alpha', help="Alphabet, a sequence of letters", required=True)
-        add('--couplings', default='none', required=True,
-                  help="One of 'zero', 'logscore', or a filename")
+        add('--alpha', required=True,
+            help="Alphabet, a sequence of letters")
+        add('--couplings', 
+            help="One of 'zero', 'logscore', or a filename")
         add('--L', help="sequence length") 
+        # also depends on 'seqmodel' arg, but must be supplied by other means
 
     # this will load the sequences direct to the gpu
     @staticmethod
     def process_args(args, param, log):
         log("Potts Model Setup")
-        log("--------------------")
+        log("-----------------")
+        bimarg = param.bimarg
 
         # we try to infer L and nB from any values given. The possible sources
         # * command line options -L and -nB
@@ -310,15 +476,15 @@ class PottsParam:
         L, nB = PottsParam.updateLnB(L, nB, param.L, param.nB, 'bimarg')
         
         # next try to get couplings (may determine L, nB)
-        couplings, L, nB = PottsParam.getCouplings(args, L, nB, param.bimarg, log)
+        couplings, L, nB = PottsParam.getCouplings(args, L, nB, bimarg, log)
         # we should have L and nB by this point
-
 
         log("alphabet: {}".format(alpha))
         log("nBases {}  seqLen {}".format(nB, L))
         log("Couplings: " + printsome(couplings) + "...")
 
-        return attrdict({'L': L, 'nB': nB, 'alpha': alpha, 'couplings': couplings})
+        return attrdict({'L': L, 'nB': nB, 'alpha': alpha, 
+                         'couplings': couplings})
 
     @staticmethod
     def updateLnB(L, nB, newL, newnB, name):
@@ -351,7 +517,8 @@ class PottsParam:
             elif args.couplings == 'logscore':
                 log("Setting Initial couplings to Independent Log Scores")
                 if bimarg is None:
-                    raise Exception("Need bivariate marginals to generate logscore couplings")
+                    raise Exception("Need bivariate marginals to generate "
+                                    "logscore couplings")
                 h = -np.log(getUnimarg(bimarg))
                 J = zeros((L*(L-1)/2,nB*nB), dtype='<f4')
                 couplings = fieldlessGaugeEven(h, J)[1]
@@ -363,7 +530,7 @@ class PottsParam:
         elif args.seqmodel and args.seqmodel not in ['zero', 'logscore']:
             # and otherwise try to load them from model directory
             fn = os.path.join(args.seqmodel, 'J.npy')
-            if isfile(fn):
+            if os.path.isfile(fn):
                 log("Reading couplings from file {}".format(fn))
                 couplings = scipy.load(fn)
                 if couplings.dtype != dtype('<f4'):
@@ -385,80 +552,92 @@ class SeqParam:
     def add_arguments(parser):
         group = parser.add_argument_group('Sequence options')
         add = group.add_argument
-        add('--seq', help="Primary (starting) sequence. May be 'rand'") 
+        add('--startseq', help="Starting sequence. May be 'rand'") 
         add('--seqs', help="File containing sequences to pre-load to GPU") 
-        add('--seqmodel', default='none',
-          help=("One of 'zero', 'logscore', or a directory name. Generates "
-                "or loads 'couplings', 'seq' and 'seqs'.") )
 
     # this will load the sequences direct to the gpu
     @staticmethod
-    def process_args(args, param, gpus, seqsize,  log):
-        L, nB = args.L, len(alpha)
+    def process_args(args, param, gpus, log):
+        log("Sequence Setup")
+        log("--------------")
+
+        L, nB = param.L, param.nB
+        alpha = param.alpha
 
         # check if we were asked to generate sequences
-        sseq_loaded, lseq_loaded = None, None
+        sseq_l, lseq_l = None, None
         startseq = None
         if args.seqmodel in ['rand', 'logscore']:
             if args.seqs is not None:
                 raise Exception("Cannot specify both seqs and "
                                 "seqmodel=[rand, logscore]")
-            startseq = SeqParam.generateSequences(args.seqmodel, L, nB)
+            startseq = SeqParam.generateSequences(args.seqmodel, gpus, 
+                                                  L, nB, log)
             startseq_origin = 'generated ' + args.seqmodel
             seqmodeldir = None
+            sseq_l, lseq_l = True, True
         else:
             seqmodeldir = args.seqmodel
 
         # try to load sequence files
-        if args.seqs:
-            sseq_loaded, lseq_loaded = SeqParam.loadSequenceFile(args.seqs)
+        loadSequenceFile = SeqParam.loadSequenceFile
+        if args.seqs in ['zero', 'logscore']:
+            SeqParam.generateSequences(args.seqs, gpus, L, nB, log)
+            sseq_l, lseq_l = True, True
+        elif args.seqs:
+            sseq_l, lseq_l = loadSequenceFile(args.seqs, alpha, gpus, log)
         elif seqmodeldir is not None:
             fn = os.path.join(seqmodeldir, 'seq')
             fns = [os.path.join(seqmodeldir, 'seq-{}'.format(n)) 
                    for n in range(len(gpus))]
-            if isfile(fn):
-                sseq_loaded, lseq_loaded = SeqParam.loadSequenceFile(
-                                                        fn, alpha, gpus)
-            elif all([isfile(fni) for fni in fns]):
-                sseq_loaded, lseq_loaded = SeqParam.loadSequenceDir(
+            if os.path.isfile(fn):
+                sseq_l, lseq_l = loadSequenceFile(fn, alpha, gpus, log)
+            elif all([os.path.isfile(fni) for fni in fns]):
+                sseq_l, lseq_l = SeqParam.loadSequenceDir(
                                              seqmodeldir, alpha, gpus)
 
         # try to get start seq
-        if args.seq:
-            if args.seq == 'rand':
+        if args.startseq:
+            if args.startseq == 'rand':
                 startseq = randint(0, nB, size=L).astype('<u1')
                 startseq_origin = 'random'
             else:
-                startseq = array(map(alpha.index, args.seq), dtype='<u1')
+                startseq = array(map(alpha.index, args.startseq), dtype='<u1')
                 startseq_origin = 'supplied'
         elif seqmodeldir is not None:
             fn = os.path.join(seqmodeldir, 'startseq')
-            if isfile(fn):
+            if os.path.isfile(fn):
                 log("Reading startseq from file {}".format(fn))
                 with open(fn) as f:
                     startseq = f.readline().strip()
                     startseq = array(map(alpha.index, startseq), dtype='<u1')
                 startseq_origin = 'from file'
 
+        if not sseq_l and not lseq_l:
+            log("No sequences loaded into GPU")
+
         if startseq is not None:
-            log("Start seq ({}): {}".format(startseq_origin, "".join(alpha[x] 
-                                                          for x in startseq)))
+            log("Start seq ({}): {}".format(startseq_origin, 
+                                           "".join(alpha[x] for x in startseq)))
         else:
             log("No start seq supplied")
 
-        return (L, nB, alpha, couplings, startseq, sseq_loaded, lseq_loaded)
+        return attrdict({'startseq': startseq, 
+                         'sseq_l': sseq_l, 
+                         'lseq_l': lseq_l})
 
     @staticmethod
-    def generateSequences(gentype, gpus):
+    def generateSequences(gentype, gpus, L, nB, log):
         # fill all gpu buffers with generated sequences, and return one
         # of them as the start sequence
 
         if gentype == 'zero': 
             log("Generating random sequences...")
             for gpu in gpus:
-                seqs = numpy.random.randint(0,nB,size=(pnseq, L)).astype('<u1')
+                nseq = gpu.nseq['large']
+                seqs = numpy.random.randint(0,nB,size=(nseq, L)).astype('<u1')
                 gpu.setBuf('seq large', seqs)
-                gpu.setBuf('seq small', seqs[:nwalkers])
+                gpu.setBuf('seq small', seqs[:gpu.nseq['small']])
             startseq = seqs[-1]
         elif gentype == 'logscore': 
             log("Generating logscore-independent sequences...")
@@ -479,8 +658,8 @@ class SeqParam:
         # 2 possibilities: seqs for small buf, seqs for large buf
         #returns whether it loaded the small and large buffers
 
-        gpu_largebuf_seqs = nsamples*nwalkers/len(gpus)
-        gpu_smallbuf_seqs = nwalkers/len(gpus)
+        gpu_smallbuf_seqs = gpus[0].nseq['small']
+        gpu_largebuf_seqs = gpus[0].nseq['large']
 
         log("Loading sequences from dir {}".format(sdir))
 
@@ -510,10 +689,10 @@ class SeqParam:
         return bufname == 'small', bufname == 'large'
 
     @staticmethod
-    def loadSequenceFile(sfile, alpha, gpus):
+    def loadSequenceFile(sfile, alpha, gpus, log):
         log("Loading sequences from file {}".format(sfile))
-        total_smallbuf_seqs = nwalkers
-        total_largebuf_seqs = nsamples*nwalkers
+        total_smallbuf_seqs = sum(g.nseq['small'] for g in gpus)
+        total_largebuf_seqs = sum(g.nseq['large'] for g in gpus)
 
         seqs = seqload.loadSeqs(sfile, names=alpha)[0].astype('<u1')
 
@@ -538,50 +717,69 @@ class SampleParam:
     def add_arguments(parser):
         group = parser.add_argument_group('Sampling options')
         add = group.add_argument
-        add('--equiltime', type=uint32, required=True, help="Number of MC kernel calls to equilibrate")
-        add('--sampletime', type=uint32, required=True, help="Number of MC kernel calls between samples")
-        add('--nsamples', type=uint32, required=True, help="Number of sequence samples")
+        add('--equiltime', type=uint32, required=True, 
+            help="Number of MC kernel calls to equilibrate")
+        add('--sampletime', type=uint32, required=True, 
+            help="Number of MC kernel calls between samples")
+        add('--nsamples', type=uint32, required=True, 
+            help="Number of sequence samples")
         add('--trackequil', type=uint32, default=0,
-                 help='During equilibration, save bimarg every TRACKEQUIL kernel calls')
+            help='Save bimarg every TRACKEQUIL steps during equilibration')
 
     @staticmethod
-    def process_args(args, log):
-        nloop = args.nloop  
-        nsampleloops = args.nsampleloops    
-        nsamples = args.nsamples  
-        trackequil = args.trackequil
+    def process_args(args, param, log):
+        p = attrdict({'nloop': args.equiltime,
+                      'nsampleloops': args.sampletime,
+                      'nsamples': args.nsamples,
+                      'trackequil': args.trackequil})
 
-        if nsamples == 0:
+        if p.nsamples == 0:
             raise Exception("nsamples must be at least 1")
 
-        log("Sequence Sampling")
-        log("-----------------")
-        log(("Running {} GPU loops then sampling every {} loops "
-             "to get {} samples").format( nloop, nsampleloops, nsamples))
+        log("MCMC Sampling Setup")
+        log("-------------------")
+        log(("In each MCMC round, running {} GPU kernel calls then sampling "
+             "every {} kernel calls to get {} samples").format(p.nloop, 
+                                                 p.nsampleloops, p.nsamples))
 
-        if trackequil != 0:
-            if nloop%trackequil != 0:
+        if p.trackequil != 0:
+            if p.nloop%p.trackequil != 0:
                 raise Exception("Error: trackequil must be a divisor of nloop")
-            log("Tracking equilibration every {} loops.".format(trackequil))
+            log("Tracking equilibration every {} loops.".format(p.trackequil))
 
-        return (nloop, nsamples, nsampleloops, trackequil)
+        return p
 
 def main(args):
     actions = {
-      'solvePotts':     solvePotts,
+      'inverseIsing':     inverseIsing,
       'getEnergies':    getEnergies,
       'benchmark':      MCMCbenchmark,
       #'measureFPerror': measureFPerror
      }
 
-    parser = argparse.ArgumentParser(description='IvoGPU', add_help=False)
-    parser.add_argument('action', choices=actions.keys(), help="Computation to run")
-    parser.add_argument('--config')
-    parser.add_argument('--clinfo', action=CLInfoAction)
+    
+    descr = 'Perform biophysical Potts Model calculations on the GPU'
+    parser = argparse.ArgumentParser(description=descr, add_help=False)
+    add = parser.add_argument
+    add('action', choices=actions.keys(), nargs='?', default=None,
+        help="Computation to run")
+    add('--config', help="Config file with command line args (INI format)")
+    add('--clinfo', action=CLInfoAction, help="Display detected GPUs")
+    add('-h', '--help', action='store_true', 
+        help="show this help message and exit")
 
     known_args, remaining_args = parser.parse_known_args(args)
+
+    if known_args.action is None:
+        if known_args.help:
+            print(parser.format_help())
+            return
+        print(parser.format_usage())
+        return
+
+    if known_args.help:
+        remaining_args.append('-h')
     
-    parser = argparse.ArgumentParser(description='IvoGPU')
-    actions[known_args.action](parser, remaining_args, print)
+    actions[known_args.action](remaining_args, print)
 
 main(sys.argv[1:])

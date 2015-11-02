@@ -45,13 +45,14 @@ void packfV(__global float *v,
 __kernel 
 void storeSeqs(__global uint *smallbuf, 
                __global uint *largebuf,
-                        uint offset){
+                        uint  offset){
     uint w, n;
+    uint nseqs = get_global_size(0);
 
     #define SWORDS ((L-1)/4+1) 
     for(w = 0; w < SWORDS; w++){
-        for(n = get_local_id(0); n < NSEQS; n += WGSIZE){
-            largebuf[w*NSAMPLES*NSEQS + offset + n] = smallbuf[w*NSEQS + n];
+        for(n = get_local_id(0); n < nseqs; n += WGSIZE){
+            largebuf[w*NSAMPLES*nseqs + offset + n] = smallbuf[w*nseqs + n];
         }
     }
     #undef SWORDS
@@ -60,19 +61,20 @@ void storeSeqs(__global uint *smallbuf,
 __kernel 
 void restoreSeqs(__global uint *smallbuf, 
                  __global uint *largebuf,
-                          uint offset){
+                          uint  offset){
     uint w, n;
+    uint nseqs = get_global_size(0);
 
     #define SWORDS ((L-1)/4+1) 
     for(w = 0; w < SWORDS; w++){
-        for(n = get_local_id(0); n < NSEQS; n += WGSIZE){
-            smallbuf[w*NSEQS + n] = largebuf[w*NSAMPLES*NSEQS + offset + n];
+        for(n = get_local_id(0); n < nseqs; n += WGSIZE){
+            smallbuf[w*nseqs + n] = largebuf[w*NSAMPLES*nseqs + offset + n];
         }
     }
     #undef SWORDS
 }
 
-//only call from kernels with NSEQ work units!!!!!!
+//only call from kernels with nseqs work units!!!!!!
 inline float getEnergiesf(__global float *J,
                           __global uint *seqmem,
                           __local float *lcouplings){
@@ -86,6 +88,7 @@ inline float getEnergiesf(__global float *J,
     //    }
     //}
     uint li = get_local_id(0);
+    uint nseqs = get_global_size(0);
 
     uchar seqm, seqn, seqp;
     uint cn, cm;
@@ -136,21 +139,73 @@ void initRNG(__global mwc64xvec2_state_t *rngstates,
     rngstates[get_global_id(0)] = rstate;
 }
 
-//#define getbyte(mem, n) (((mem>>(8*n))&0xff))
-//#define setbyte(mem, n, val) {mem = mem ^ ((val ^ getbyte(mem,n))<<(8*n));}
+//#define getbyte(mem, n) ((((&mem)>>(8*n))&0xff))
+//#define setbyte(mem, n, val) {*mem = (*mem)^((val ^ getbyte(mem,n))<<(8*n));}
 
 //uses fewer registers
-#define getbyte(mem, n) (((uchar*)(&mem))[n])
-#define setbyte(mem, n, val) {(((uchar*)(&mem))[n]) = val;}
+#define getbyte(mem, n) (((uchar*)(mem))[n])
+#define setbyte(mem, n, val) {(((uchar*)(mem))[n]) = val;}
+
+inline void MCtrial(mwc64xvec2_state_t *rstate, __local float *lcouplings, 
+                    __global float *J, global uint *seqmem,
+                    uint pos, uint *sbn, float *energy){
+
+    uint2 rng = MWC64XVEC2_NextUint2(rstate);
+    uint mutres = rng.x%nB; // small error here if MAX_INT%nB != 0
+                            // of order 1/MAX_INT in marginals
+
+    float newenergy = *energy; 
+    uchar seqp = getbyte(sbn, pos%4);
+
+    uint m = 0;
+    while(m < L){
+        //loop through seq, changing energy by changed coupling with pos
+        
+        //load the next 4 rows of couplings to local mem
+        uint n;
+        for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB; n += WGSIZE){
+            lcouplings[n] = J[(pos*L + m)*nB*nB + n]; 
+        }
+
+        uint sbm;
+        if(m/4 == pos/4){
+            //careful that sbn is not stored back to seqmem for 4 steps
+            sbm = *sbn;
+        }
+        else{
+            //bottleneck of this kernel
+            sbm = seqmem[(m/4)*nseqs + get_global_id(0)]; 
+        }
+        barrier(CLK_LOCAL_MEM_FENCE); // for lcouplings and sbm
+        
+        //calculate contribution of those 4 rows to energy
+        for(n = 0; n < 4 && m < L; n++, m++){
+            if(m == pos){
+                continue;
+            }
+            uchar seqm = getbyte(&sbm, n);
+            newenergy += lcouplings[nB*nB*n + nB*mutres + seqm];
+            newenergy -= lcouplings[nB*nB*n + nB*seqp   + seqm];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    //apply MC criterion and possibly update
+    if(exp(-(newenergy - energy)) > uniformMap(rng.y)){ 
+        setbyte(sbn, pos%4, mutres);
+        energy = newenergy;
+    }
+}
 
 __kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
 void metropolis(__global float *J,
                 __global mwc64xvec2_state_t *rngstates, 
                          uint nsteps, // must be multiple of L
-                __global float *energies,
+                __global float *energies, //ony used to measure fp error
                 __global uint *seqmem,
                 __constant uchar *fixedpos){
     
+    uint nseqs = get_global_size(0);
 	mwc64xvec2_state_t rstate = rngstates[get_global_id(0)];
 
     //set up local mem 
@@ -179,71 +234,29 @@ void metropolis(__global float *J,
     //initialize energy
     float energy = getEnergiesf(J, seqmem, lcouplings);
 
-    //main loop
     uint pos = 0;
-    uint sbn;
     uint i;
+
+    //main loop
     for(i = 0; i < nsteps; i++){
-        uint2 rng = MWC64XVEC2_NextUint2(&rstate);
-        uint mutres = rng.x%nB; // small error here if MAX_INT%nB != 0
-                                // of order 1/MAX_INT in marginals
-        
-        //calculate new energy
-        float newenergy = energy; 
-        if(pos%4 == 0){ //load next 4 bytes of sequence
+        // load next 4 bytes of sequence
+        if(pos%4 == 0){ 
             sbn = seqmem[(pos/4)*NSEQS + get_global_id(0)]; 
         }
-        uchar seqp = getbyte(sbn, pos%4);
-        uint m = 0;
-        while(m < L){
-            //loop through seq, changing energy by changed coupling with pos
-            
-            //load the next 4 rows of couplings to local mem
-            uint n;
-            for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB; n += WGSIZE){
-                lcouplings[n] = J[(pos*L + m)*nB*nB + n]; 
-            }
 
-            uint sbm;
-            if(m/4 == pos/4){
-                //careful that sbn is not stored back to seqmem for 4 steps
-                sbm = sbn;
-            }
-            else{
-                //bottleneck of this kernel
-                sbm = seqmem[(m/4)*NSEQS + get_global_id(0)]; 
-            }
-            barrier(CLK_LOCAL_MEM_FENCE); // for lcouplings and sbm
-            
-            //calculate contribution of those 4 rows to energy
-            for(n = 0; n < 4 && m < L; n++, m++){
-                if(m == pos){
-                    continue;
-                }
-                uchar seqm = getbyte(sbm, n);
-                newenergy = newenergy + lcouplings[nB*nB*n + nB*mutres + seqm];
-                newenergy = newenergy - lcouplings[nB*nB*n + nB*seqp   + seqm];
-            }
-            barrier(CLK_LOCAL_MEM_FENCE);
-        }
-
-        //apply MC criterion and possibly update
-        if(exp(-(newenergy - energy)) > uniformMap(rng.y)){ 
-            setbyte(sbn, pos%4, mutres);
-            energy = newenergy;
-        }
-
-        if(((pos+1)%4 == 0) || (pos+1 == L)){ 
-            //store the finished 4 bytes of sequence
-            seqmem[(pos/4)*NSEQS + get_global_id(0)] = sbn;
+        /* skip fixed positions */
+        if(!fixedpos[pos]){
+            MCtrial(&rstate, lcouplings, J, seqmem, pos, &sbn, &energy);
         }
         
-        do{
-            //pos cycles repeatedly through all positions, in order.
-            //this helps the sequence & J loads to be coalesced
-            pos = (pos+1)%L;
-            //(fixedpos is used to do sims with a fixed subsequence)
-        }while(fixedpos[pos]);
+        // store the finished 4 bytes of sequence
+        if(((pos+1)%4 == 0) || (pos+1 == L)){ 
+            seqmem[(pos/4)*nseqs + get_global_id(0)] = sbn;
+        }
+        
+        //pos cycles repeatedly through all positions, in order.
+        //this helps the sequence & J loads to be coalesced
+        pos = (pos+1)%L;
     }
 
     //note: if nsteps were not a multiple of L, need to add code here to
@@ -396,9 +409,9 @@ void weightedMarg(__global float *bimarg_new,
 __kernel 
 void updatedJ(__global float *bimarg_target,
               __global float *bimarg,
-              __global float *J_orig,
                        float gamma,
                        float pc,
+              __global float *J_orig,
                        float jclamp,
               __global float *Ji,
               __global float *Jo){
@@ -415,4 +428,3 @@ void updatedJ(__global float *bimarg_target,
                              J_orig[n] + jclamp);
     }
 }
-

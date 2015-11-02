@@ -9,6 +9,7 @@ import pyopencl as cl
 import pyopencl.array as cl_array
 import os, time
 import seqload
+import textwrap
 
 ################################################################################
 
@@ -56,8 +57,8 @@ def readGPUbufs(bufnames, gpus):
 
 
 class MCMCGPU:
-    def __init__(self, (gpu, gpunum, ctx, prg), outdir, (L, nB), 
-                 nseq_small, nseq_large, wgsize, vsize, nhist, nsteps=1, 
+    def __init__(self, (gpu, gpunum, ctx, prg), (L, nB), outdir, nseq_small, 
+                 nseq_large_mul, wgsize, vsize, nhist, nMCMCcalls, nsteps=1, 
                  profile=False):
 
         self.L = L
@@ -68,10 +69,10 @@ class MCMCGPU:
         self.vsize = vsize
         self.events = []
         self.gpunum = gpunum
-        
+
         self.logfn = os.path.join(outdir, 'gpu-{}.log'.format(gpunum))
         with open(self.logfn, "wt") as f:
-            printDevice(gpu, f)
+            printDevice(f.write, gpu)
 
         #setup opencl for this device
         self.prg = prg
@@ -95,7 +96,7 @@ class MCMCGPU:
         self.SWORDS = ((L-1)/4+1)     #num words needed to store a sequence
         self.SBYTES = (4*self.SWORDS) #num bytes needed to store a sequence
         self.nseq = {'small': nseq_small,
-                     'large': nseq_large}
+                     'large': nseq_large_mul*nseq_small}
         nPairs, SWORDS = self.nPairs, self.SWORDS
 
         self.buf_spec = {   'Jpacked': ('<f4',  (L*L, nB*nB)),
@@ -110,11 +111,11 @@ class MCMCGPU:
                           'seq small': ('<u4',  (SWORDS, self.nseq['small'])),
                           'seq large': ('<u4',  (SWORDS, self.nseq['large'])),
                          # rngstates should be size of mwc64xvec2_state_t
-                          'rngstates': ('<2u8', self.nseq['small']),
-                            'E small': ('<f4',  self.nseq['small']),
-                            'E large': ('<f4',  self.nseq['large']),
-                            'weights': ('<f4',  self.nseq['large']),
-                               'neff': ('<f4',  1) }
+                          'rngstates': ('<2u8', (self.nseq['small'],)),
+                            'E small': ('<f4',  (self.nseq['small'],)),
+                            'E large': ('<f4',  (self.nseq['large'],)),
+                            'weights': ('<f4',  (self.nseq['large'],)),
+                               'neff': ('<f4',  (1,)) }
 
         self.bufs = {}
         flags = cl.mem_flags.READ_WRITE | cl.mem_flags.ALLOC_HOST_PTR
@@ -131,12 +132,16 @@ class MCMCGPU:
         self.seqbufs = getBufs('seq')
         self.Ebufs = getBufs('E')
 
+        self.bufs['fixpos'] = cl.Buffer(ctx, cl.mem_flags.READ_ONLY, size=L)
+        self.buf_spec['fixpos'] = ('<u1', (L,))
+        self.setBuf('fixpos', zeros(L, '<u1'))
+
         self.packedJ = None #use to keep track of which Jbuf is packed
         #(This class keeps track of Jpacked internally)
         
         self.nsteps = nsteps*L #increase if L very small
 
-        self.initRNG(log)
+        self.initRNG(nMCMCcalls, log)
 
         self.log("Initialization Finished\n")
 
@@ -159,7 +164,7 @@ class MCMCGPU:
     #converts seqs to uchars, padded to 32bits, assume GPU is little endian
     def packSeqs(self, seqs):
         bseqs = zeros((seqs.shape[0], self.SBYTES), dtype='<u1', order='C')
-        bseqs[:,:L] = seqs  
+        bseqs[:,:self.L] = seqs  
         mem = zeros((self.SWORDS, seqs.shape[0]), dtype='<u4', order='C')
         for i in range(self.SWORDS):
             mem[i,:] = bseqs.view(uint32)[:,i]
@@ -169,7 +174,7 @@ class MCMCGPU:
         bseqs = zeros((mem.shape[1], self.SBYTES), dtype='<u1', order='C')
         for i in range(self.SWORDS): #undo memory rearrangement
             bseqs.view(uint32)[:,i] = mem[i,:] 
-        return bseqs[:,:L]
+        return bseqs[:,:self.L]
 
     #convert from format where every row is a unique ij pair (L choose 2 rows)
     #to format with every pair, all orders (L^2 rows)
@@ -196,26 +201,26 @@ class MCMCGPU:
         self.events.append((evt, 'packJ'))
         self.packedJ = Jbufname
 
-    def initRNG(self, log):
+    def initRNG(self, nMCMCcalls, log):
         self.log("initRNG")
 
-        nsamples = uint64(2**40) #upper bound for # of uint2 rngs generated
+        nRNGsamples = uint64(2**40) #upper bound for # of uint2 rngs generated
         nseq = self.nseq['small']
-        offset = uint64(nsamples*nseq*self.gpunum*2) 
+        offset = uint64(nRNGsamples*nseq*self.gpunum*2) 
         # each gpu uses perStreamOffset*get_global_id(0)*vectorSize samples
-        #               (nsamples      *   nseq         *    2)
+        #               (nRNGsamples      *   nseq         *    2)
         
-        # read mwc64 docs for description of nsamples.
-        # Num samples should be chosen such that 2**64/(2*nsamples) is greater
-        # than # walkers. nsamples should be > #MC steps performed per walker
-        # (which is nsteps*L*nloop*gdsteps)
-        if not (self.nsteps*nloop*gdsteps < nsamples < 2**64/(2*nwalkers)):
+        # read mwc64 docs for description of nRNGsamples.
+        # Num rng samples should be chosen such that 2**64/(2*nRNGsamples) is greater
+        # than # walkers. nRNGsamples should be > #MC steps performed per walker
+        # (which is nsteps*L*nMCMCcalls)
+        if not (self.nsteps*nMCMCcalls < nRNGsamples < 2**64/(2*self.wgsize)):
             log("Warning: RNG sampling problem. RNGs may not be independent.")
         #if this is a problem rethink the value 2**40 above, or consider using
         #an rng with a greater period, eg the "Warp" generator.
 
         evt = self.prg.initRNG(self.queue, (nseq,), (self.wgsize,), 
-                               self.bufs['rngstates'], offset, nsamples)
+                               self.bufs['rngstates'], offset, nRNGsamples)
         self.events.append((evt, 'initRNG'))
 
     def runMCMC(self):
@@ -225,7 +230,7 @@ class MCMCGPU:
         evt = self.prg.metropolis(self.queue, (nseq,), (self.wgsize,), 
                             self.bufs['Jpacked'], self.bufs['rngstates'], 
                             uint32(self.nsteps), self.Ebufs['small'], 
-                            self.seqbufs['small'])
+                            self.seqbufs['small'], self.bufs['fixpos'])
         self.events.append((evt, 'metropolis'))
 
     def measureFPerror(self, log, nloops=3):
@@ -307,15 +312,16 @@ class MCMCGPU:
 
     # updates front J buffer using back J and bimarg buffers, possibly clamped
     # to orig coupling
-    def updateJPerturb(self, gamma, pc):
+    def updateJPerturb(self, gamma, pc, jclamp):
         self.log("updateJPerturb")
         nB, nPairs = self.nB, self.nPairs
         #find next highest multiple of wgsize, for num work units
         nworkunits = self.wgsize*((nPairs*nB*nB-1)//self.wgsize+1)
         evt = self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,), 
-                          self.bibufs['target'], self.bibufs['back'], 
-                          self.Jbufs['main'], float32(gamma), float32(pc),
-                          self.Jbufs['back'], self.Jbufs['front'])
+                                self.bibufs['target'], self.bibufs['back'], 
+                                float32(gamma), float32(pc), 
+                                self.Jbufs['main'], float32(jclamp),
+                                self.Jbufs['back'], self.Jbufs['front'])
         self.events.append((evt, 'updateJPerturb'))
         if self.packedJ == 'front':
             self.packedJ = None
@@ -340,8 +346,8 @@ class MCMCGPU:
         buftype, bufshape = self.buf_spec[bufname]
         if not isinstance(buf, ndarray):
             buf = array(buf, dtype=buftype)
-        assert(buftype == buf.dtype.str)
-        assert((bufshape == buf.shape) or (bufshape == 1 and buf.size == 1))
+        assert(dtype(buftype) == buf.dtype)
+        assert(bufshape == buf.shape) or (bufshape == (1,) and buf.size == 1)
 
         evt = cl.enqueue_copy(self.queue, self.bufs[bufname], buf, 
                               is_blocking=False)
@@ -411,7 +417,8 @@ def printPlatform(log, p, n=0):
     log("Platform {} '{}':".format(n, p.name))
     log("    Vendor: {}".format(p.vendor))
     log("    Version: {}".format(p.version))
-    log("    Extensions: {}".format(p.extensions))
+    exts = ("\n" + " "*16).join(textwrap.wrap(p.extensions, 80-16))
+    log("    Extensions: {}".format(exts))
 
 def printDevice(log, d):
     log("  Device '{}':".format(d.name))
@@ -435,12 +442,13 @@ def printGPUs(log):
 
 ################################################################################
 
-def initGPUs(scriptpath, scriptfile, param, log):
+def initGPUs(scriptpath, scriptfile, param, rngPeriod, log):
     outdir = param.outdir
     L, nB = param.L, param.nB
     gpuspec, nlargebuf, wgsize = param.gpuspec, param.nlargebuf, param.wgsize
     nsteps, nwalkers, Jclamp = param.nsteps, param.nwalkers, param.Jclamp 
     measureFPerror, profile = param.measureFPerror, param.profile
+    nloop, mcmcsteps = param.nloop, param.mcmcsteps
 
     with open(scriptfile) as f:
         src = f.read()
@@ -477,16 +485,21 @@ def initGPUs(scriptpath, scriptfile, param, log):
         raise Exception("Error: No GPUs found")
 
     #set up OpenCL. Assumes all gpus are identical
-    log("Getting CL Context")
+    log("Getting CL Context...")
     cl_ctx = cl.Context(gpudevices)
 
     #divide up seqs to gpus
     # wgsize = OpenCL work group size for MCMC kernel. 
     if wgsize not in [1<<n for n in range(32)]:
         raise Exception("wgsize must be a power of two")
+
+    # split up the walkers into the gpus. Warn if they don't fit evenly.
+    ngpus = len(gpus)
+    n_max = (nwalkers-1)/ngpus + 1
+    nwalkers_gpu = [n_max]*(ngpus-1) + [nwalkers - (ngpus-1)*n_max]
     if nwalkers % (len(gpudevices)*wgsize) != 0:
-        raise Exception("nwalkers must be mutliple of wgsize*ngpus")
-    nwalkers_gpu = nwalkers/len(gpudevices)
+        log("Warning: number of MCMC walkers is not a multiple of "
+            "wgsize*ngpus, so there are idle work units.")
 
     vsize = 256 #power of 2. Work group size for 1d vector operations.
 
@@ -498,9 +511,8 @@ def initGPUs(scriptpath, scriptfile, param, log):
         raise Exception("alphabet size too large to make histogram on gpu")
 
     #compile CL program
-    options = [('WGSIZE', wgsize), ('NSEQS', nwalkers_gpu), 
-               ('NSAMPLES', nlargebuf), ('VSIZE', vsize), ('NHIST', nhist),
-               ('nB', nB), ('L', L)]
+    options = [('WGSIZE', wgsize), ('NSAMPLES', nlargebuf), ('VSIZE', vsize), 
+               ('NHIST', nhist), ('nB', nB), ('L', L)]
     if measureFPerror:
         options.append(('MEASURE_FP_ERROR', 1))
     if Jclamp:
@@ -519,11 +531,11 @@ def initGPUs(scriptpath, scriptfile, param, log):
             f.write(p)
 
     gpus = []
-    log("Initializing Devices...")
+    log("Initializing GPUs...")
     for devnum, device in enumerate(gpudevices):
         gpu = MCMCGPU((device, devnum, cl_ctx, cl_prg), (L, nB), outdir,
-                      nwalkers_gpu, nlargebuf*nwalkers_gpu, wgsize, vsize, nhist,
-                      nsteps, profile=profile)
+                      nwalkers_gpu[devnum], nlargebuf, wgsize, vsize, nhist,
+                      rngPeriod, nsteps, profile=profile)
         gpus.append(gpu)
 
     return gpus
