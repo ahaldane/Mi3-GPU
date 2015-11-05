@@ -147,7 +147,7 @@ void initRNG(__global mwc64xvec2_state_t *rngstates,
 #define setbyte(mem, n, val) {(((uchar*)(mem))[n]) = val;}
 
 inline void MCtrial(mwc64xvec2_state_t *rstate, __local float *lcouplings, 
-                    __global float *J, global uint *seqmem,
+                    __global float *J, global uint *seqmem, uint nseqs,
                     uint pos, uint *sbn, float *energy){
 
     uint2 rng = MWC64XVEC2_NextUint2(rstate);
@@ -191,9 +191,9 @@ inline void MCtrial(mwc64xvec2_state_t *rstate, __local float *lcouplings,
     }
 
     //apply MC criterion and possibly update
-    if(exp(-(newenergy - energy)) > uniformMap(rng.y)){ 
+    if(exp(-(newenergy - *energy)) > uniformMap(rng.y)){ 
         setbyte(sbn, pos%4, mutres);
-        energy = newenergy;
+        *energy = newenergy;
     }
 }
 
@@ -236,17 +236,18 @@ void metropolis(__global float *J,
 
     uint pos = 0;
     uint i;
+    uint sbn;
 
     //main loop
     for(i = 0; i < nsteps; i++){
         // load next 4 bytes of sequence
         if(pos%4 == 0){ 
-            sbn = seqmem[(pos/4)*NSEQS + get_global_id(0)]; 
+            sbn = seqmem[(pos/4)*nseqs + get_global_id(0)]; 
         }
 
         /* skip fixed positions */
         if(!fixedpos[pos]){
-            MCtrial(&rstate, lcouplings, J, seqmem, pos, &sbn, &energy);
+            MCtrial(&rstate, lcouplings, J, seqmem, nseqs, pos, &sbn, &energy);
         }
         
         // store the finished 4 bytes of sequence

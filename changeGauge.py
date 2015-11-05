@@ -55,6 +55,7 @@ def zeroGauge(hs, Js, weights=None):
 
 def zeroJGauge(hs, Js, weights=None): 
     #only set mean J to 0, but choose fields so sequence energies do not change
+    # (this keeps the overall sequence energy the same)
     if any(isinf(Js)) or any(isinf(hs)):
         raise Exception("Error: Cannot convert to zero gauge because "
                         "of infinities")
@@ -85,9 +86,8 @@ def fieldlessGaugeDistributed(hs, Js, weights=None): #convert to a fieldless gau
     return zeros(hs.shape), J0
 
 def fieldlessGaugeEven(hs, Js, weights=None): #convert to a fieldless gauge
-    #note: Fieldless gauge is not fully constrained: There are many possible 
-    #choices that are fieldless, this just returns one of them
-    #This function tries to distribute the fields evenly
+    #construct a fieldless gauge, but try to distribute the energy evenly
+    # among the fields by first converting to the zero gauge
     return fieldlessGaugeDistributed(*zeroGauge(hs, Js))
 
 def fieldlessGauge(hs, Js, weights=None):
@@ -107,7 +107,8 @@ def tryload(fn):
         return loadtxt(fn)
 
 def main():
-    parser = argparse.ArgumentParser(description='Script to switch Gauges')
+    parser = argparse.ArgumentParser(
+        description='Convert Potts parameters from one gauge to another')
     parser.add_argument('gauge', choices=['fieldless', 'fieldlessEven', 
                                  'weighted', 'zero', 'minJ', 'zeroJ'])
     parser.add_argument('-hin')

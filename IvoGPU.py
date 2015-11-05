@@ -18,6 +18,8 @@ from NewtonSteps import newtonMCMC
 ################################################################################
 # Set up enviroment and some helper functions
 
+progname = 'IvoGPU.py'
+
 def mkdir_p(path):
     try:
         os.makedirs(path)
@@ -42,27 +44,105 @@ def seqsize_from_param_shape(shape):
 def getUnimarg(bimarg):
     L, nB = seqsize_from_param_shape(bimarg.shape)
     ff = bimarg.reshape((L*(L-1)/2,nB,nB))
-    marg = array([sum(ff[0],axis=1)] + [sum(ff[n],axis=0) for n in range(L-1)])
-    return marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
+    f = array([sum(ff[0],axis=1)] + [sum(ff[n],axis=0) for n in range(L-1)])
+    return f/(sum(f,axis=1)[:,newaxis]) # correct any fp errors
+
+################################################################################
+
+def optionRegistry():
+    options = []
+    add = lambda opt, **kwds: options.append((opt, kwds))
+
+    # option used by both potts and sequence loaders, designed
+    # to load in the output of a previous run
+    add('seqmodel', default='none',
+        help=("One of 'zero', 'logscore', or a directory name. Generates or "
+              "loads 'alpha', 'couplings', 'startseq' and 'seqs', if not "
+              "otherwise supplied.") )
+    add('outdir', default='output', help='Output Directory')
+
+    # GPU options
+    add('nwalkers', type=uint32,
+        help="Number of MC walkers")
+    add('nsteps', type=uint32, default=16,
+        help="number of MC steps per kernel call, in multiples of L")
+    add('wgsize', type=int, default=256, 
+        help="GPU workgroup size")
+    add('gpus', 
+        help="GPUs to use (comma-sep list of platforms #s, eg '0,0')")
+    add('profile', action='store_true', 
+        help="enable OpenCL profiling")
+    add('nlargebuf', type=uint32, default=1
+        help='size of large seq buffer, in multiples of nwalkers')
+    
+    # Newton options
+    add('bimarg', required=True,
+        help="Target bivariate marginals (npy file)")
+    add('mcsteps', type=uint32, required=True, 
+        help="Number of rounds of MCMC generation") 
+    add('newtonsteps', default='128', type=uint32, 
+        help="Number of newton steps per round.")
+    add('gamma', type=float32, required=True, 
+        help="Initial step size")
+    add('damping', default=0.001, type=float32, 
+        help="Damping parameter")
+    add('jclamp', default=0, type=float32, 
+        help="Clamps maximum change in couplings per newton step")
+    add('preopt', action='store_true', 
+        help="Perform a round of newton steps before first MCMC run") 
+    
+    # Potts options
+    add('alpha', required=True,
+        help="Alphabet, a sequence of letters")
+    add('couplings', 
+        help="One of 'zero', 'logscore', or a filename")
+    add('L', help="sequence length") 
+    
+    # Sequence options
+    add('startseq', help="Starting sequence. May be 'rand'") 
+    add('seqs', help="File containing sequences to pre-load to GPU") 
+
+    # Sampling Param
+    add('equiltime', type=uint32, required=True, 
+        help="Number of MC kernel calls to equilibrate")
+    add('sampletime', type=uint32, required=True, 
+        help="Number of MC kernel calls between samples")
+    add('nsamples', type=uint32, required=True, 
+        help="Number of sequence samples")
+    add('trackequil', type=uint32, default=0,
+        help='Save bimarg every TRACKEQUIL steps during equilibration')
+
+    return options
+
+def addopt(parser, group, optstring):
+    if group is not None:
+        group = parser.add_group(groupname)
+        add = group.add_argument
+    else:
+        add = parser.add_argument
+
+    for option in optstring.split():
+        optname, optargs = addopt.options[option]
+        add('--' + optname, **optargs)
+addopt.options = optionRegistry()
 
 ################################################################################
 
 def inverseIsing(args, log):
     descr = ('Inverse Ising inference using a quasi-Newton MCMC algorithm '
              'on the GPU')
-    parser = argparse.ArgumentParser(prog='IvoGPU.py inverseIsing',
+    parser = argparse.ArgumentParser(prog=progname + ' inverseIsing',
                                      description=descr)
-    GPUParam.add_arguments(parser)
-    SeqParam.add_arguments(parser)
-    NewtonParam.add_arguments(parser)
-    SampleParam.add_arguments(parser)
-    PottsParam.add_arguments(parser)
+    addopt(parser, 'GPU options',         'nwalkers nsteps wgsize gpus profile')
+    addopt(parser, 'Sequence Options',    'startseq seqs')
+    addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps gamma '
+                                          'damping jclamp preopt')
+    addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
+                                          'trackequil')
+    addopt(parser, 'Potts Model Options', 'alpha couplings L')
+    addopt(parser,  None,                 'seqmodel outdir')
+
     add = parser.add_argument
-    add('--outdir', default='output', help='Output Directory')
-    add('--seqmodel', default='none',
-        help=("One of 'zero', 'logscore', or a directory name. Generates or "
-              "loads 'couplings', 'startseq' and 'seqs', if not otherwise "
-              "supplied.") )
     
     args = parser.parse_args(args)
     args.nlargebuf = args.nsamples
@@ -75,19 +155,14 @@ def inverseIsing(args, log):
     mkdir_p(args.outdir)
 
     param.update(NewtonParam.process_args(args, param, log))
-    log("")
     if param.bimarg is not None:
         param['L'], param['nB'] = seqsize_from_param_shape(param.bimarg.shape)
     param.update(PottsParam.process_args(args, param, log))
-    log("")
     param.update(SampleParam.process_args(args, param, log))
-    log("")
     rngPeriod = param.nloop*param.mcmcsteps
     gpuparam, gpus = GPUParam.process_args(args, param, rngPeriod, log)
     param.update(gpuparam)
-    log("")
     param.update(SeqParam.process_args(args, param, gpus, log))
-    log("")
     log("")
 
     p = param
@@ -109,41 +184,18 @@ def inverseIsing(args, log):
 
 def getEnergies(args, log):
     descr = ('Compute Potts Energy of a set of sequences')
-    parser = argparse.ArgumentParser(prog='IvoGPU.py getEnergies',
+    parser = argparse.ArgumentParser(prog=progname + ' getEnergies',
                                      description=descr)
+    addopt(parser, 'GPU Options',         'wgsize gpus profile')
+    addopt(parser, 'Potts Model Options', 'alpha couplings')
+    addopt(parser, 'Sequence Options',    'seqs')
+
     add = parser.add_argument
-    add('--out', default='output', help='Output File')
-    add('--seqmodel', default='none',
-        help=("One of 'zero', 'logscore', or a directory name. Generates or "
-              "loads 'couplings', 'startseq' and 'seqs', if not otherwise "
-              "supplied.") )
+    add('out', default='output', help='Output File')
 
     #genenergies uses a subset of the full inverse ising parameters,
     #so use custom set of params here
-
-    # instead of GPUParam
-    group = parser.add_argument_group('GPU options')
-    add = group.add_argument
-    add('--wgsize', type=int, default=256, 
-        help="GPU workgroup size")
-    add('--gpus', 
-        help="GPUs to use (comma-sep list of platforms #s, eg '0,0')")
-    add('--profile', action='store_true', 
-        help="enable OpenCL profiling")
-
-    # instead of PottsParam
-    group = parser.add_argument_group('Potts Model options')
-    add = group.add_argument
-    add('--alpha', required=True,
-        help="Alphabet, a sequence of letters")
-    add('--couplings', 
-        help="One of 'zero', 'logscore', or a filename")
     
-    #instead of SeqParam
-    group = parser.add_argument_group('Sequence options')
-    add = group.add_argument
-    add('--seqs', help="File containing sequences to pre-load to GPU") 
-
     args = parser.parse_args(args)
     args.nwalkers = args.nseq
     args.nsteps = 1
@@ -152,12 +204,9 @@ def getEnergies(args, log):
         raise Exception("no output file specified") #XXX better error
 
     param.update(PottsParam.process_args(args, param, log))
-    log("")
     gpuparam, gpus = GPUParam.process_args(args, param, 2*nloop, log)
     param.update(gpuparam)
-    log("")
     param.update(SeqParam.process_args(args, param, gpus, log))
-    log("")
     log("")
 
     if not param.sseq_l:
@@ -174,17 +223,29 @@ def getEnergies(args, log):
     save(param.out, es)
 
 
-def MCMCbenchmark(parser, args, log):
+def MCMCbenchmark(args, log):
+    descr = ('Benchmark MCMC generation on the GPU')
+    parser = argparse.ArgumentParser(prog=progname + ' benchmark',
+                                     description=descr)
     add = parser.add_argument
-    
-    SeqParam.add_arguments(parser)
-    PottsParam.add_arguments(parser)
     add('--nloop', type=uint32, required=True, 
         help="Number of kernel calls to benchmark")
     add('--outdir', default='output')
+    add('--seqmodel', default='none',
+        help=("One of 'zero', 'logscore', or a directory name. Generates or "
+              "loads 'couplings', 'startseq' and 'seqs', if not otherwise "
+              "supplied.") )
+
+    log("Initialization")
+    log("===============")
+    log("")
+    
+    GPUParam.add_arguments(parser)
+    SeqParam.add_arguments(parser)
+    PottsParam.add_arguments(parser)
 
     args = parser.parse_args(args)
-    nloop = args.nsteps
+    nloop = args.nloop
     args.nlargebuf = 1
     
     param = attrdict({'outdir': args.outdir})
@@ -547,6 +608,9 @@ class PottsParam:
 
         return couplings, L, nB
 
+# need to separate out the loading of the sequences from file and sending to GPU.
+# it might be costly in terms of memory, but sometimes we need to know the sequence set size before initializing the gpu
+#maybe can get around this by returning the file handle instead
 class SeqParam:
     @staticmethod
     def add_arguments(parser):

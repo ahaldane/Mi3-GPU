@@ -494,10 +494,10 @@ def initGPUs(scriptpath, scriptfile, param, rngPeriod, log):
         raise Exception("wgsize must be a power of two")
 
     # split up the walkers into the gpus. Warn if they don't fit evenly.
-    ngpus = len(gpus)
+    ngpus = len(gpudevices)
     n_max = (nwalkers-1)/ngpus + 1
     nwalkers_gpu = [n_max]*(ngpus-1) + [nwalkers - (ngpus-1)*n_max]
-    if nwalkers % (len(gpudevices)*wgsize) != 0:
+    if nwalkers % (ngpus*wgsize) != 0:
         log("Warning: number of MCMC walkers is not a multiple of "
             "wgsize*ngpus, so there are idle work units.")
 
