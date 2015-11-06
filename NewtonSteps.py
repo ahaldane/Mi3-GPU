@@ -171,7 +171,12 @@ def iterNewton(param, gpus, log):
 ################################################################################
 
 #pre-optimization steps
-def preOpt():
+def preOpt(param, gpus, log):
+    couplings = param.couplings
+    outdir = param.outdir
+    alpha = param.alpha
+    bimarg_target = param.bimarg
+
     log("Processing sequences...")
     for gpu in gpus:
         gpu.setBuf('J main', couplings)
@@ -179,6 +184,7 @@ def preOpt():
         gpu.calcBimarg('large')
     res = readGPUbufs(['bi main', 'bicount', 'seq large'], gpus)
     bimarg, bicount, seqs = meanarr(res[0]), sumarr(res[1]), res[2]
+    print(concatenate(readGPUbufs(['E large'], gpus)[0]))
     
     #store initial setup
     mkdir_p(os.path.join(outdir, 'preopt'))
@@ -201,9 +207,9 @@ def preOpt():
 
 
 def MCMCstep(runName, startseq, couplings, param, gpus, log):
-    nloop = param.nloop
+    nloop = param.equiltime
     nsamples = param.nsamples
-    nsampleloops = param.nsampleloops
+    nsampleloops = param.sampletime
     trackequil = param.trackequil
     outdir = param.outdir
     alpha, L, nB = param.alpha, param.L, param.nB
@@ -212,6 +218,12 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
 
     log("")
     log("Gradient Descent step {}".format(runName))
+
+    #re-distribute energy among couplings
+    #(not really needed, but makes nicer output and might prevent
+    # numerical inaccuracy, but also shifts all seq energies)
+    log("(Re-centering gauge of couplings)")
+    couplings = fieldlessGaugeEven(zeros((L,nB)), couplings)[1]
 
     mkdir_p(os.path.join(outdir, runName))
     save(os.path.join(outdir, runName, 'J'), couplings)
@@ -250,7 +262,7 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
             for gpu in gpus:
                 gpu.runMCMC()
         for gpu in gpus:
-            gpu.storeSeqs(offset=j)
+            gpu.storeSeqs(offset=j*gpu.nseq['small'])
     
     #process results
     for gpu in gpus:
@@ -267,6 +279,7 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
     writeStatus(runName, rmsd, ssr, wdf, bicount, bimarg_model, 
                 couplings, sampledseqs, startseq, sampledenergies, 
                 alpha, outdir, log)
+    print(sampledenergies)
     
     #compute new J using local newton updates (in-place on GPU)
     couplings, bimarg_p = iterNewton(param, gpus, log)
@@ -288,9 +301,10 @@ def newtonMCMC(param, gpus, log):
     
     # pre-optimization
     if param.preopt:
-        if not param.lseq_loaded:
-            raise Exception("Error: Large sequence buffers must be filled for "
-                            "pre-optimization")
+        if param.seqs is None:
+            raise Exception("Error: sequence buffers must be filled for "
+                            "pre-optimization") 
+                            #this doesn't actually check that....
         preOpt(param, gpus, log)
     else:
         log("No Pre-optimization")

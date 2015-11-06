@@ -39,8 +39,8 @@ def mapSeqs(fn, names, mapper):
     with Opener(fn) as f:
         gen = loadSeqsChunked(f, names)
         param, headers = gen.next()
-        seqs = concatenate([mapper(s) for s in gen])
-    return seqs, param, headers
+        res = concatenate([mapper(s) for s in gen])
+    return res, param, headers
 
 def parseHeader(hd):
     param = {}

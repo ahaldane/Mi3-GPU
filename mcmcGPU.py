@@ -58,7 +58,7 @@ def readGPUbufs(bufnames, gpus):
 
 class MCMCGPU:
     def __init__(self, (gpu, gpunum, ctx, prg), (L, nB), outdir, nseq_small, 
-                 nseq_large_mul, wgsize, vsize, nhist, nMCMCcalls, nsteps=1, 
+                 nseq_large, wgsize, vsize, nhist, nMCMCcalls, nsteps=1, 
                  profile=False):
 
         self.L = L
@@ -96,7 +96,7 @@ class MCMCGPU:
         self.SWORDS = ((L-1)/4+1)     #num words needed to store a sequence
         self.SBYTES = (4*self.SWORDS) #num bytes needed to store a sequence
         self.nseq = {'small': nseq_small,
-                     'large': nseq_large_mul*nseq_small}
+                     'large': nseq_large_mul}
         nPairs, SWORDS = self.nPairs, self.SWORDS
 
         self.buf_spec = {   'Jpacked': ('<f4',  (L*L, nB*nB)),
@@ -211,14 +211,14 @@ class MCMCGPU:
         #               (nRNGsamples      *   nseq         *    2)
         
         # read mwc64 docs for description of nRNGsamples.
-        # Num rng samples should be chosen such that 2**64/(2*nRNGsamples) is greater
-        # than # walkers. nRNGsamples should be > #MC steps performed per walker
-        # (which is nsteps*L*nMCMCcalls)
+        # Num rng samples should be chosen such that 2**64/(2*nRNGsamples) is
+        # greater than # walkers. nRNGsamples should be > #MC steps performed
+        # per walker (which is nsteps*L*nMCMCcalls)
         if not (self.nsteps*nMCMCcalls < nRNGsamples < 2**64/(2*self.wgsize)):
             log("Warning: RNG sampling problem. RNGs may not be independent.")
         #if this is a problem rethink the value 2**40 above, or consider using
         #an rng with a greater period, eg the "Warp" generator.
-
+        
         evt = self.prg.initRNG(self.queue, (nseq,), (self.wgsize,), 
                                self.bufs['rngstates'], offset, nRNGsamples)
         self.events.append((evt, 'initRNG'))
@@ -395,9 +395,11 @@ class MCMCGPU:
     def storeSeqs(self, offset=0):
         self.log("storeSeqs " + str(offset))
         nseq = self.nseq['small']
+        if offset + nseq > self.nseq['large']:
+            raise Exception("cannot store seqes past end of large buffer")
         evt = self.prg.storeSeqs(self.queue, (nseq,), (self.wgsize,), 
                            self.seqbufs['small'], self.seqbufs['large'], 
-                           uint32(offset*nseq))
+                           uint32(self.nseq['large']), uint32(offset))
         self.events.append((evt, 'storeSeqs'))
 
     def wait(self):
@@ -442,13 +444,13 @@ def printGPUs(log):
 
 ################################################################################
 
-def initGPUs(scriptpath, scriptfile, param, rngPeriod, log):
+def initGPUs(scriptpath, scriptfile, param, log):
     outdir = param.outdir
     L, nB = param.L, param.nB
     gpuspec, nlargebuf, wgsize = param.gpuspec, param.nlargebuf, param.wgsize
-    nsteps, nwalkers, Jclamp = param.nsteps, param.nwalkers, param.Jclamp 
-    measureFPerror, profile = param.measureFPerror, param.profile
-    nloop, mcmcsteps = param.nloop, param.mcmcsteps
+    nsteps, nwalkers  = param.nsteps, param.nwalkers
+    measureFPerror, profile = param.fperror, param.profile
+    rngPeriod = param.rngPeriod
 
     with open(scriptfile) as f:
         src = f.read()
@@ -493,14 +495,6 @@ def initGPUs(scriptpath, scriptfile, param, rngPeriod, log):
     if wgsize not in [1<<n for n in range(32)]:
         raise Exception("wgsize must be a power of two")
 
-    # split up the walkers into the gpus. Warn if they don't fit evenly.
-    ngpus = len(gpudevices)
-    n_max = (nwalkers-1)/ngpus + 1
-    nwalkers_gpu = [n_max]*(ngpus-1) + [nwalkers - (ngpus-1)*n_max]
-    if nwalkers % (ngpus*wgsize) != 0:
-        log("Warning: number of MCMC walkers is not a multiple of "
-            "wgsize*ngpus, so there are idle work units.")
-
     vsize = 256 #power of 2. Work group size for 1d vector operations.
 
     #Number of histograms used in counting kernels (power of two)
@@ -511,12 +505,9 @@ def initGPUs(scriptpath, scriptfile, param, rngPeriod, log):
         raise Exception("alphabet size too large to make histogram on gpu")
 
     #compile CL program
-    options = [('WGSIZE', wgsize), ('NSAMPLES', nlargebuf), ('VSIZE', vsize), 
-               ('NHIST', nhist), ('nB', nB), ('L', L)]
+    options = [('VSIZE', vsize), ('NHIST', nhist), ('nB', nB), ('L', L)]
     if measureFPerror:
         options.append(('MEASURE_FP_ERROR', 1))
-    if Jclamp:
-        options.append(('JCUTOFF', Jclamp))
     optstr = " ".join(["-D {}={}".format(opt,val) for opt,val in options]) 
     log("Compilation Options: ", optstr)
     extraopt = " -cl-nv-verbose -Werror -I {}".format(scriptpath)
@@ -530,12 +521,21 @@ def initGPUs(scriptpath, scriptfile, param, rngPeriod, log):
         with open(os.path.join(outdir, 'ptx{}'.format(n)), 'wt') as f:
             f.write(p)
 
+    # split up the walkers into the gpus. Warn if they don't fit evenly.
+    ngpus = len(gpudevices)
+    n_max = (nwalkers-1)/ngpus + 1
+    nwalkers_gpu = [n_max]*(ngpus-1) + [nwalkers - (ngpus-1)*n_max]
+    if nwalkers % (ngpus*wgsize) != 0:
+        log("Warning: number of MCMC walkers is not a multiple of "
+            "wgsize*ngpus, so there are idle work units.")
+
+
     gpus = []
-    log("Initializing GPUs...")
+    log("Starting GPUs...")
     for devnum, device in enumerate(gpudevices):
         gpu = MCMCGPU((device, devnum, cl_ctx, cl_prg), (L, nB), outdir,
-                      nwalkers_gpu[devnum], nlargebuf, wgsize, vsize, nhist,
-                      rngPeriod, nsteps, profile=profile)
+                      nwalkers_gpu[devnum], nlargebufs[devnum], wgsize, vsize, 
+                      nhist, rngPeriod, nsteps, profile=profile)
         gpus.append(gpu)
 
     return gpus

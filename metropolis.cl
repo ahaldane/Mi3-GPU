@@ -17,6 +17,9 @@ float uniformMap(uint i){
 
 #define NCOUPLE ((L*(L-1)*nB*nB)/2)
 
+#define getbyte(mem, n) (((uchar*)(mem))[n])
+#define setbyte(mem, n, val) {(((uchar*)(mem))[n]) = val;}
+
 //expands couplings stored in a (nPair x nB*nB) form to an (L*L x nB*nB) form
 __kernel //to be called with group size nB*nB, with nPair groups
 void packfV(__global float *v, 
@@ -45,14 +48,15 @@ void packfV(__global float *v,
 __kernel 
 void storeSeqs(__global uint *smallbuf, 
                __global uint *largebuf,
+                        uint  nlargebuf,
                         uint  offset){
     uint w, n;
     uint nseqs = get_global_size(0);
 
     #define SWORDS ((L-1)/4+1) 
     for(w = 0; w < SWORDS; w++){
-        for(n = get_local_id(0); n < nseqs; n += WGSIZE){
-            largebuf[w*NSAMPLES*nseqs + offset + n] = smallbuf[w*nseqs + n];
+        for(n = get_local_id(0); n < nseqs; n += get_local_size(0)){
+            largebuf[w*nlargebuf + offset + n] = smallbuf[w*nseqs + n];
         }
     }
     #undef SWORDS
@@ -61,18 +65,47 @@ void storeSeqs(__global uint *smallbuf,
 __kernel 
 void restoreSeqs(__global uint *smallbuf, 
                  __global uint *largebuf,
+                          uint  nlargebuf,
                           uint  offset){
     uint w, n;
     uint nseqs = get_global_size(0);
 
     #define SWORDS ((L-1)/4+1) 
     for(w = 0; w < SWORDS; w++){
-        for(n = get_local_id(0); n < nseqs; n += WGSIZE){
-            smallbuf[w*nseqs + n] = largebuf[w*NSAMPLES*nseqs + offset + n];
+        for(n = get_local_id(0); n < nseqs; n += get_local_size(0)){
+            smallbuf[w*nseqs + n] = largebuf[w*nlargebuf + offset + n];
         }
     }
     #undef SWORDS
 }
+
+
+// copies fixed positions from a sequence in the large buffer to those
+// positions in the small buffer. Call with small-buffer-nseq work units.
+__kernel
+void copyFixedPos(__global uint *smallbuf, 
+                  __global uint *largebuf,
+                           uint  nlargebuf,
+                           uint  seqnum,
+                  __constant uchar *fixedpos){
+    uint sbs, sbl;
+    uint pos, lastpos=0xffffffff;
+
+    for(pos = 0; pos < L; pos++){
+        if(fixedpos[pos]){
+            if(pos/4 != lastpos/4){
+                sbl = largebuf[(pos/4)*nlargebuf + seqnum]; 
+                sbs = smallbuf[(pos/4)*get_global_size(0) + get_local_id(0)]; 
+            }
+            setbyte(&sbs, pos%4, getbyte(&sbl, pos%4));
+            lastpos = pos;
+        }
+        if( (((pos+1)%4 == 0) || (pos+1 == L)) && lastpos/4 == pos/4){ 
+            smallbuf[(pos/4)*get_global_size(0) + get_local_id(0)] = sbs;
+        }
+    }
+}
+ 
 
 //only call from kernels with nseqs work units!!!!!!
 inline float getEnergiesf(__global float *J,
@@ -88,7 +121,6 @@ inline float getEnergiesf(__global float *J,
     //    }
     //}
     uint li = get_local_id(0);
-    uint nseqs = get_global_size(0);
 
     uchar seqm, seqn, seqp;
     uint cn, cm;
@@ -100,7 +132,7 @@ inline float getEnergiesf(__global float *J,
         uint sbn = seqmem[(n/4)*get_global_size(0) + get_global_id(0)]; 
         #pragma unroll //probably ignored
         for(cn = n%4; cn < 4 && n < L-1; cn++, n++){
-            seqn = ((uchar*)(&sbn))[cn];
+            seqn = getbyte(&sbn, cn);
             m = n+1;
             while(m < L){
                 uint sbm = seqmem[(m/4)*get_global_size(0) + get_global_id(0)]; 
@@ -112,7 +144,7 @@ inline float getEnergiesf(__global float *J,
                     }
                     barrier(CLK_LOCAL_MEM_FENCE);
 
-                    seqm = ((uchar*)(&sbm))[cm];
+                    seqm = getbyte(&sbm, cm);
                     energy = energy + lcouplings[nB*seqn + seqm];
                     barrier(CLK_LOCAL_MEM_FENCE);
                 }
@@ -139,13 +171,6 @@ void initRNG(__global mwc64xvec2_state_t *rngstates,
     rngstates[get_global_id(0)] = rstate;
 }
 
-//#define getbyte(mem, n) ((((&mem)>>(8*n))&0xff))
-//#define setbyte(mem, n, val) {*mem = (*mem)^((val ^ getbyte(mem,n))<<(8*n));}
-
-//uses fewer registers
-#define getbyte(mem, n) (((uchar*)(mem))[n])
-#define setbyte(mem, n, val) {(((uchar*)(mem))[n]) = val;}
-
 inline void MCtrial(mwc64xvec2_state_t *rstate, __local float *lcouplings, 
                     __global float *J, global uint *seqmem, uint nseqs,
                     uint pos, uint *sbn, float *energy){
@@ -163,7 +188,8 @@ inline void MCtrial(mwc64xvec2_state_t *rstate, __local float *lcouplings,
         
         //load the next 4 rows of couplings to local mem
         uint n;
-        for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB; n += WGSIZE){
+        for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB; 
+                                                      n += get_local_size(0)){
             lcouplings[n] = J[(pos*L + m)*nB*nB + n]; 
         }
 
