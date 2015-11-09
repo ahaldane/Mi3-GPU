@@ -79,29 +79,28 @@ void restoreSeqs(__global uint *smallbuf,
     #undef SWORDS
 }
 
-
-// copies fixed positions from a sequence in the large buffer to those
-// positions in the small buffer. Call with small-buffer-nseq work units.
+// copies fixed positions from a sequence in the small buffer to those
+// positions in the large buffer. Call with large-buffer-nseq work units.
 __kernel
-void copyFixedPos(__global uint *smallbuf, 
-                  __global uint *largebuf,
-                           uint  nlargebuf,
-                           uint  seqnum,
-                  __constant uchar *fixedpos){
+void copySubseq(__global uint *smallbuf, 
+                __global uint *largebuf,
+                         uint  nsmallbuf,
+                         uint  seqnum,
+               __constant uchar *fixedpos){
     uint sbs, sbl;
-    uint pos, lastpos=0xffffffff;
+    uint pos, lastmod=0xffffffff;
 
     for(pos = 0; pos < L; pos++){
         if(fixedpos[pos]){
-            if(pos/4 != lastpos/4){
-                sbl = largebuf[(pos/4)*nlargebuf + seqnum]; 
-                sbs = smallbuf[(pos/4)*get_global_size(0) + get_local_id(0)]; 
+            if(pos/4 != lastmod/4){
+                sbl = largebuf[(pos/4)*get_global_size(0) + get_global_id(0)]; 
+                sbs = smallbuf[(pos/4)*nsmallbuf + seqnum]; 
             }
-            setbyte(&sbs, pos%4, getbyte(&sbl, pos%4));
-            lastpos = pos;
+            setbyte(&sbl, pos%4, getbyte(&sbs, pos%4));
+            lastmod = pos;
         }
-        if( (((pos+1)%4 == 0) || (pos+1 == L)) && lastpos/4 == pos/4){ 
-            smallbuf[(pos/4)*get_global_size(0) + get_local_id(0)] = sbs;
+        if( (((pos+1)%4 == 0) || (pos+1 == L)) && lastmod/4 == pos/4){ 
+            largebuf[(pos/4)*get_global_size(0) + get_global_id(0)] = sbl;
         }
     }
 }
@@ -120,6 +119,7 @@ inline float getEnergiesf(__global float *J,
     //       energy += J[n,m,seq[n],seq[m]];
     //    }
     //}
+
     uint li = get_local_id(0);
 
     uchar seqm, seqn, seqp;
@@ -139,6 +139,7 @@ inline float getEnergiesf(__global float *J,
 
                 #pragma unroll
                 for(cm = m%4; cm < 4 && m < L; cm++, m++){
+                    // could add skip for fixpos here...
                     for(k = li; k < nB*nB; k += get_local_size(0)){
                         lcouplings[k] = J[(n*L + m)*nB*nB + k]; 
                     }
@@ -171,17 +172,9 @@ void initRNG(__global mwc64xvec2_state_t *rngstates,
     rngstates[get_global_id(0)] = rstate;
 }
 
-inline void MCtrial(mwc64xvec2_state_t *rstate, __local float *lcouplings, 
-                    __global float *J, global uint *seqmem, uint nseqs,
-                    uint pos, uint *sbn, float *energy){
-
-    uint2 rng = MWC64XVEC2_NextUint2(rstate);
-    uint mutres = rng.x%nB; // small error here if MAX_INT%nB != 0
-                            // of order 1/MAX_INT in marginals
-
-    float newenergy = *energy; 
-    uchar seqp = getbyte(sbn, pos%4);
-
+inline float UpdateEnergy(__local float *lcouplings, __global float *J, 
+                          global uint *seqmem, uint nseqs, 
+                          uint pos, uchar seqp, uchar mutres, float energy){
     uint m = 0;
     while(m < L){
         //loop through seq, changing energy by changed coupling with pos
@@ -193,15 +186,9 @@ inline void MCtrial(mwc64xvec2_state_t *rstate, __local float *lcouplings,
             lcouplings[n] = J[(pos*L + m)*nB*nB + n]; 
         }
 
-        uint sbm;
-        if(m/4 == pos/4){
-            //careful that sbn is not stored back to seqmem for 4 steps
-            sbm = *sbn;
-        }
-        else{
-            //bottleneck of this kernel
-            sbm = seqmem[(m/4)*nseqs + get_global_id(0)]; 
-        }
+        //this line is the bottleneck of the entire MCMC analysis
+        uint sbm = seqmem[(m/4)*nseqs + get_global_id(0)]; 
+
         barrier(CLK_LOCAL_MEM_FENCE); // for lcouplings and sbm
         
         //calculate contribution of those 4 rows to energy
@@ -210,32 +197,29 @@ inline void MCtrial(mwc64xvec2_state_t *rstate, __local float *lcouplings,
                 continue;
             }
             uchar seqm = getbyte(&sbm, n);
-            newenergy += lcouplings[nB*nB*n + nB*mutres + seqm];
-            newenergy -= lcouplings[nB*nB*n + nB*seqp   + seqm];
+            energy += lcouplings[nB*nB*n + nB*mutres + seqm];
+            energy -= lcouplings[nB*nB*n + nB*seqp   + seqm];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
-    //apply MC criterion and possibly update
-    if(exp(-(newenergy - *energy)) > uniformMap(rng.y)){ 
-        setbyte(sbn, pos%4, mutres);
-        *energy = newenergy;
-    }
+    return energy;
 }
 
 __kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
 void metropolis(__global float *J,
                 __global mwc64xvec2_state_t *rngstates, 
+                __global uint *position_list,
                          uint nsteps, // must be multiple of L
                 __global float *energies, //ony used to measure fp error
-                __global uint *seqmem,
-                __constant uchar *fixedpos){
+                __global uint *seqmem){
     
     uint nseqs = get_global_size(0);
 	mwc64xvec2_state_t rstate = rngstates[get_global_id(0)];
 
     //set up local mem 
     __local float lcouplings[nB*nB*4];
+    __local uint shared_position;
 
     // The rest of this function is complicated by optimizations for the GPU.
     // For clarity, here is equivalent but clearer (pseudo)code:
@@ -243,6 +227,7 @@ void metropolis(__global float *J,
     //energy = energies[get_global_id(0)];
     //uint pos = 0; //position to mutate
     //for(i = 0; i < nsteps; i++){
+    //    uint pos = rand()%L; //position to mutate
     //    uint residue = rand()%nB; //calculate new residue
     //    float newenergy = energy; //calculate new energy
     //    for(m = 0; m < L; m++){
@@ -254,40 +239,30 @@ void metropolis(__global float *J,
     //        seq[pos] = residue;
     //        energy = newenergy;
     //    }
-    //    pos = (pos+1)%L; //pos cycles repeatedly through all positions
     //}
 
     //initialize energy
     float energy = getEnergiesf(J, seqmem, lcouplings);
 
-    uint pos = 0;
     uint i;
-    uint sbn;
-
-    //main loop
     for(i = 0; i < nsteps; i++){
-        // load next 4 bytes of sequence
-        if(pos%4 == 0){ 
-            sbn = seqmem[(pos/4)*nseqs + get_global_id(0)]; 
-        }
+        uint pos = position_list[i];
+        uint2 rng = MWC64XVEC2_NextUint2(&rstate);
+        uchar mutres = rng.x%nB;  // small error here if MAX_INT%nB != 0
+                                  // of order 1/MAX_INT in marginals
+        uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)]; 
+        uchar seqp = getbyte(&sbn, pos%4); 
 
-        /* skip fixed positions */
-        if(!fixedpos[pos]){
-            MCtrial(&rstate, lcouplings, J, seqmem, nseqs, pos, &sbn, &energy);
-        }
-        
-        // store the finished 4 bytes of sequence
-        if(((pos+1)%4 == 0) || (pos+1 == L)){ 
+        float newenergy = UpdateEnergy(lcouplings, J, seqmem, nseqs, 
+                                       pos, seqp, mutres, energy);
+
+        //apply MC criterion and possibly update
+        if(exp(-(newenergy - energy)) > uniformMap(rng.y)){ 
+            setbyte(&sbn, pos%4, mutres);
             seqmem[(pos/4)*nseqs + get_global_id(0)] = sbn;
+            energy = newenergy;
         }
-        
-        //pos cycles repeatedly through all positions, in order.
-        //this helps the sequence & J loads to be coalesced
-        pos = (pos+1)%L;
     }
-
-    //note: if nsteps were not a multiple of L, need to add code here to
-    //store final 4 bytes
 
     rngstates[get_global_id(0)] = rstate;
 
@@ -300,9 +275,11 @@ __kernel //call with group size = NHIST, for nPair groups
 void countBimarg(__global uint *bicount,
                  __global float *bimarg, 
                           uint nseq,
-                 __global uint *seqmem) {
+                 __global uint *seqmem,
+                 __local  uint *hist) {
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
+    uint nhist = get_local_size(0);
     uint i,j,n,m;
     
     //figure out which i,j pair we are
@@ -314,34 +291,33 @@ void countBimarg(__global uint *bicount,
     }
     j = gi + L - j; //careful with underflow!
 
-    __local uint hist[nB*nB*NHIST];
     for(n = 0; n < nB*nB; n++){
-        hist[NHIST*n + li] = 0; 
+        hist[nhist*n + li] = 0; 
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 
     uint tmp;
     //loop through all sequences
-    for(n = li; n < nseq; n += NHIST){
+    for(n = li; n < nseq; n += nhist){
         tmp = seqmem[(i/4)*nseq+n];
         uchar seqi = ((uchar*)&tmp)[i%4];
         tmp = seqmem[(j/4)*nseq+n];
         uchar seqj = ((uchar*)&tmp)[j%4];
-        hist[NHIST*(nB*seqi + seqj) + li]++;
+        hist[nhist*(nB*seqi + seqj) + li]++;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     //merge histograms
     for(n = 0; n < nB*nB; n++){
-        for(m = NHIST/2; m > 0; m >>= 1){
+        for(m = nhist/2; m > 0; m >>= 1){
             if(li < m){
-                hist[NHIST*n + li] = hist[NHIST*n + li] + hist[NHIST*n + li +m];
+                hist[nhist*n + li] = hist[nhist*n + li] + hist[nhist*n + li +m];
             }
             barrier(CLK_LOCAL_MEM_FENCE);
         }
     }
     
-    for(n = li; n < nB*nB; n += NHIST){ //only loops once if NHIST > nB*nB
-        uint count = hist[NHIST*n];
+    for(n = li; n < nB*nB; n += nhist){ //only loops once if nhist > nB*nB
+        uint count = hist[nhist*n];
         bicount[gi*nB*nB + n] = count;
         bimarg[gi*nB*nB + n] = ((float)count)/nseq;
     }
@@ -360,18 +336,19 @@ void perturbedWeights(__global float *J,
 __kernel //simply sums a vector. Call with single group of size VSIZE
 void sumWeights(__global float *weights,
                 __global float *sumweights,
-                uint nseq){
+                          uint  nseq,
+                __local   float *sums){
     uint li = get_local_id(0);
+    uint vsize = get_local_size(0);
     uint n;
 
-    __local float sums[VSIZE];
     sums[li] = 0;
-    for(n = li; n < nseq; n += VSIZE){
+    for(n = li; n < nseq; n += vsize){
         sums[li] += weights[n];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     //reduce
-    for(n = VSIZE/2; n > 0; n >>= 1){
+    for(n = vsize/2; n > 0; n >>= 1){
         if(li < n){
             sums[li] = sums[li] + sums[li + n];
         }
@@ -387,9 +364,11 @@ void weightedMarg(__global float *bimarg_new,
                   __global float *weights, 
                   __global float *sumweights,
                            uint nseq, 
-                  __global uint *seqmem) {
+                  __global uint *seqmem,
+                  __local  float *hist) {
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
+    uint nhist = get_local_size(0);
     uint i,j,n,m;
     
     //figure out which i,j pair we are
@@ -401,35 +380,34 @@ void weightedMarg(__global float *bimarg_new,
     }
     j = gi + L - j; //careful with underflow!
 
-    __local float hist[nB*nB*NHIST];
     for(n = 0; n < nB*nB; n++){
-        hist[NHIST*n + li] = 0; 
+        hist[nhist*n + li] = 0; 
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 
     uint tmp;
     //loop through all sequences
-    for(n = li; n < nseq; n += NHIST){
+    for(n = li; n < nseq; n += nhist){
         tmp = seqmem[(i/4)*nseq+n];
         uchar seqi = ((uchar*)&tmp)[i%4];
         tmp = seqmem[(j/4)*nseq+n];
         uchar seqj = ((uchar*)&tmp)[j%4];
-        hist[NHIST*(nB*seqi + seqj) + li] += weights[n];
+        hist[nhist*(nB*seqi + seqj) + li] += weights[n];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 
     //merge histograms
     for(n = 0; n < nB*nB; n++){
-        for(m = NHIST/2; m > 0; m >>= 1){
+        for(m = nhist/2; m > 0; m >>= 1){
             if(li < m){
-                hist[NHIST*n + li] = hist[NHIST*n + li] + hist[NHIST*n + li +m];
+                hist[nhist*n + li] = hist[nhist*n + li] + hist[nhist*n + li +m];
             }
             barrier(CLK_LOCAL_MEM_FENCE);
         }
     }
 
-    for(n = li; n < nB*nB; n += NHIST){ //only loops once if NHIST >= nB*nB
-        bimarg_new[gi*nB*nB + n] = hist[NHIST*n]/(*sumweights);
+    for(n = li; n < nB*nB; n += nhist){ //only loops once if nhist >= nB*nB
+        bimarg_new[gi*nB*nB + n] = hist[nhist*n]/(*sumweights);
     }
 }
 

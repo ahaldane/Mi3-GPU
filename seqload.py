@@ -3,13 +3,15 @@ from __future__ import with_statement
 from scipy import *
 import sys
 import json
+import seqtools
 
 class Opener:
     def __init__(self, fileobj, rw="rt"):
         self.fileobj = fileobj
         self.rw = rw
         self.f = None
-
+    
+    #XXX see if we can easily add gzip detection
     def __enter__(self):
         if isinstance(self.fileobj, basestring):
             self.f = open(self.fileobj, self.rw)
@@ -39,8 +41,17 @@ def mapSeqs(fn, names, mapper):
     with Opener(fn) as f:
         gen = loadSeqsChunked(f, names)
         param, headers = gen.next()
-        res = concatenate([mapper(s) for s in gen])
-    return res, param, headers
+        seqs = concatenate([mapper(s, (param, headers)) for s in gen])
+    return seqs, param, headers
+
+def reduceSeqs(fn, reduc, startval=None, names=None):
+    with Opener(fn) as f:
+        gen = loadSeqsChunked(f, names)
+        param, headers = gen.next()
+        val = startval if startval != None else gen.next()
+        for s in gen:
+            val = reduc(val, s, (param, headers))
+    return val, param, headers
 
 def parseHeader(hd):
     param = {}
@@ -51,7 +62,7 @@ def parseHeader(hd):
         elif line.startswith('#PARAM '):
             param = json.loads(line[len('#PARAM '):])
         elif line.startswith('# '):
-            headers['comments'].append(line[2:])
+            headers['comments'] = headers.get('comments',[]) + [line[2:]]
         else: #assumes first word is header category
             wordend = line.find(' ')
             if wordend == -1:
@@ -85,53 +96,35 @@ def loadSeqsChunked(f, names=None, chunksize=None):
 
     yield param, headers
     
-    #set up translation table
-    nucNums = 255*ones(256, uint8) #nucNums is a map from ascii to base number
-    nucNums[frombuffer(names, uint8)] = arange(len(names))
-    
-    #do translation
-    def translateSeqs(seqmat, pos):
-        seqmat = seqmat.reshape(seqmat.size/(L+1), L+1)
-        
-        #sanity checks on the sequences
-        if any(seqmat[:,-1] != ord('\n')):
-            badline = pos[0] + argwhere(seqmat[:,-1] != ord('\n'))[0] 
-            raise Exception("Sequence {} has different length".format(badline))
-
-        #fancy indexing casts indices to intp.... annoying slowdown
-        seqs = nucNums[seqmat[:,:-1]] 
-
-        if any(seqs.flatten() == 255):
-            badpos = argwhere(seqs.flatten() == 255)[0]
-            badchar = chr(seqmat.flatten()[badpos])
-            if badchar == '\n':
-                badline = pos[0] + badpos/L
-                raise Exception("Sequence {} has wrong length".format(badline))
-            else:
-                raise Exception("Invalid residue: {0}".format(badchar))
-        pos[0] += seqmat.shape[0]
-        return seqs
-
     #load in chunks
     if chunksize is None:
         chunksize = 4*1024*1024/(L+1)
-    dat = fromfile(f, dtype=uint8, count=chunksize*(L+1))
-    pos = [0]
-    while dat.size == chunksize*(L+1):
-        yield translateSeqs(dat, pos)
+
+    pos = 0
+    while True:
         dat = fromfile(f, dtype=uint8, count=chunksize*(L+1))
+        if dat.size != chunksize*(L+1):
+            break
+        seqmat = dat.reshape(dat.size/(L+1), L+1)
+        seqtools.translateascii(seqmat, names, pos)
+        pos += seqmat.shape[0]
+        yield seqmat[:,:-1]
+
+    if dat.size == 0:
+        return
     
     #process last partial chunk if present
-    if dat.size != 0:
-        #correct for extra/missing newline at end of file
-        if (dat.size % (L+1)) != 0: 
-            if dat[-1] == ord("\n") and ((dat.size-1) % (L+1)) == 0:
-                dat = dat[:-1] #account for newline at eof
-            elif ((dat.size+1) % (L+1)) == 0:
-                dat = concatenate([dat, [ord("\n")]])
-            else:
-                raise Exception("Unexpected characters at eof") 
-        yield translateSeqs(dat, pos)
+    #correct for extra/missing newline at end of file
+    if (dat.size % (L+1)) != 0: 
+        if dat[-1] == ord("\n") and ((dat.size-1) % (L+1)) == 0:
+            dat = dat[:-1] #account for newline at eof
+        elif ((dat.size+1) % (L+1)) == 0:
+            dat = concatenate([dat, [ord("\n")]])
+        else:
+            raise Exception("Unexpected characters at eof") 
+    seqmat = dat.reshape(dat.size/(L+1), L+1)
+    seqtools.translateascii(seqmat, names, pos)
+    yield seqmat[:,:-1]
 
 def writeSeqs(fn, seqs, names, param=None, headers=None, noheader=False):
     with Opener(fn, 'w') as f:
@@ -154,6 +147,7 @@ def writeSeqsF(f, seqs, names, param=None, headers=None, noheader=False):
     i = -chunksize # in case len(seqs) < chunksize
     for i in range(0,seqs.shape[0]-chunksize, chunksize):
         s[:,:-1] = seqs[i:i+chunksize,:]
+        # could be sped up: s is uneccesarily cast to int32/64
         alphabet[s].tofile(f)
     s[:seqs.shape[0]-i-chunksize,:-1] = seqs[i+chunksize:,:]
     alphabet[s[:seqs.shape[0]-i-chunksize,:]].tofile(f)

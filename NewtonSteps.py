@@ -201,38 +201,20 @@ def preOpt(param, gpus, log):
     log("S RMSD: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(rmsd,ssr,wdf))
 
     #modify couplings a little
-    couplings, bimarg_p = localDescent(perturbSteps, gamma0, gpus)
+    couplings, bimarg_p = iterNewton(param, gpus, log)
     save(os.path.join(outdir, 'preopt', 'perturbedbimarg'), bimarg_p)
     save(os.path.join(outdir, 'preopt', 'perturbedJ'), couplings)
 
-
-def MCMCstep(runName, startseq, couplings, param, gpus, log):
+def runMCMC(gpus, startseq, couplings, runName, param):
     nloop = param.equiltime
     nsamples = param.nsamples
     nsampleloops = param.sampletime
     trackequil = param.trackequil
     outdir = param.outdir
-    alpha, L, nB = param.alpha, param.L, param.nB
-    bimarg_target = param.bimarg
-    outdir = param.outdir
-
-    log("")
-    log("Gradient Descent step {}".format(runName))
-
-    #re-distribute energy among couplings
-    #(not really needed, but makes nicer output and might prevent
-    # numerical inaccuracy, but also shifts all seq energies)
-    log("(Re-centering gauge of couplings)")
-    couplings = fieldlessGaugeEven(zeros((L,nB)), couplings)[1]
-
-    mkdir_p(os.path.join(outdir, runName))
-    save(os.path.join(outdir, runName, 'J'), couplings)
-    with open(os.path.join(outdir, runName, 'startseq'), 'wt') as f:
-        f.write("".join(alpha[c] for c in startseq))
 
     #get ready for MCMC
     for gpu in gpus:
-        gpu.resetSeqs(startseq)
+        gpu.fillSeqs(startseq)
         gpu.setBuf('J main', couplings)
     
     #equilibration MCMC
@@ -272,6 +254,32 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
     bimarg_model, bicount = meanarr(res[0]), sumarr(res[1])
     sampledenergies, sampledseqs = concatenate(res[2]), res[3]
 
+    return bimarg_model, bicount, sampledenergies, sampledseqs
+
+def MCMCstep(runName, startseq, couplings, param, gpus, log):
+    outdir = param.outdir
+    alpha, L, nB = param.alpha, param.L, param.nB
+    bimarg_target = param.bimarg
+
+    log("")
+    log("Gradient Descent step {}".format(runName))
+
+    #re-distribute energy among couplings
+    #(not really needed, but makes nicer output and might prevent
+    # numerical inaccuracy, but also shifts all seq energies)
+    log("(Re-centering gauge of couplings)")
+    couplings = fieldlessGaugeEven(zeros((L,nB)), couplings)[1]
+
+    mkdir_p(os.path.join(outdir, runName))
+    save(os.path.join(outdir, runName, 'J'), couplings)
+    with open(os.path.join(outdir, runName, 'startseq'), 'wt') as f:
+        f.write("".join(alpha[c] for c in startseq))
+
+    (bimarg_model, 
+     bicount, 
+     sampledenergies, 
+     sampledseqs) = runMCMC(gpus, startseq, couplings, runName, param)
+
     #get summary statistics and output them
     rmsd = sqrt(mean((bimarg_target - bimarg_model)**2))
     ssr = sum((bimarg_target - bimarg_model)**2)
@@ -279,7 +287,6 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
     writeStatus(runName, rmsd, ssr, wdf, bicount, bimarg_model, 
                 couplings, sampledseqs, startseq, sampledenergies, 
                 alpha, outdir, log)
-    print(sampledenergies)
     
     #compute new J using local newton updates (in-place on GPU)
     couplings, bimarg_p = iterNewton(param, gpus, log)

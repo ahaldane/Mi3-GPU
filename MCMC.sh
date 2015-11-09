@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #PBS -q batch
-#PBS -l nodes=cb2hpc1:gpus=4
+#PBS -l nodes=cb2hpc2:gpus=4
 #PBS -N MCMCseq
 #PBS -e stderr
 #PBS -o stdout
 
 cd $PBS_O_WORKDIR
 
-stdbuf -i0 -o0 -e0 ./mcmcGPU.py bimarg.npy 0.0004 100 32768 512 16 32 ABCDEFGH -prestart logscore -pcdamping 0.1 -nsteps 16 -perturbSteps 64 -trackequil 16 -o outdir >log
+stdbuf -i0 -o0 -e0 ./IvoGPU.py inverseIsing --bimarg f2.npy --gamma 0.0004 --mcsteps 100 --nwalkers 65536 --equiltime 2048 --nsamples 64 --sampletime 64 --alpha ABCDEFGH --seqmodel reducedA2/run_14/ --damping 0.001 --nsteps 16 --newtonsteps 128 --trackequil 16 --outdir reducedA3 >logReducedA3
