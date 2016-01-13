@@ -74,8 +74,8 @@ def optionRegistry():
     # GPU options
     add('nwalkers', type=uint32,
         help="Number of MC walkers")
-    add('nsteps', type=uint32, default=16,
-        help="number of MC steps per kernel call, in multiples of L")
+    add('nsteps', type=uint32, default=2048,
+        help="number of MC steps per kernel call")
     add('wgsize', type=int, default=256, 
         help="GPU workgroup size")
     add('gpus', 
@@ -188,8 +188,8 @@ def inverseIsing(args, log):
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
     log("")
     #log(("Running {} MCMC walkers in parallel over {} GPUs, with {} MC "
-    #    "steps per kernel call ({}*{})").format(p.nwalkers, len(gpus), 
-    #    L*p.nsteps, L, p.nsteps))
+    #    "steps per kernel call").format(p.nwalkers, len(gpus), 
+    #    p.nsteps))
 
     preopt_seqs = sum([g.nseq['large'] for g in gpus])
     p.update(process_sequence_args(args, L, alpha, p.bimarg, log, 
@@ -215,7 +215,7 @@ def inverseIsing(args, log):
          "sampling every {} loops to get {} samples ({} total seqs) with {} MC "
          "steps per loop (Each walker equilibrated a total of {} MC steps)."
          ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples, 
-                p.nsamples*p.nwalkers, p.nsteps*p.L, p.nsteps*p.L*p.equiltime))
+                p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime))
     log("")
     log("")
     log("MCMC Run")
@@ -332,7 +332,7 @@ def MCMCbenchmark(args, log):
     log("=========")
     log("")
     log("Benchmarking MCMC for {} loops, {} MC steps per loop".format(
-                                                 nloop, L*p.nsteps))
+                                                 nloop, p.nsteps))
     import time
 
     def runMCMC():
@@ -357,8 +357,7 @@ def MCMCbenchmark(args, log):
     end = time.clock()
 
     log("Elapsed time: ", end - start, )
-    log("Time per loop: ", (end - start)/nloop)
-    totsteps = p.nwalkers*nloop*p.nsteps*L
+    totsteps = p.nwalkers*nloop*p.nsteps
     steps_per_second = totsteps/(end-start)
     log("MC steps computed: {}".format(totsteps))
     log("MC steps per second: {:g}".format(steps_per_second))
@@ -510,7 +509,7 @@ def process_GPU_args(args, L, nB, outdir, rngPeriod, log):
     scriptfile = os.path.join(scriptPath, "metropolis.cl")
 
     log("Work Group Size: {}".format(p.wgsize))
-    log("{} MC steps per MCMC kernel call".format(p.nsteps*L))
+    log("{} MC steps per MCMC kernel call".format(p.nsteps))
     log("GPU Initialization:")
     if p.profile:
         log("Profiling Enabled")

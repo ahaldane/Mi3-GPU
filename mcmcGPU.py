@@ -99,7 +99,7 @@ class MCMCGPU:
                      'large': nseq_large}
         nPairs, SWORDS = self.nPairs, self.SWORDS
 
-        self.nsteps = nsteps*L #increase if L very small
+        self.nsteps = nsteps
 
         self.buf_spec = {   'Jpacked': ('<f4',  (L*L, nB*nB)),
                              'J main': ('<f4',  (nPairs, nB*nB)),
@@ -215,7 +215,7 @@ class MCMCGPU:
         # read mwc64 docs for description of nRNGsamples.
         # Num rng samples should be chosen such that 2**64/(2*nRNGsamples) is
         # greater than # walkers. nRNGsamples should be > #MC steps performed
-        # per walker (which is nsteps*L*nMCMCcalls)
+        # per walker (which is nsteps*nMCMCcalls)
         if not (self.nsteps*nMCMCcalls < nRNGsamples < 2**64/(2*self.wgsize)):
             log("Warning: RNG sampling problem. RNGs may not be independent.")
         #if this is a problem rethink the value 2**40 above, or consider using
