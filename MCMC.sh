@@ -7,4 +7,4 @@
 
 cd $PBS_O_WORKDIR
 
-stdbuf -i0 -o0 -e0 ./IvoGPU.py inverseIsing --bimarg f2.npy --gamma 0.0004 --mcsteps 100 --nwalkers 65536 --equiltime 2048 --nsamples 64 --sampletime 64 --alpha ABCDEFGH --seqmodel reducedA2/run_14/ --damping 0.001 --nsteps 16 --newtonsteps 128 --trackequil 16 --outdir reducedA3 >logReducedA3
+stdbuf -i0 -o0 -e0 ./IvoGPU.py inverseIsing --bimarg f2.npy --gamma 0.0004 --mcsteps 100 --nwalkers 65536 --equiltime 2048 --nsamples 64 --sampletime 64 --alpha ABCDEFGH --seqmodel reducedA2/run_14/ --damping 0.001 --nsteps 2048 --newtonsteps 128 --trackequil 16 --outdir reducedA3 >logReducedA3
