@@ -281,6 +281,10 @@ void countBimarg(__global uint *bicount,
     uint gi = get_group_id(0);
     uint nhist = get_local_size(0);
     uint i,j,n,m;
+
+    //once we get to use atomic operations in openCL 2.0,
+    //this might be sped up by having a single shared histogram, 
+    //with a much larger work group size.
     
     //figure out which i,j pair we are
     i = 0;

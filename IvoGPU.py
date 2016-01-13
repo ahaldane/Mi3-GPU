@@ -312,11 +312,10 @@ def MCMCbenchmark(args, log):
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
     gpus = [initGPU(n, cldat, dev, nwalk, 1, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
+    log("")
     preopt_seqs = sum([g.nseq['small'] for g in gpus])
     p.update(process_sequence_args(args, L, alpha, None, log,nseqs=preopt_seqs))
-    log("")
     
-
     if p.seqs is not None:
         transferSeqsToGPU(gpus, 'small', p.seqs, log)
     elif p.startseq is not None:
@@ -326,6 +325,7 @@ def MCMCbenchmark(args, log):
     else:
         raise Exception("Error: To benchmark, must either supply startseq or "
                         "load seqs into small seq buffer")
+    log("")
 
 
     log("Benchmark")

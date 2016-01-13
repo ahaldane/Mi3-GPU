@@ -562,12 +562,15 @@ def initGPU(devnum, (cl_ctx, cl_prg), device, nwalkers, nlargebuf, param, log):
 
     vsize = 256 #power of 2. Work group size for 1d vector operations.
 
-    #Number of histograms used in counting kernels (power of two)
-    #(each hist is nB*nB floats/uints, or 256 bytes for nB=8)
+    #Number of histograms used in counting kernels (power of two),
+    #which is the maximum parallelization of the counting step.
+    #Each hist is nB*nB floats/uints, or 256 bytes for nB=8.
     #Here, chosen such that they use up to 16kb total.
-    nhist = 2**int(log2(4096/(nB*nB))) 
+    # For nB=21, get 8 hists. For nB=8, get 64.
+    nhist = 4096//(nB*nB)
     if nhist == 0:
         raise Exception("alphabet size too large to make histogram on gpu")
+    nhist = 2**int(log2(nhist)) #closest power of two
 
     log("Starting GPU {}".format(devnum))
     gpu = MCMCGPU((device, devnum, cl_ctx, cl_prg), (L, nB), outdir,
