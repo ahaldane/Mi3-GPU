@@ -99,7 +99,7 @@ class MCMCGPU:
                      'large': nseq_large}
         nPairs, SWORDS = self.nPairs, self.SWORDS
 
-        self.nsteps = nsteps
+        self.nsteps = int(nsteps)
 
         self.buf_spec = {   'Jpacked': ('<f4',  (L*L, nB*nB)),
                              'J main': ('<f4',  (nPairs, nB*nB)),

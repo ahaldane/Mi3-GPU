@@ -321,7 +321,7 @@ def MCMCbenchmark(args, log):
     elif p.startseq is not None:
         log("Loading small seq buffer with startseq")
         for gpu in gpus:
-            gpu.resetSeqs(p.startseq)
+            gpu.fillSeqs(p.startseq)
     else:
         raise Exception("Error: To benchmark, must either supply startseq or "
                         "load seqs into small seq buffer")
