@@ -1,4 +1,5 @@
 #include <mwc64x/cl/mwc64x/mwc64xvec2_rng.cl>
+#include <mwc64x/cl/mwc64x/mwc64x_rng.cl>
 
 #ifdef cl_khr_byte_addressable_store
 #pragma OPENCL EXTENSION cl_khr_byte_addressable_store : enable
@@ -163,10 +164,12 @@ void getEnergies(__global float *J,
     energies[get_global_id(0)] = getEnergiesf(J, seqmem, lcouplings);
 }
 
+//****************************** Metropilis sampler **************************
+
 __kernel
-void initRNG(__global mwc64xvec2_state_t *rngstates,
-                      ulong offset,
-                      ulong nsamples){
+void initRNG2(__global mwc64xvec2_state_t *rngstates,
+                       ulong offset,
+                       ulong nsamples){
     mwc64xvec2_state_t rstate;
     MWC64XVEC2_SeedStreams(&rstate, offset, nsamples);
     rngstates[get_global_id(0)] = rstate;
@@ -270,6 +273,101 @@ void metropolis(__global float *J,
     energies[get_global_id(0)] = energy;
 #endif
 }
+
+//****************************** Gibbs sampler **************************
+
+__kernel
+void initRNG(__global mwc64x_state_t *rngstates,
+                      ulong offset,
+                      ulong nsamples){
+    mwc64x_state_t rstate;
+    MWC64X_SeedStreams(&rstate, offset, nsamples);
+    rngstates[get_global_id(0)] = rstate;
+}
+
+inline void GibbsProb(__local float *lcouplings, __global float *J, 
+                      __global uint *seqmem, uint nseqs, uint pos,
+                      float *prob){
+    uint o;
+    for(o = 0; o < nB; o++){
+        prob[o] = 0;
+    }
+
+    uint m = 0;
+    while(m < L){
+        //loop through seq, changing energy by changed coupling with pos
+        
+        //load the next 4 rows of couplings to local mem
+        uint n;
+        for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB; 
+                                                      n += get_local_size(0)){
+            lcouplings[n] = J[(pos*L + m)*nB*nB + n]; 
+        }
+
+        //this line is the bottleneck of the entire MCMC analysis
+        uint sbm = seqmem[(m/4)*nseqs + get_global_id(0)]; 
+
+        barrier(CLK_LOCAL_MEM_FENCE); // for lcouplings and sbm
+        
+        //calculate contribution of those 4 rows to energy
+        for(n = 0; n < 4 && m < L; n++, m++){
+            if(m == pos){
+                continue;
+            }
+            uchar seqm = getbyte(&sbm, n);
+            for(o = 0; o < nB; o++){
+                prob[o] += lcouplings[nB*nB*n + nB*o + seqm]; //bank conflict?
+            }
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    float Z = 0;
+    for(o = 0; o < nB; o++){
+        Z += exp(-prob[o]);
+        prob[o] = Z;
+    }
+    for(o = 0; o < nB; o++){
+        prob[o] = prob[o]/Z;
+    }
+}
+
+__kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
+void gibbs(__global float *J,
+           __global mwc64x_state_t *rngstates, 
+           __global uint *position_list,
+                    uint nsteps, // must be multiple of L
+           __global float *energies, //ony used to measure fp error
+           __global uint *seqmem){
+    
+    uint nseqs = get_global_size(0);
+	mwc64x_state_t rstate = rngstates[get_global_id(0)];
+
+    //set up local mem 
+    __local float lcouplings[nB*nB*4];
+    float gibbsprob[nB];
+
+    uint i;
+    for(i = 0; i < nsteps; i++){
+        uint pos = position_list[i];
+
+        GibbsProb(lcouplings, J, seqmem, nseqs, pos, gibbsprob);
+        float p = uniformMap(MWC64X_NextUint(&rstate));
+        uint o = 0;
+        while(o < nB-1 && gibbsprob[o] < p){
+            o++;
+        }
+        
+        // if we had a byte addressable store, could simply assign
+        uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)]; 
+        setbyte(&sbn, pos%4, o);
+        seqmem[(pos/4)*nseqs + get_global_id(0)] = sbn;
+    }
+
+    rngstates[get_global_id(0)] = rstate;
+}
+
+//****************************** Histogram Code **************************
 
 __kernel //call with group size = NHIST, for nPair groups
 void countBimarg(__global uint *bicount,

@@ -86,6 +86,8 @@ def optionRegistry():
         help='size of large seq buffer, in multiples of nwalkers')
     add('measurefperror', action='store_true', 
         help="enable fp error calculation")
+    add('gibbs', action='store_true',
+        help='Use gibbs sampling instead of metropoils-hastings')
     
     # Newton options
     add('bimarg', required=True,
@@ -102,6 +104,8 @@ def optionRegistry():
         help="Clamps maximum change in couplings per newton step")
     add('preopt', action='store_true', 
         help="Perform a round of newton steps before first MCMC run") 
+    add('resetseqs', action='store_false', 
+        help="Reset sequence to S0 at start of every MCMC round") 
     
     # Potts options
     add('alpha', required=True,
@@ -152,10 +156,11 @@ def inverseIsing(args, log):
              'on the GPU')
     parser = argparse.ArgumentParser(prog=progname + ' inverseIsing',
                                      description=descr)
-    addopt(parser, 'GPU options',         'nwalkers nsteps wgsize gpus profile')
+    addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
+                                          'gibbs gpus profile')
     addopt(parser, 'Sequence Options',    'startseq seqs')
     addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps gamma '
-                                          'damping jclamp preopt')
+                                          'damping jclamp preopt resetseqs')
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
                                           'trackequil')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
@@ -198,14 +203,19 @@ def inverseIsing(args, log):
         if p.seqs is None:
             raise Exception("Need to provide seqs if using pre-optimization")
         transferSeqsToGPU(gpus, 'large', p.seqs, log)
+    
+    #if we're not initializing seqs to single sequence, need to load
+    # a set of initial sequences into small buffer
+    if not p.resetseqs:
+        if p.seqs is None:
+            raise Exception("Need to provide seqs if not using startseq")
+        #get required seqs from end of detected seqs
+        if len(p.seqs) == 1:
+            smallseq = [p.seqs[-sum([g.nseq['small'] for f in gpus]):]]
+        else:
+            smallseq = [s[-g.nseq['small']:] for s,g in zip(p.seqs, gpus)]
+        transferSeqsToGPU(gpus, 'small', smallseq, log)
     log("")
-
-    #nget_seqs = sum([g.nseq['small'] for g in gpus])
-    #p.update(process_sequence_args(args, L, alpha, p.bimarg, log, 
-    #                               nseqs=nget_seqs))
-    #transferSeqsToGPU(gpus, 'small', p.seqs, log)
-    #log("")
-
 
     log("Computation Overview")
     log("====================")
@@ -257,6 +267,7 @@ def getEnergies(args, log):
     log("")
 
     args.nwalkers = len(seqs)
+    args.gibbs = False
     args.nsteps = 1
     args.nlargebuf = 1
     gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, 1, log)
@@ -289,7 +300,8 @@ def MCMCbenchmark(args, log):
     add = parser.add_argument
     add('--nloop', type=uint32, required=True, 
         help="Number of kernel calls to benchmark")
-    addopt(parser, 'GPU options',         'nwalkers nsteps wgsize gpus profile')
+    addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
+                                          'gibbs gpus profile')
     addopt(parser, 'Sequence Options',    'startseq seqs')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'seqmodel outdir')
@@ -367,7 +379,8 @@ def equilibrate(args, log):
     parser = argparse.ArgumentParser(prog=progname + ' mcmc',
                                      description=descr)
     add = parser.add_argument
-    addopt(parser, 'GPU options',         'nwalkers nsteps wgsize gpus profile')
+    addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
+                                          'gibbs gpus profile')
     addopt(parser, 'Sequence Options',    'startseq seqs')
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
                                           'trackequil')
@@ -399,6 +412,8 @@ def equilibrate(args, log):
     log("")
 
     log("Equilibrating ...")
+    for gpu in gpus:
+        gpu.fillSeqs(p.startseq)
 
     (bimarg_model, 
      bicount, 
@@ -500,16 +515,19 @@ def process_GPU_args(args, L, nB, outdir, rngPeriod, log):
                       'wgsize': args.wgsize,
                       'nwalkers': args.nwalkers,
                       'gpuspec': args.gpus,
+                      'gibbs': args.gibbs,
                       'profile': args.profile,
                       'fperror': args.measurefperror})
     
     p = attrdict(param.copy())
     p.update({'L': L, 'nB': nB, 'outdir': outdir, 'rngPeriod': rngPeriod})
     
-    scriptfile = os.path.join(scriptPath, "metropolis.cl")
+    scriptfile = os.path.join(scriptPath, "mcmc.cl")
 
     log("Work Group Size: {}".format(p.wgsize))
     log("{} MC steps per MCMC kernel call".format(p.nsteps))
+    log("Using {} MC sampler".format('Gibbs' if args.gibbs 
+                                   else 'Metropolis-hastings'))
     log("GPU Initialization:")
     if p.profile:
         log("Profiling Enabled")
@@ -529,6 +547,7 @@ def process_newton_args(args, log):
              'gamma0': args.gamma,
              'pcdamping': args.damping,
              'jclamp': args.jclamp,
+             'resetseqs': args.resetseqs,
              'preopt': args.preopt }
     p = attrdict(param)
 
@@ -693,10 +712,10 @@ def process_sequence_args(args, L, alpha, bimarg, log, nseqs=None):
 
 def generateSequences(gentype, L, nB, nseqs, bimarg, log):
     if gentype == 'zero': 
-        log("Generating random sequences...")
+        log("Generating {} random sequences...".format(nseqs))
         return randint(0,nB,size=(nseqs, L)).astype('<u1')
     elif gentype == 'logscore': 
-        log("Generating logscore-independent sequences...")
+        log("Generating {} logscore-independent sequences...".format(nseqs))
         if bimarg is None:
             raise Exception("Bimarg must be provided to generate sequences")
         ff = bimarg.reshape((L*(L-1)/2,nB,nB))
@@ -724,7 +743,7 @@ def loadSequenceDir(sdir, alpha, log):
     return seqs
 
 def transferSeqsToGPU(gpus, bufname, seqs, log):
-    log("Transferring seqs to gpu's {} seq buffer...".format(bufname))
+    log("Transferring {} seqs to gpu's {} seq buffer...".format(str([len(s) for s in seqs]), bufname))
     if len(seqs) == 1:
         # split up seqs into parts for each gpu
         seqs = seqs[0]
@@ -733,7 +752,7 @@ def transferSeqsToGPU(gpus, bufname, seqs, log):
         if len(seqs) == sum(sizes):
             seqs = split(seqs, cumsum(sizes)[:-1])
         else:
-            raise Exception(("Expected {} sequences, got {}").format(
+            raise Exception(("Expected {} total sequences, got {}").format(
                              sum(sizes), len(seqs)))
 
     for n,(gpu,seq) in enumerate(zip(gpus, seqs)):

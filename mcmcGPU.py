@@ -59,7 +59,7 @@ def readGPUbufs(bufnames, gpus):
 class MCMCGPU:
     def __init__(self, (gpu, gpunum, ctx, prg), (L, nB), outdir, nseq_small, 
                  nseq_large, wgsize, vsize, nhist, nMCMCcalls, nsteps=1, 
-                 profile=False):
+                 gibbs=False, profile=False):
 
         self.L = L
         self.nB = nB
@@ -74,6 +74,17 @@ class MCMCGPU:
         with open(self.logfn, "wt") as f:
             printDevice(f.write, gpu)
 
+        self.gibbs = gibbs
+        if gibbs:
+            self.mcmcprg = prg.gibbs
+            rngdtype = '<u8'
+            self.log("Using Gibbs sampler")
+        else:
+            self.mcmcprg = prg.metropolis
+            # rngstates should be size of mwc64xvec2_state_t
+            rngdtype = '<2u8'
+            self.log("Using Metropolis-Hastings sampler")
+
         #setup opencl for this device
         self.prg = prg
         self.log("Getting CL Queue")
@@ -85,7 +96,7 @@ class MCMCGPU:
             self.queue = cl.CommandQueue(ctx, device=gpu)
         self.log("\nOpenCL Device Compilation Log:")
         self.log(self.prg.get_build_info(gpu, cl.program_build_info.LOG))
-        maxwgs = self.prg.metropolis.get_work_group_info(
+        maxwgs = self.mcmcprg.get_work_group_info(
                  cl.kernel_work_group_info.WORK_GROUP_SIZE, gpu)
         self.log("Max MCMC WGSIZE: {}".format(maxwgs))
 
@@ -98,8 +109,10 @@ class MCMCGPU:
         self.nseq = {'small': nseq_small,
                      'large': nseq_large}
         nPairs, SWORDS = self.nPairs, self.SWORDS
+        self.log("\nBuffers: {} small seqs, {} large seqs".format(nseq_small, nseq_large))
 
         self.nsteps = int(nsteps)
+        
 
         self.buf_spec = {   'Jpacked': ('<f4',  (L*L, nB*nB)),
                              'J main': ('<f4',  (nPairs, nB*nB)),
@@ -112,8 +125,7 @@ class MCMCGPU:
                             'bicount': ('<u4',  (nPairs, nB*nB)),
                           'seq small': ('<u4',  (SWORDS, self.nseq['small'])),
                           'seq large': ('<u4',  (SWORDS, self.nseq['large'])),
-                         # rngstates should be size of mwc64xvec2_state_t
-                          'rngstates': ('<2u8', (self.nseq['small'],)),
+                          'rngstates': (rngdtype, (self.nseq['small'],)),
                             'E small': ('<f4',  (self.nseq['small'],)),
                             'E large': ('<f4',  (self.nseq['large'],)),
                             'weights': ('<f4',  (self.nseq['large'],)),
@@ -143,7 +155,7 @@ class MCMCGPU:
         self.packedJ = None #use to keep track of which Jbuf is packed
         #(This class keeps track of Jpacked internally)
         
-        self.initRNG(nMCMCcalls, log)
+        self.initRNG(nMCMCcalls, gibbs, log)
 
         self.log("Initialization Finished\n")
 
@@ -203,20 +215,27 @@ class MCMCGPU:
         self.events.append((evt, 'packJ'))
         self.packedJ = Jbufname
 
-    def initRNG(self, nMCMCcalls, log):
+    def initRNG(self, nMCMCcalls, gibbs, log):
         self.log("initRNG")
 
-        nRNGsamples = uint64(2**40) #upper bound for # of uint2 rngs generated
+        if gibbs:
+            vsize = 1
+            initkernel = self.prg.initRNG
+        else:
+            vsize = 2
+            initkernel = self.prg.initRNG2
+
+        nsamples = uint64(2**40) #upper bound for # of rngs generated
         nseq = self.nseq['small']
-        offset = uint64(nRNGsamples*nseq*self.gpunum*2) 
+        offset = uint64(nsamples*nseq*self.gpunum*vsize) 
         # each gpu uses perStreamOffset*get_global_id(0)*vectorSize samples
-        #               (nRNGsamples      *   nseq         *    2)
+        #               (nsamples *   nseq         *    vecsize)
         
-        # read mwc64 docs for description of nRNGsamples.
-        # Num rng samples should be chosen such that 2**64/(2*nRNGsamples) is
-        # greater than # walkers. nRNGsamples should be > #MC steps performed
+        # read mwc64 docs for description of nsamples.
+        # Num rng samples should be chosen such that 2**64/(vsize*nsamples) is
+        # greater than # walkers. nsamples should be > #MC steps performed
         # per walker (which is nsteps*nMCMCcalls)
-        if not (self.nsteps*nMCMCcalls < nRNGsamples < 2**64/(2*self.wgsize)):
+        if not (self.nsteps*nMCMCcalls < nsamples< 2**64/(vsize*self.wgsize)):
             log("Warning: RNG sampling problem. RNGs may not be independent.")
         #if this is a problem rethink the value 2**40 above, or consider using
         #an rng with a greater period, eg the "Warp" generator.
@@ -224,8 +243,8 @@ class MCMCGPU:
         wgsize = self.wgsize
         while wgsize > nseq:
             wgsize = wgsize/2
-        evt = self.prg.initRNG(self.queue, (nseq,), (wgsize,), 
-                               self.bufs['rngstates'], offset, nRNGsamples)
+        evt = initkernel(self.queue, (nseq,), (wgsize,), 
+                         self.bufs['rngstates'], offset, nsamples)
         self.events.append((evt, 'initRNG'))
 
     def runMCMC(self):
@@ -234,11 +253,11 @@ class MCMCGPU:
         nsteps = self.nsteps
         self.packJ('main')
         self.setBuf('randpos', randint(0, self.L, size=nsteps).astype('u4'))
-        evt = self.prg.metropolis(self.queue, (nseq,), (self.wgsize,), 
-                            self.bufs['Jpacked'], self.bufs['rngstates'], 
-                            self.bufs['randpos'], uint32(nsteps), 
-                            self.Ebufs['small'], self.seqbufs['small'])
-        self.events.append((evt, 'metropolis'))
+        evt = self.mcmcprg(self.queue, (nseq,), (self.wgsize,), 
+                          self.bufs['Jpacked'], self.bufs['rngstates'], 
+                          self.bufs['randpos'], uint32(nsteps), 
+                          self.Ebufs['small'], self.seqbufs['small'])
+        self.events.append((evt, 'mcmc'))
 
     def measureFPerror(self, log, nloops=3):
         log("Measuring FP Error")
@@ -554,6 +573,7 @@ def initGPU(devnum, (cl_ctx, cl_prg), device, nwalkers, nlargebuf, param, log):
     profile = param.profile
     rngPeriod = param.rngPeriod
     wgsize = param.wgsize
+    gibbs = param.gibbs
 
     # wgsize = OpenCL work group size for MCMC kernel. 
     # (also for other kernels, although would be nice to uncouple them)
@@ -575,6 +595,6 @@ def initGPU(devnum, (cl_ctx, cl_prg), device, nwalkers, nlargebuf, param, log):
     log("Starting GPU {}".format(devnum))
     gpu = MCMCGPU((device, devnum, cl_ctx, cl_prg), (L, nB), outdir,
                   nwalkers, nlargebuf, wgsize, vsize, 
-                  nhist, rngPeriod, nsteps, profile=profile)
+                  nhist, rngPeriod, nsteps, gibbs=gibbs, profile=profile)
     return gpu
 

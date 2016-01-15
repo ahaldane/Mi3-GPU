@@ -29,12 +29,12 @@ printsome = lambda a: " ".join(map(str,a.flatten()[-5:]))
 ################################################################################
 #Helper funcs
 
-def writeStatus(name, rmsd, ssr, wdf, bicount, bimarg_model, couplings, 
+def writeStatus(name, ferr, ssr, wdf, bicount, bimarg_model, couplings, 
                 seqs, startseq, energies, alpha, outdir, log):
 
     #print some details 
     disp = ["Start Seq: " + "".join([alpha[c] for c in startseq]),
-            "RMSD: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(rmsd,ssr,wdf),
+            "Ferr: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(ferr,ssr,wdf),
             "Bicounts: " + printsome(bicount) + '...',
             "Marginals: " + printsome(bimarg_model) + '...',
             "Couplings: " + printsome(couplings) + "...",
@@ -184,7 +184,6 @@ def preOpt(param, gpus, log):
         gpu.calcBimarg('large')
     res = readGPUbufs(['bi main', 'bicount', 'seq large'], gpus)
     bimarg, bicount, seqs = meanarr(res[0]), sumarr(res[1]), res[2]
-    print(concatenate(readGPUbufs(['E large'], gpus)[0]))
     
     #store initial setup
     mkdir_p(os.path.join(outdir, 'preopt'))
@@ -195,10 +194,10 @@ def preOpt(param, gpus, log):
         seqload.writeSeqs(os.path.join(outdir, 'preopt', 'seqs-'+str(n)), 
                           s, alpha)
 
-    rmsd = sqrt(mean((bimarg_target - bimarg)**2))
+    ferr = mean((abs(bimarg_target - bimarg)/bimarg_target)[bimarg_target > 0.01])
     ssr = sum((bimarg_target - bimarg)**2)
     wdf = sum(bimarg_target*abs(bimarg_target - bimarg))
-    log("S RMSD: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(rmsd,ssr,wdf))
+    log("S Ferr: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(ferr,ssr,wdf))
 
     #modify couplings a little
     couplings, bimarg_p = iterNewton(param, gpus, log)
@@ -211,10 +210,10 @@ def runMCMC(gpus, startseq, couplings, runName, param):
     nsampleloops = param.sampletime
     trackequil = param.trackequil
     outdir = param.outdir
+    # assumes small sequence buffer is already filled
 
     #get ready for MCMC
     for gpu in gpus:
-        gpu.fillSeqs(startseq)
         gpu.setBuf('J main', couplings)
     
     #equilibration MCMC
@@ -274,6 +273,10 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
     save(os.path.join(outdir, runName, 'J'), couplings)
     with open(os.path.join(outdir, runName, 'startseq'), 'wt') as f:
         f.write("".join(alpha[c] for c in startseq))
+    
+    if param.resetseqs:
+        for gpu in gpus:
+            gpu.fillSeqs(startseq)
 
     (bimarg_model, 
      bicount, 
@@ -281,10 +284,10 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
      sampledseqs) = runMCMC(gpus, startseq, couplings, runName, param)
 
     #get summary statistics and output them
-    rmsd = sqrt(mean((bimarg_target - bimarg_model)**2))
+    ferr = mean((abs(bimarg_target - bimarg_model)/bimarg_target)[bimarg_target > 0.01])
     ssr = sum((bimarg_target - bimarg_model)**2)
     wdf = sum(bimarg_target*abs(bimarg_target - bimarg_model))
-    writeStatus(runName, rmsd, ssr, wdf, bicount, bimarg_model, 
+    writeStatus(runName, ferr, ssr, wdf, bicount, bimarg_model, 
                 couplings, sampledseqs, startseq, sampledenergies, 
                 alpha, outdir, log)
     
