@@ -1,4 +1,4 @@
-#include <mwc64x/cl/mwc64x/mwc64xvec2_rng.cl>
+#include <mwc64x/cl/mwc64x/mwc64x_rng.cl>
 
 #ifdef cl_khr_byte_addressable_store
 #pragma OPENCL EXTENSION cl_khr_byte_addressable_store : enable
@@ -164,11 +164,11 @@ void getEnergies(__global float *J,
 }
 
 __kernel
-void initRNG(__global mwc64xvec_state_t *rngstates,
+void initRNG(__global mwc64x_state_t *rngstates,
                       ulong offset,
                       ulong nsamples){
-    mwc64xvec_state_t rstate;
-    MWC64XVEC_SeedStreams(&rstate, offset, nsamples);
+    mwc64x_state_t rstate;
+    MWC64X_SeedStreams(&rstate, offset, nsamples);
     rngstates[get_global_id(0)] = rstate;
 }
 
@@ -203,7 +203,7 @@ inline void GibbsProb(__local float *lcouplings, __global float *J,
             }
             uchar seqm = getbyte(&sbm, n);
             for(o = 0; o < nB; o++){
-                prob[o] += lcouplings[nB*nB*n + nB*o + seqm];
+                prob[o] += lcouplings[nB*nB*n + nB*o + seqm]; //bank conflict?
             }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -211,26 +211,24 @@ inline void GibbsProb(__local float *lcouplings, __global float *J,
 
     float Z = 0;
     for(o = 0; o < nB; o++){
-        prob[o] = exp(-prob[o]);
-        Z += prob[o];
+        Z += exp(-prob[o]);
+        prob[o] = Z;
     }
-    float cumul = 0;
     for(o = 0; o < nB; o++){
-        counter = cumul + prob[o]/Z;
-        prob[o] = cumul;
+        prob[o] = prob[o]/Z;
     }
 }
 
 __kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
-void metropolis(__global float *J,
-                __global mwc64xvec_state_t *rngstates, 
-                __global uint *position_list,
-                         uint nsteps, // must be multiple of L
-                __global float *energies, //ony used to measure fp error
-                __global uint *seqmem){
+void gibbs(__global float *J,
+           __global mwc64x_state_t *rngstates, 
+           __global uint *position_list,
+                    uint nsteps, // must be multiple of L
+           __global float *energies, //ony used to measure fp error
+           __global uint *seqmem){
     
     uint nseqs = get_global_size(0);
-	mwc64xvec_state_t rstate = rngstates[get_global_id(0)];
+	mwc64x_state_t rstate = rngstates[get_global_id(0)];
 
     //set up local mem 
     __local float lcouplings[nB*nB*4];
@@ -239,16 +237,16 @@ void metropolis(__global float *J,
     uint i;
     for(i = 0; i < nsteps; i++){
         uint pos = position_list[i];
-        uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)]; 
-        uchar seqp = getbyte(&sbn, pos%4); 
 
         GibbsProb(lcouplings, J, seqmem, nseqs, pos, gibbsprob);
-        float p = uniformMap(MWC64XVEC_NextUint(&rstate));
+        float p = uniformMap(MWC64X_NextUint(&rstate));
         uint o = 0;
-        while(gibbsprob[o] < p && o < nB){
+        while(o < nB-1 && gibbsprob[o] < p){
             o++;
         }
-
+        
+        // if we had a byte addressable store, could simply assign
+        uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)]; 
         setbyte(&sbn, pos%4, o);
         seqmem[(pos/4)*nseqs + get_global_id(0)] = sbn;
     }
