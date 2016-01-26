@@ -535,3 +535,135 @@ void updatedJ(__global float *bimarg_target,
                              J_orig[n] + jclamp);
     }
 }
+
+//expects to be called with work-group size of nB*nB
+float zeroGauge(float J, uint li){
+    __local float zeroj[nB*nB]; //used as scratch space too
+    __local float rsums[nB];
+    __local float csums[nB];
+    uint m;
+
+    // next couple lines are essentially a transform to the "zero" gauge
+
+    //add up rows
+    zeroj[li] = J;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = nB/2; m > 0; m >>= 1){
+        if(li%nB < m){
+            zeroj[li] = zeroj[li] + zeroj[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if(li < nB){
+        rsums[li] = zeroj[nB*li];
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    //add up columns
+    zeroj[nB*(li%nB) + li/nB] = J;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = nB/2; m > 0; m >>= 1){
+        if(li%nB < m){
+            zeroj[li] = zeroj[li] + zeroj[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if(li < nB){
+        csums[li] = zeroj[nB*li];
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    //get total sum
+    for(m = nB/2; m > 0; m >>= 1){
+        if(li < m){
+            zeroj[nB*li] = zeroj[nB*li] + zeroj[nB*(li + m)];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float total = zeroj[0];
+    barrier(CLK_LOCAL_MEM_FENCE);
+    //compute zero gauge J
+    return J - (rsums[li/nB] + csums[li%nB])/nB + total/(nB*nB);
+}
+
+float fbnorm(float J, uint li){
+    __local float sums[nB*nB]; 
+    uint m;
+
+    sums[li] = J*J;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = nB*nB/2; m > 0; m >>= 1){
+        if(li < m){
+            sums[li] = sums[li] + sums[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    return sqrt(sums[0]);
+}
+
+__kernel 
+void updatedJ_reg(__global float *bimarg_target,
+              __global float *bimarg,
+                       float gamma,
+                       float pc,
+                       float lambda,
+                       float sigma,
+              __global float *Ji,
+              __global float *Jo){
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*nB*nB + li;
+
+    float J = Ji[n];
+    
+    //compute zero gauge J
+    float Jz = zeroGauge(J, li);
+    float dJz = Jz*exp(-Jz*Jz/(sigma*sigma) + 0.5)*sqrt((float)2)*Jz/sigma;
+    
+
+    // regularized coupling update step
+    Jo[n] = J - gamma*(bimarg_target[n] - bimarg[n] + lambda*dJz)
+                             /(bimarg[n] + pc);
+}
+
+__kernel 
+void updatedJ_fix(__global float *bimarg_target,
+              __global float *bimarg,
+                       float gamma,
+                       float pc,
+              __global uint *fixed,
+              __global float *Ji,
+              __global float *Jo){
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*nB*nB + li;
+
+    if(!fixed[gi]){
+        Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc);
+        return;
+    }
+    
+    float J = Ji[n];
+    float Jz = zeroGauge(J, li);
+    Jo[n] = J - 0.01*Jz;
+}
+
+__kernel 
+void updatedJ_weightfn(__global float *bimarg_target,
+              __global float *bimarg,
+                       float gamma,
+                       float pc,
+                       float fn_gamma,
+                       float fn_s,
+              __global float *Ji,
+              __global float *Jo){
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*nB*nB + li;
+
+    float J = Ji[n];
+    float Jz = zeroGauge(J, li);
+    float fn = fbnorm(Jz, li);
+
+    Jo[n] = J - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc) 
+              - fn_gamma*exp(-fn_s*fn)*Jz;
+              // try    0.05*exp(-1.5*fn)
+}

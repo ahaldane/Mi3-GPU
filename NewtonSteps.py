@@ -75,7 +75,10 @@ def newtonStep(n, bimarg_target, gamma, pc, jclamp, gpus, log):
     for gpu in gpus:
         # note: updateJPerturb should give same result on all GPUs
         # overwrites J front using bi back and J back
-        gpu.updateJPerturb(gamma, pc, jclamp) 
+        #gpu.updateJPerturb_fix(gamma, pc)
+        #gpu.updateJ_weightfn(gamma, pc, 0.02, 2.0)
+        #gpu.updateJ_weightfn(gamma, pc, 0.001, 0.5)
+        gpu.updateJ_weightfn(gamma, pc, 0.001, 2.0) 
 
     for gpu in gpus:
         gpu.swapBuf('J') #temporarily put trial J in back buffer
@@ -135,7 +138,7 @@ def iterNewton(param, gpus, log):
     for i in range(newtonSteps): 
 
         # increase gamma every gammasteps steps
-        if i != 0 and i % gammasteps == 0:
+        if 0 and i != 0 and i % gammasteps == 0:
             if nrejects == gammasteps:
                 log("Too many ssr increases. Stopping newton updates.")
                 break
@@ -148,7 +151,7 @@ def iterNewton(param, gpus, log):
                                        gpus, log)
 
         # accept move if ssr decreases, reject otherwise
-        if ssr <= lastSSR:  # accept move
+        if True or ssr <= lastSSR:  # accept move
             #keep this step, and store current J and bm to back buffer
             for gpu in gpus:
                 gpu.storeBuf('J') #copy trial J to back buffer
@@ -176,6 +179,13 @@ def preOpt(param, gpus, log):
     outdir = param.outdir
     alpha = param.alpha
     bimarg_target = param.bimarg
+    
+    Jz = zeroGauge(zeros((param.L,param.nB)), couplings)[1]
+    fb = sum(Jz**2, axis=1)
+    fixed = (fb < 1.0)
+    log("Fixing J for {} pairs...".format(sum(fixed)))
+    for gpu in gpus:
+        gpu.setBuf('fixJ', fixed.astype('u4'))
 
     log("Processing sequences...")
     for gpu in gpus:

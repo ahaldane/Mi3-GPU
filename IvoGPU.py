@@ -357,6 +357,10 @@ def MCMCbenchmark(args, log):
     #initialize
     for gpu in gpus:
         gpu.setBuf('J main', p.couplings)
+        gpu.setBuf('J back', p.couplings)
+        gpu.updateJPerturb(0.004, 0.001, 0.001)
+    Jj = readGPUbufs(['J front'], [gpus[0]])[0][0]
+    save('Jj', Jj)
     
     #warmup
     log("Warmup run...")
