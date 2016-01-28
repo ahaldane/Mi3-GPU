@@ -128,7 +128,6 @@ class MCMCGPU:
                           'rngstates': (rngdtype, (self.nseq['small'],)),
                             'E small': ('<f4',  (self.nseq['small'],)),
                             'E large': ('<f4',  (self.nseq['large'],)),
-                               'fixJ': ('<u4',  (nPairs,)),
                             'weights': ('<f4',  (self.nseq['large'],)),
                                'neff': ('<f4',  (1,)),
                             'randpos': ('<u4',  (self.nsteps,))}
@@ -343,51 +342,26 @@ class MCMCGPU:
 
     # updates front J buffer using back J and bimarg buffers, possibly clamped
     # to orig coupling
-    def updateJPerturb(self, gamma, pc, jclamp):
+    def updateJ(self, gamma, pc):
         self.log("updateJPerturb")
         nB, nPairs = self.nB, self.nPairs
         #find next highest multiple of wgsize, for num work units
         nworkunits = self.wgsize*((nPairs*nB*nB-1)//self.wgsize+1)
         evt = self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,), 
                                 self.bibufs['target'], self.bibufs['back'], 
-                                float32(gamma), float32(pc), 
-                                self.Jbufs['main'], float32(jclamp),
+                                float32(gamma), float32(pc), self.Jbufs['main'],
                                 self.Jbufs['back'], self.Jbufs['front'])
         self.events.append((evt, 'updateJPerturb'))
         if self.packedJ == 'front':
             self.packedJ = None
 
-    # updates front J buffer using back J and bimarg buffers, possibly clamped
-    # to orig coupling
-    def updateJPerturb_reg(self, gamma, pc, lmbda, sigma):
-        self.log("updateJPerturb_reg")
-        nB, nPairs = self.nB, self.nPairs
-        evt = self.prg.updatedJ_reg(self.queue, (nPairs*nB*nB,), (nB*nB,), 
-                                self.bibufs['target'], self.bibufs['back'], 
-                                float32(gamma), float32(pc), float32(lmbda), float32(sigma),
-                                self.Jbufs['back'], self.Jbufs['front'])
-        self.events.append((evt, 'updateJPerturb_reg'))
-        if self.packedJ == 'front':
-            self.packedJ = None
-
-    def updateJPerturb_fix(self, gamma, pc):
-        self.log("updateJPerturb_fix")
-        nB, nPairs = self.nB, self.nPairs
-        evt = self.prg.updatedJ_fix(self.queue, (nPairs*nB*nB,), (nB*nB,), 
-                                self.bibufs['target'], self.bibufs['back'], 
-                                float32(gamma), float32(pc), self.bufs['fixJ'],
-                                self.Jbufs['back'], self.Jbufs['front'])
-        self.events.append((evt, 'updateJPerturb_fix'))
-        if self.packedJ == 'front':
-            self.packedJ = None
-
-    def updateJ_weightfn(self, gamma, pc, fn_gamma, fn_s):
+    def updateJ_weightfn(self, gamma, pc, fn_lmbda, fn_s):
         self.log("updateJPerturb_weightfn")
         nB, nPairs = self.nB, self.nPairs
         evt = self.prg.updatedJ_weightfn(self.queue, (nPairs*nB*nB,), (nB*nB,), 
                                 self.bibufs['target'], self.bibufs['back'], 
                                 float32(gamma), float32(pc), 
-                                float32(fn_gamma), float32(fn_s),
+                                float32(fn_lmbda), float32(fn_s),
                                 self.Jbufs['back'], self.Jbufs['front'])
         self.events.append((evt, 'updateJPerturb_weightfn'))
         if self.packedJ == 'front':

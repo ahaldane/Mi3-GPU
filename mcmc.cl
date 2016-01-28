@@ -164,7 +164,7 @@ void getEnergies(__global float *J,
     energies[get_global_id(0)] = getEnergiesf(J, seqmem, lcouplings);
 }
 
-//****************************** Metropilis sampler **************************
+//****************************** Metropolis sampler **************************
 
 __kernel
 void initRNG2(__global mwc64xvec2_state_t *rngstates,
@@ -519,7 +519,6 @@ void updatedJ(__global float *bimarg_target,
                        float gamma,
                        float pc,
               __global float *J_orig,
-                       float jclamp,
               __global float *Ji,
               __global float *Jo){
     uint n = get_global_id(0);
@@ -529,18 +528,13 @@ void updatedJ(__global float *bimarg_target,
     }
 
     Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc);
-
-    if(jclamp != 0){
-        Jo[n] = clamp(Jo[n], J_orig[n] - jclamp, 
-                             J_orig[n] + jclamp);
-    }
 }
 
-//expects to be called with work-group size of nB*nB
-float zeroGauge(float J, uint li){
-    __local float zeroj[nB*nB]; //used as scratch space too
-    __local float rsums[nB];
-    __local float csums[nB];
+// expects to be called with work-group size of nB*nB
+// Local scratch memory must be provided: 
+// zeroj is nB*nB elements, rsums and csums are nB elements.
+float zeroGauge(float J, uint li, __local float *zeroj, 
+                __local float *rsums, __local float *csums){
     uint m;
 
     // next couple lines are essentially a transform to the "zero" gauge
@@ -584,8 +578,10 @@ float zeroGauge(float J, uint li){
     return J - (rsums[li/nB] + csums[li%nB])/nB + total/(nB*nB);
 }
 
-float fbnorm(float J, uint li){
-    __local float sums[nB*nB]; 
+// expects to be called with work-group size of nB*nB
+// Local scratch memory must be provided: 
+// sums is nB*nB elements
+float fbnorm(float J, uint li, __local float *sums){
     uint m;
 
     sums[li] = J*J;
@@ -600,58 +596,11 @@ float fbnorm(float J, uint li){
 }
 
 __kernel 
-void updatedJ_reg(__global float *bimarg_target,
-              __global float *bimarg,
-                       float gamma,
-                       float pc,
-                       float lambda,
-                       float sigma,
-              __global float *Ji,
-              __global float *Jo){
-    uint li = get_local_id(0);
-    uint gi = get_group_id(0);
-    uint n = gi*nB*nB + li;
-
-    float J = Ji[n];
-    
-    //compute zero gauge J
-    float Jz = zeroGauge(J, li);
-    float dJz = Jz*exp(-Jz*Jz/(sigma*sigma) + 0.5)*sqrt((float)2)*Jz/sigma;
-    
-
-    // regularized coupling update step
-    Jo[n] = J - gamma*(bimarg_target[n] - bimarg[n] + lambda*dJz)
-                             /(bimarg[n] + pc);
-}
-
-__kernel 
-void updatedJ_fix(__global float *bimarg_target,
-              __global float *bimarg,
-                       float gamma,
-                       float pc,
-              __global uint *fixed,
-              __global float *Ji,
-              __global float *Jo){
-    uint li = get_local_id(0);
-    uint gi = get_group_id(0);
-    uint n = gi*nB*nB + li;
-
-    if(!fixed[gi]){
-        Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc);
-        return;
-    }
-    
-    float J = Ji[n];
-    float Jz = zeroGauge(J, li);
-    Jo[n] = J - 0.01*Jz;
-}
-
-__kernel 
 void updatedJ_weightfn(__global float *bimarg_target,
               __global float *bimarg,
                        float gamma,
                        float pc,
-                       float fn_gamma,
+                       float fn_lmbda,
                        float fn_s,
               __global float *Ji,
               __global float *Jo){
@@ -659,11 +608,14 @@ void updatedJ_weightfn(__global float *bimarg_target,
     uint gi = get_group_id(0);
     uint n = gi*nB*nB + li;
 
-    float J = Ji[n];
-    float Jz = zeroGauge(J, li);
-    float fn = fbnorm(Jz, li);
+    __local float l_nBnB[nB*nB];
+    __local float l_nB1[nB];
+    __local float l_nB2[nB];
 
-    Jo[n] = J - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc) 
-              - fn_gamma*exp(-fn_s*fn)*Jz;
-              // try    0.05*exp(-1.5*fn)
+    float J = Ji[n];
+    float Jz = zeroGauge(J, li, l_nBnB, l_nB1, l_nB2);
+    float fn = fbnorm(Jz, li, l_nBnB);
+    float bias = fn_lmbda*exp(-fn_s*fn)*Jz;
+
+    Jo[n] = J - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
 }

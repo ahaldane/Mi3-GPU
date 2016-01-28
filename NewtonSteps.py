@@ -24,6 +24,13 @@ def mkdir_p(path):
         if not (exc.errno == errno.EEXIST and os.path.isdir(path)):
             raise
 
+class attrdict(dict):
+    def __getattr__(self, attr):
+        try:
+            return dict.__getitem__(self, attr)
+        except KeyError:
+            return None
+
 printsome = lambda a: " ".join(map(str,a.flatten()[-5:]))
 
 ################################################################################
@@ -67,18 +74,18 @@ def meanarr(arrlist):
 ################################################################################
 #local optimization related code
 
-def newtonStep(n, bimarg_target, gamma, pc, jclamp, gpus, log):
+def newtonStep(n, bimarg_target, gamma, pc, reg_param, gpus, log):
     # expects the back buffers to contain current couplings & bimarg,
     # will overwrite front buffers
 
     # calculate perturbed marginals
     for gpu in gpus:
-        # note: updateJPerturb should give same result on all GPUs
+        # note: updateJ should give same result on all GPUs
         # overwrites J front using bi back and J back
-        #gpu.updateJPerturb_fix(gamma, pc)
-        #gpu.updateJ_weightfn(gamma, pc, 0.02, 2.0)
-        #gpu.updateJ_weightfn(gamma, pc, 0.001, 0.5)
-        gpu.updateJ_weightfn(gamma, pc, 0.001, 2.0) 
+        if reg_param is not None:
+            gpu.updateJ_weightfn(gamma, pc, reg_param.fn_lmbda, reg_param.fn_s)
+        else:
+            gpu.updateJ(gamma, pc)
 
     for gpu in gpus:
         gpu.swapBuf('J') #temporarily put trial J in back buffer
@@ -116,9 +123,14 @@ def newtonStep(n, bimarg_target, gamma, pc, jclamp, gpus, log):
 def iterNewton(param, gpus, log):
     gamma = gamma0 = param.gamma0
     newtonSteps = param.newtonSteps
-    pc, jclamp = param.pcdamping, param.jclamp
+    pc = param.pcdamping
     gammasteps = 16
     bimarg_target = param.bimarg
+    
+    if param.regularize:
+        reg_param = attrdict({'fn_lmbda': param.fn_lmbda, 'fn_s': param.fn_s})
+    else:
+        reg_param = None
 
     # setup front and back buffers. Back buffers should contain last accepted
     # values, front buffers vonctain trial values.
@@ -147,7 +159,7 @@ def iterNewton(param, gpus, log):
             nrejects = 0
         
         # do newton step
-        ssr, bimarg_model = newtonStep(n, bimarg_target, gamma, pc, jclamp, 
+        ssr, bimarg_model = newtonStep(n, bimarg_target, gamma, pc, reg_param,
                                        gpus, log)
 
         # accept move if ssr decreases, reject otherwise
@@ -180,13 +192,6 @@ def preOpt(param, gpus, log):
     alpha = param.alpha
     bimarg_target = param.bimarg
     
-    Jz = zeroGauge(zeros((param.L,param.nB)), couplings)[1]
-    fb = sum(Jz**2, axis=1)
-    fixed = (fb < 1.0)
-    log("Fixing J for {} pairs...".format(sum(fixed)))
-    for gpu in gpus:
-        gpu.setBuf('fixJ', fixed.astype('u4'))
-
     log("Processing sequences...")
     for gpu in gpus:
         gpu.setBuf('J main', couplings)
@@ -199,6 +204,7 @@ def preOpt(param, gpus, log):
     mkdir_p(os.path.join(outdir, 'preopt'))
     log("Unweighted Marginals: ", printsome(bimarg))
     save(os.path.join(outdir, 'preopt', 'initbimarg'), bimarg)
+    save(os.path.join(outdir, 'preopt', 'initJ'), couplings)
     save(os.path.join(outdir, 'preopt', 'initBicont'), bicount)
     for n,s in enumerate(seqs):
         seqload.writeSeqs(os.path.join(outdir, 'preopt', 'seqs-'+str(n)), 

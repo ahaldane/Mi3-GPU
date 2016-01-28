@@ -100,8 +100,8 @@ def optionRegistry():
         help="Initial step size")
     add('damping', default=0.001, type=float32, 
         help="Damping parameter")
-    add('jclamp', default=0, type=float32, 
-        help="Clamps maximum change in couplings per newton step")
+    add('regularize', default=None, 
+        help="Specify as a 'lambda,s' pair to turn on regularization") 
     add('preopt', action='store_true', 
         help="Perform a round of newton steps before first MCMC run") 
     add('resetseqs', action='store_false', 
@@ -160,7 +160,7 @@ def inverseIsing(args, log):
                                           'gibbs gpus profile')
     addopt(parser, 'Sequence Options',    'startseq seqs')
     addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps gamma '
-                                          'damping jclamp preopt resetseqs')
+                                          'damping regularize preopt resetseqs')
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
                                           'trackequil')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
@@ -358,9 +358,6 @@ def MCMCbenchmark(args, log):
     for gpu in gpus:
         gpu.setBuf('J main', p.couplings)
         gpu.setBuf('J back', p.couplings)
-        gpu.updateJPerturb(0.004, 0.001, 0.001)
-    Jj = readGPUbufs(['J front'], [gpus[0]])[0][0]
-    save('Jj', Jj)
     
     #warmup
     log("Warmup run...")
@@ -550,16 +547,22 @@ def process_newton_args(args, log):
              'newtonSteps': args.newtonsteps,
              'gamma0': args.gamma,
              'pcdamping': args.damping,
-             'jclamp': args.jclamp,
              'resetseqs': args.resetseqs,
              'preopt': args.preopt }
+
+    if args.regularize is not None:
+        param['regularize'] = True
+        fn_lmbda, fn_s = args.regularize.split(',')
+        param['fn_lmbda'] = float(fn_lmbda)
+        param['fn_s'] = float(fn_s)
+
     p = attrdict(param)
 
-    cutoffstr = ('dJ clamp {}'.format(p.jclamp) if p.jclamp != 0 
-                 else 'no dJ clamp')
-    log(("Updating J locally with gamma = {}, {}, and pc-damping {}. "
-         "Running {} Newton update steps per round.").format(
-          p.gamma0, cutoffstr, p.pcdamping, p.newtonSteps))
+    log("Updating J locally with gamma={}, and pc-damping {}".format(
+        p.gamma0, p.pcdamping))
+    if p.regularize:
+        log("Regularizing J with lambda={}, s={}".format(p.fn_lmbda, p.fn_s))
+    log("Running {} Newton update steps per round.".format(p.newtonSteps))
 
     log("Reading target marginals from file {}".format(args.bimarg))
     bimarg = scipy.load(args.bimarg)
