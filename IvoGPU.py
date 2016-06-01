@@ -119,6 +119,8 @@ def optionRegistry():
     add('seqs', help="File containing sequences to pre-load to GPU") 
 
     # Sampling Param
+    add('preequiltime', type=uint32, default=0, 
+        help="Number of MC kernel calls to run before newton steps")
     add('equiltime', type=uint32, required=True, 
         help="Number of MC kernel calls to equilibrate")
     add('sampletime', type=uint32, required=True, 
@@ -162,7 +164,7 @@ def inverseIsing(args, log):
     addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps gamma '
                                           'damping regularize preopt resetseqs')
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
-                                          'trackequil')
+                                          'trackequil preequiltime')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'seqmodel outdir')
 
@@ -437,7 +439,7 @@ def subseqFreq(args, log):
     add = parser.add_argument
     add('fixpos', help="comma separated list of fixed positions")
     add('out', default='output', help='Output File')
-    addopt(parser, 'GPU options',         'nsteps wgsize gpus profile')
+    addopt(parser, 'GPU options',         'wgsize gpus')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'outdir')
     group = parser.add_argument_group('Sequence Options')
@@ -454,6 +456,7 @@ def subseqFreq(args, log):
     
     p = attrdict({'outdir': args.outdir})
     args.trackequil = 0
+    args.seqmodel
     mkdir_p(args.outdir)
     p.update(process_potts_args(args, p.L, p.nB, None, log))
     L, nB, alpha = p.L, p.nB, p.alpha
@@ -461,9 +464,11 @@ def subseqFreq(args, log):
     # try to load sequence files
     bseqs = loadSequenceFile(args.backgroundseqs, alpha, log)
     sseqs = loadSequenceFile(args.subseqs, alpha, log)
-
+    
+    args.nwalkers = 1
     gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, 1, log)
     p.update(gpup)
+    p.nsteps = 1
     gpuwalkers = divideWalkers(len(bseqs), len(gdevs), p.wgsize, log)
     gpus = [initGPU(n, cldat, dev, len(sseqs), nwalk, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
@@ -769,7 +774,8 @@ def transferSeqsToGPU(gpus, bufname, seqs, log):
         gpu.setBuf('seq ' + bufname, seq)
 
 def process_sample_args(args, log):
-    p = attrdict({'equiltime': args.equiltime,
+    p = attrdict({'preequiltime': args.preequiltime,
+                  'equiltime': args.equiltime,
                   'sampletime': args.sampletime,
                   'nsamples': args.nsamples,
                   'trackequil': args.trackequil})
@@ -787,6 +793,9 @@ def process_sample_args(args, log):
         if p.equiltime%p.trackequil != 0:
             raise Exception("Error: trackequil must be a divisor of equiltime")
         log("Tracking equilibration every {} loops.".format(p.trackequil))
+
+    if p.preequiltime != 0:
+        log("Pre-equilibration for {} steps".format(p.preequiltime))
 
     log("")
     return p

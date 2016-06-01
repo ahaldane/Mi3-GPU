@@ -41,7 +41,8 @@ def writeStatus(name, ferr, ssr, wdf, bicount, bimarg_model, couplings,
 
     #print some details 
     disp = ["Start Seq: " + "".join([alpha[c] for c in startseq]),
-            "Ferr: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(ferr,ssr,wdf),
+            "{} Ferr: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(
+                                                     name, ferr,ssr,wdf),
             "Bicounts: " + printsome(bicount) + '...',
             "Marginals: " + printsome(bimarg_model) + '...',
             "Couplings: " + printsome(couplings) + "...",
@@ -332,8 +333,23 @@ def newtonMCMC(param, gpus, log):
                             "pre-optimization") 
                             #this doesn't actually check that....
         preOpt(param, gpus, log)
+    elif param.preequiltime != 0:
+        log("Pre-equilibration for {} steps...".format(param.preequiltime))
+        log("(Re-centering gauge of couplings)")
+        L, nB = param.L, param.nB
+        couplings = fieldlessGaugeEven(zeros((L,nB)), couplings)[1]
+        if param.resetseqs:
+            for gpu in gpus:
+                gpu.fillSeqs(startseq)
+        for gpu in gpus:
+            gpu.setBuf('J main', couplings)
+        for i in range(param.preequiltime):
+            for gpu in gpus:
+                gpu.runMCMC()
+        log("Preequilibration done.")
     else:
         log("No Pre-optimization")
+
     
     # copy target bimarg to gpus
     for gpu in gpus:
