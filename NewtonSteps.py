@@ -272,6 +272,34 @@ def runMCMC(gpus, startseq, couplings, runName, param):
 
     return bimarg_model, bicount, sampledenergies, sampledseqs
 
+def swapTems(gpus, N):
+    es, ts = readGPUbufs(['E small', 'temps'], gpus)
+
+    for i in range(N):
+        i,j = np.choice(xx, 2)
+        if exp((es[i] - es[j])*(bs[i] - bs[j])) < rand():
+            ts[i], ts[j] = ts[j], ts[i] 
+        
+    for gpu in gpus:
+        gpu.setBuf('temps', ts)
+    # difficulty is each gpu will have a diff num of low-temp sequences
+
+    # what is plan? Should equilibrate with PT, then do sampling without?
+    # or do sampling with too?
+
+    # across all gpus, should get consistent number of sequences
+    # downside is each gpu has to allocate space for worst case scenario.
+    # maybe each gpu should keep track of number of sequences stored in 
+    # large seq buffer.
+    #
+    # alternately, maybe can skip large seq buffer, and simply update
+    # bi-counts. Oh right but this doesn't work for the sequence reweighting step
+    # hmm that's a bit annoying. Maybe best is really to mix within a gpu only.
+    # That's not ideal since then the program output depends on how many gpus
+    # you use.
+    # I think easiest is just to allocate more memory than we need as described above.
+    
+
 def MCMCstep(runName, startseq, couplings, param, gpus, log):
     outdir = param.outdir
     alpha, L, nB = param.alpha, param.L, param.nB

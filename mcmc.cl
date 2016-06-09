@@ -63,6 +63,85 @@ void storeSeqs(__global uint *smallbuf,
     #undef SWORDS
 }
 
+__ kernel
+void T0inds(__local  uint *scratch,
+            __global uint *inds,
+            __global float *count,
+                     float  T0,
+            __global float *Ts){
+    // this function looks for all elements of Ts which equal T0,
+    // and stores the index/count of that element in inds, or -1 for
+    // elements not equal to T0.
+    // For example, if Ts is [0 1 2 3 1 1 0 0 2 1] and T0 is 1, then 
+    // inds will be [-1 0 -1 -1 1 2 -1 -1 -1 3]
+
+    // use Blelloch scan
+    uint gid = get_global_id(0);
+    uint lid = get_local_id(0);
+    uint dp = 1;
+
+    scratch[2*lid] = (Ts[2*gid] == T0);
+    scratch[2*lid+1] = (Ts[2*gid+1] == T0);
+
+    //upsweep
+    for(uint s = n_items>>1; s > 0; s >>= 1) {
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if(lid < s) {
+            uint i = dp*(2*lid+1)-1;
+            uint j = dp*(2*lid+2)-1;
+            scratch[j] += scratch[i];
+        }
+
+        dp <<= 1;
+    }
+
+    //downsweep
+    if(lid == 0) scratch[n_items - 1] = 0;
+
+    for(uint s = 1; s < n_items; s <<= 1) {
+        dp >>= 1;
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        if(lid < s) {
+            uint i = dp*(2*lid+1)-1;
+            uint j = dp*(2*lid+2)-1;
+
+            float t = b[j];
+            scratch[j] += scratch[i];
+            scratch[i] = t;
+        }
+    }
+
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    inds[2*gid] = (Ts[2*gid] == T0 ? scratch[2*lid] : -1);
+    inds[2*gid+1] = (Ts[2*gid+1] == T0 ? scratch[2*lid+1] : -1);
+
+    if(gid == 0){
+        *count = scratch[get_global_size(0)-1];
+    }
+}
+
+__kernel 
+void storeT0Seqs(__global uint *smallbuf, 
+                 __global uint *largebuf,
+                          uint  nlarge,
+                          uint  nstored,
+                 __global uint *inds){
+    uint w, n;
+    uint nseqs = get_global_size(0);
+
+    #define SWORDS ((L-1)/4+1) 
+    for(w = 0; w < SWORDS; w++){
+        for(n = get_local_id(0); n < nseqs; n += get_local_size(0)){
+            if(inds[n] != -1){
+                largebuf[w*nlarge + nstored + inds[n]] = smallbuf[w*nseqs + n];
+            }
+        }
+    }
+    #undef SWORDS
+}
+
 __kernel 
 void restoreSeqs(__global uint *smallbuf, 
                  __global uint *largebuf,
@@ -215,6 +294,7 @@ void metropolis(__global float *J,
                 __global uint *position_list,
                          uint nsteps, // must be multiple of L
                 __global float *energies, //ony used to measure fp error
+                __global float *temps, //ony used to measure fp error
                 __global uint *seqmem){
     
     uint nseqs = get_global_size(0);
@@ -246,6 +326,7 @@ void metropolis(__global float *J,
 
     //initialize energy
     float energy = getEnergiesf(J, seqmem, lcouplings);
+    float T = temps[get_global_id(0)];
 
     uint i;
     for(i = 0; i < nsteps; i++){
@@ -260,7 +341,7 @@ void metropolis(__global float *J,
                                        pos, seqp, mutres, energy);
 
         //apply MC criterion and possibly update
-        if(exp(-(newenergy - energy)) > uniformMap(rng.y)){ 
+        if(exp(-T*(newenergy - energy)) > uniformMap(rng.y)){ 
             setbyte(&sbn, pos%4, mutres);
             seqmem[(pos/4)*nseqs + get_global_id(0)] = sbn;
             energy = newenergy;
@@ -272,6 +353,18 @@ void metropolis(__global float *J,
 #ifdef MEASURE_FP_ERROR
     energies[get_global_id(0)] = energy;
 #endif
+}
+
+
+__kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
+void swap_PT(){
+    float energy = energies[get_global_id(0)];
+    float T = temps[get_global_id(0)];
+
+    min(1, exp((E1 - E2)*(1/T1 - 1/T2))
+    if(exp(-T*(newenergy - energy)) > uniformMap(rng.y)){ 
+
+
 }
 
 //****************************** Gibbs sampler **************************

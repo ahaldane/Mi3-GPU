@@ -126,6 +126,7 @@ class MCMCGPU:
                           'seq small': ('<u4',  (SWORDS, self.nseq['small'])),
                           'seq large': ('<u4',  (SWORDS, self.nseq['large'])),
                           'rngstates': (rngdtype, (self.nseq['small'],)),
+                               'temp': ('<f4',  (self.nseq['small'],)),
                             'E small': ('<f4',  (self.nseq['small'],)),
                             'E large': ('<f4',  (self.nseq['large'],)),
                             'weights': ('<f4',  (self.nseq['large'],)),
@@ -151,6 +152,7 @@ class MCMCGPU:
         self.buf_spec['fixpos'] = ('<u1', (L,))
         self.setBuf('fixpos', zeros(L, '<u1'))
 
+        self.setBuf('temp', ones(L, '<f4'))
 
         self.packedJ = None #use to keep track of which Jbuf is packed
         #(This class keeps track of Jpacked internally)
@@ -256,7 +258,8 @@ class MCMCGPU:
         evt = self.mcmcprg(self.queue, (nseq,), (self.wgsize,), 
                           self.bufs['Jpacked'], self.bufs['rngstates'], 
                           self.bufs['randpos'], uint32(nsteps), 
-                          self.Ebufs['small'], self.seqbufs['small'])
+                          self.Ebufs['small'], self.bufs['temp'],
+                          self.seqbufs['small'])
         self.events.append((evt, 'mcmc'))
 
     def measureFPerror(self, log, nloops=3):
