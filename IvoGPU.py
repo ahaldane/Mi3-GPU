@@ -4,7 +4,7 @@ from scipy import *
 from scipy.misc import logsumexp
 import scipy
 import numpy as np
-from numpy.random import randint
+from numpy.random import randint, shuffle
 import pyopencl as cl
 import pyopencl.array as cl_array
 import sys, os, errno, argparse, time, ConfigParser
@@ -129,6 +129,10 @@ def optionRegistry():
         help="Number of sequence samples")
     add('trackequil', type=uint32, default=0,
         help='Save bimarg every TRACKEQUIL steps during equilibration')
+    add('tempering',
+        help='optional Temperature schedule')
+    add('nswaps_temp', type=uint32, default=10000,
+        help='optional number of pt swaps')
 
     return dict(options)
 
@@ -164,7 +168,8 @@ def inverseIsing(args, log):
     addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps gamma '
                                           'damping regularize preopt resetseqs')
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
-                                          'trackequil preequiltime')
+                                          'trackequil tempering nswaps_temp '
+                                          'preequiltime')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'seqmodel outdir')
 
@@ -228,6 +233,11 @@ def inverseIsing(args, log):
          "steps per loop (Each walker equilibrated a total of {} MC steps)."
          ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples, 
                 p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime))
+    if p.tempering is not None:
+        log("Parallel tempering: The walkers are divided into {} temperature "
+            "groups ({}), and temperatures are swapped {} times after every "
+            "MCMC loop".format(len(p.tempering), args.tempering, p.nswaps))
+
     log("")
     log("")
     log("MCMC Run")
@@ -386,7 +396,7 @@ def equilibrate(args, log):
                                           'gibbs gpus profile')
     addopt(parser, 'Sequence Options',    'startseq seqs')
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
-                                          'trackequil')
+                                          'trackequil tempering nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'seqmodel outdir')
 
@@ -409,19 +419,35 @@ def equilibrate(args, log):
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
     gpus = [initGPU(n, cldat, dev, nwalk, nwalk*p.nsamples, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
-    preopt_seqs = sum([g.nseq['large'] for g in gpus])
+    nseqs = sum([g.nseq['large'] for g in gpus])
     p.update(process_sequence_args(args, L, alpha, None, log, 
-                                   nseqs=preopt_seqs))
+                                   nseqs=nseqs))
     log("")
 
     log("Equilibrating ...")
     for gpu in gpus:
         gpu.fillSeqs(p.startseq)
 
+    # set up tempering if needed
+    if p.tempering is not None:
+        B0 = p.tempering[0]
+
+        if p.nwalkers % len(p.tempering) != 0:
+            raise Exception("# of temperatures must evenly divide # walkers")
+        Bs = concatenate([ones(p.nwalkers/len(p.tempering), dtype='f4')/t 
+                          for t in p.tempering])
+        shuffle(Bs)
+        Bs = split(Bs, len(gpus)) 
+        for B,gpu in zip(Bs, gpus):
+            gpu.setBuf('Bs', B)
+            gpu.markSeqs(B == B0)
+    
+    # actually run the mcmc
     (bimarg_model, 
      bicount, 
      energies, 
-     seqs) = runMCMC(gpus, p.startseq, p.couplings, '.', p)
+     seqs,
+     ptrate) = runMCMC(gpus, p.startseq, p.couplings, '.', p)
     
     outdir = p.outdir
     savetxt(os.path.join(outdir, 'bicounts'), bicount, fmt='%d')
@@ -430,6 +456,17 @@ def equilibrate(args, log):
     for n,seqbuf in enumerate(seqs):
         seqload.writeSeqs(os.path.join(outdir, 'seqs-{}'.format(n)), 
                           seqbuf, alpha)
+    for gpu in gpus:
+        gpu.calcEnergies('small', 'main')
+    se, ss, sB = readGPUbufs(['E small', 'seq small', 'Bs'], gpus)
+    seqload.writeSeqs(os.path.join(outdir, 'smallseqs'), concatenate(ss), alpha)
+    save(os.path.join(outdir, 'smallE'), concatenate(se))
+    save(os.path.join(outdir, 'smallB'), concatenate(sB))
+
+    #slarge = gpus[-1].getBuf('seq large', False).read()
+    #seqload.writeSeqs('gpu3seqbuf', slarge, alpha)
+
+    log("Done!")
 
 
 def subseqFreq(args, log):
@@ -485,6 +522,7 @@ def subseqFreq(args, log):
         gpu.setBuf('seq large', bs)
         gpu.setBuf('fixpos', fixedmarks)
         gpu.setBuf('J main', p.couplings)
+        
     log("")
 
     log("Subsequence Frequency Calculation")
@@ -774,11 +812,16 @@ def transferSeqsToGPU(gpus, bufname, seqs, log):
         gpu.setBuf('seq ' + bufname, seq)
 
 def process_sample_args(args, log):
-    p = attrdict({'preequiltime': args.preequiltime,
-                  'equiltime': args.equiltime,
+    p = attrdict({'equiltime': args.equiltime,
                   'sampletime': args.sampletime,
                   'nsamples': args.nsamples,
                   'trackequil': args.trackequil})
+
+    if 'tempering' in args and args.tempering:
+        p['tempering'] = [float(x) for x in args.tempering.split(",")]
+        p['nswaps'] = args.nswaps_temp
+    if 'preequiltime' in args:
+        p['preequiltime'] = args.preequiltime
 
     if p.nsamples == 0:
         raise Exception("nsamples must be at least 1")
@@ -788,6 +831,8 @@ def process_sample_args(args, log):
     log(("In each MCMC round, running {} GPU MCMC kernel calls then sampling "
          "every {} kernel calls to get {} samples").format(p.equiltime, 
                                              p.sampletime, p.nsamples))
+    if 'tempering' in p:
+        log("Parallel tempering with temperatures {}".format(args.tempering))
 
     if p.trackequil != 0:
         if p.equiltime%p.trackequil != 0:
@@ -827,7 +872,7 @@ def main(args):
       'benchmark':      MCMCbenchmark,
       #'measureFPerror': measureFPerror,
       'subseqFreq':     subseqFreq,
-      'mcmc':            equilibrate
+      'mcmc':           equilibrate
      }
     
     descr = 'Perform biophysical Potts Model calculations on the GPU'

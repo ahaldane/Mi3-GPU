@@ -30,8 +30,8 @@ import textwrap
 #will block until a kernel finishes. So all code must be careful that one GPU
 #does not hog the queues.
 
-#Note that on some systems there is a watchdog timer that kills any kernel 
-#that takes too long to finish. You will get a CL_OUT_OF_RESOURCES error 
+#Note that on some systems there is a watchdog timer that kills any kernel
+#that takes too long to finish. You will get a CL_OUT_OF_RESOURCES error
 #if this happens, which occurs when the *following* kernel is run.
 
 #Note that MCMC generation is split between nloop and nsteps.  Restarting the
@@ -57,8 +57,8 @@ def readGPUbufs(bufnames, gpus):
 
 
 class MCMCGPU:
-    def __init__(self, (gpu, gpunum, ctx, prg), (L, nB), outdir, nseq_small, 
-                 nseq_large, wgsize, vsize, nhist, nMCMCcalls, nsteps=1, 
+    def __init__(self, (gpu, gpunum, ctx, prg), (L, nB), outdir, nseq_small,
+                 nseq_large, wgsize, vsize, nhist, nMCMCcalls, nsteps=1,
                  gibbs=False, profile=False):
 
         self.L = L
@@ -109,10 +109,11 @@ class MCMCGPU:
         self.nseq = {'small': nseq_small,
                      'large': nseq_large}
         nPairs, SWORDS = self.nPairs, self.SWORDS
-        self.log("\nBuffers: {} small seqs, {} large seqs".format(nseq_small, nseq_large))
+        self.log("\nBuffers: {} small seqs, {} large seqs".format(
+                                                       nseq_small, nseq_large))
 
         self.nsteps = int(nsteps)
-        
+
 
         self.buf_spec = {   'Jpacked': ('<f4',  (L*L, nB*nB)),
                              'J main': ('<f4',  (nPairs, nB*nB)),
@@ -126,11 +127,12 @@ class MCMCGPU:
                           'seq small': ('<u4',  (SWORDS, self.nseq['small'])),
                           'seq large': ('<u4',  (SWORDS, self.nseq['large'])),
                           'rngstates': (rngdtype, (self.nseq['small'],)),
-                               'temp': ('<f4',  (self.nseq['small'],)),
+                                 'Bs': ('<f4',  (self.nseq['small'],)),
                             'E small': ('<f4',  (self.nseq['small'],)),
                             'E large': ('<f4',  (self.nseq['large'],)),
                             'weights': ('<f4',  (self.nseq['large'],)),
                                'neff': ('<f4',  (1,)),
+                              'marks': ('<i4',  (self.nseq['small'],)),
                             'randpos': ('<u4',  (self.nsteps,))}
 
         self.bufs = {}
@@ -138,7 +140,9 @@ class MCMCGPU:
         for bname,(buftype,bufshape) in self.buf_spec.iteritems():
             size = dtype(buftype).itemsize*product(bufshape)
             self.bufs[bname] = cl.Buffer(ctx, flags, size=size)
-        
+
+        self.largebufs = ['seq large', 'E large', 'weights']
+
         #convenience dicts:
         def getBufs(bufname):
             bnames = [(n.split(),b) for n,b in self.bufs.iteritems()]
@@ -152,12 +156,20 @@ class MCMCGPU:
         self.buf_spec['fixpos'] = ('<u1', (L,))
         self.setBuf('fixpos', zeros(L, '<u1'))
 
-        self.setBuf('temp', ones(L, '<f4'))
+        self.setBuf('Bs', ones(self.nseq['small'], dtype='<f4'))
+        self.setBuf('marks', arange(self.nseq['small'], dtype='<i4'))
+        self.nmarks = self.nseq['small']
 
         self.packedJ = None #use to keep track of which Jbuf is packed
         #(This class keeps track of Jpacked internally)
-        
+
         self.initRNG(nMCMCcalls, gibbs, log)
+
+        # it is also important to zero out the large seq buffer, because
+        # if it is partially full we may need to compute energy
+        # over the padding sequences at the end to get a full wg.
+        buf = self.bufs['seq large']
+        cl.enqueue_fill_buffer(self.queue, buf, uint32(0), 0, buf.size)
 
         self.log("Initialization Finished\n")
 
@@ -174,13 +186,14 @@ class MCMCGPU:
             while self.events != []:
                 dat = self.events.pop(0)
                 evt, name, size = dat[0],dat[1],(dat[2] if len(dat)==3 else '')
-                print("EVT", name, evt.profile.start, evt.profile.end, 
+                print("EVT", name, evt.profile.start, evt.profile.end,
                       size, file=f)
 
-    #converts seqs to uchars, padded to 32bits, assume GPU is little endian
     def packSeqs(self, seqs):
+        "converts seqs to uchars, padded to 32bits, assume GPU is little endian"
+
         bseqs = zeros((seqs.shape[0], self.SBYTES), dtype='<u1', order='C')
-        bseqs[:,:self.L] = seqs  
+        bseqs[:,:self.L] = seqs
         mem = zeros((self.SWORDS, seqs.shape[0]), dtype='<u4', order='C')
         for i in range(self.SWORDS):
             mem[i,:] = bseqs.view(uint32)[:,i]
@@ -189,13 +202,14 @@ class MCMCGPU:
     def unpackSeqs(self, mem):
         bseqs = zeros((mem.shape[1], self.SBYTES), dtype='<u1', order='C')
         for i in range(self.SWORDS): #undo memory rearrangement
-            bseqs.view(uint32)[:,i] = mem[i,:] 
+            bseqs.view(uint32)[:,i] = mem[i,:]
         return bseqs[:,:self.L]
 
-    #convert from format where every row is a unique ij pair (L choose 2 rows)
-    #to format with every pair, all orders (L^2 rows)
-    #Note that the GPU kernel packfV does the same thing faster
     def packJ_CPU(self, couplings):
+        """convert from format where every row is a unique ij pair (L choose 2
+        rows) to format with every pair, all orders (L^2 rows). Note that the
+        GPU kernel packfV does the same thing faster"""
+
         L,nB = self.L, self.nB
         fullcouplings = zeros((L*L,nB*nB), dtype='<f4', order='C')
         pairs = [(i,j) for i in range(L-1) for j in range(i+1,L)]
@@ -204,15 +218,18 @@ class MCMCGPU:
             fullcouplings[L*i + j,:] = c
             fullcouplings[L*j + i,:] = c.reshape((nB,nB)).T.flatten()
         return fullcouplings
-    
+
     def packJ(self, Jbufname):
+        """convert from format where every row is a unique ij pair (L choose 2
+        rows) to format with every pair, all orders (L^2 rows)."""
+
         if self.packedJ == Jbufname:
             return
         self.log("packJ " + Jbufname)
 
         nB, nPairs = self.nB, self.nPairs
         J_dev = self.Jbufs[Jbufname]
-        evt = self.prg.packfV(self.queue, (nPairs*nB*nB,), (nB*nB,), 
+        evt = self.prg.packfV(self.queue, (nPairs*nB*nB,), (nB*nB,),
                         J_dev, self.bufs['Jpacked'])
         self.events.append((evt, 'packJ'))
         self.packedJ = Jbufname
@@ -229,10 +246,10 @@ class MCMCGPU:
 
         nsamples = uint64(2**40) #upper bound for # of rngs generated
         nseq = self.nseq['small']
-        offset = uint64(nsamples*nseq*self.gpunum*vsize) 
+        offset = uint64(nsamples*nseq*self.gpunum*vsize)
         # each gpu uses perStreamOffset*get_global_id(0)*vectorSize samples
         #               (nsamples *   nseq         *    vecsize)
-        
+
         # read mwc64 docs for description of nsamples.
         # Num rng samples should be chosen such that 2**64/(vsize*nsamples) is
         # greater than # walkers. nsamples should be > #MC steps performed
@@ -245,20 +262,22 @@ class MCMCGPU:
         wgsize = self.wgsize
         while wgsize > nseq:
             wgsize = wgsize/2
-        evt = initkernel(self.queue, (nseq,), (wgsize,), 
+        evt = initkernel(self.queue, (nseq,), (wgsize,),
                          self.bufs['rngstates'], offset, nsamples)
         self.events.append((evt, 'initRNG'))
 
     def runMCMC(self):
+        """Performs a single round of mcmc sampling (nsteps MC steps)"""
+
         self.log("runMCMC")
         nseq = self.nseq['small']
         nsteps = self.nsteps
         self.packJ('main')
         self.setBuf('randpos', randint(0, self.L, size=nsteps).astype('u4'))
-        evt = self.mcmcprg(self.queue, (nseq,), (self.wgsize,), 
-                          self.bufs['Jpacked'], self.bufs['rngstates'], 
-                          self.bufs['randpos'], uint32(nsteps), 
-                          self.Ebufs['small'], self.bufs['temp'],
+        evt = self.mcmcprg(self.queue, (nseq,), (self.wgsize,),
+                          self.bufs['Jpacked'], self.bufs['rngstates'],
+                          self.bufs['randpos'], uint32(nsteps),
+                          self.Ebufs['small'], self.bufs['Bs'],
                           self.seqbufs['small'])
         self.events.append((evt, 'mcmc'))
 
@@ -279,55 +298,88 @@ class MCMCGPU:
             log("    Exact E", e3[:5])
             log("    Error:", mean([float((a-b)**2) for a,b in zip(e1, e3)]))
 
-    def calcBimarg(self, seqbufname):
-        self.log("calcBimarg " + seqbufname)
+    def calcBicounts(self, seqbufname):
+        self.log("calcBicounts " + seqbufname)
         L, nB, nPairs, nhist = self.L, self.nB, self.nPairs, self.nhist
 
-        nseq = self.nseq[seqbufname]
+        if seqbufname == 'small':
+            nseq = self.nseq[seqbufname]
+            buflen = nseq
+        else:
+            nseq = self.nstoredseqs
+            buflen = self.nseq[seqbufname]
         seq_dev = self.seqbufs[seqbufname]
 
         localhist = cl.LocalMemory(nhist*nB*nB*dtype(uint32).itemsize)
-        evt = self.prg.countBimarg(self.queue, (nPairs*nhist,), (nhist,), 
-                     self.bufs['bicount'], self.bibufs['main'], 
-                     uint32(nseq), seq_dev, localhist)
-        self.events.append((evt, 'calcBimarg'))
+        evt = self.prg.countBivariate(self.queue, (nPairs*nhist,), (nhist,),
+                     self.bufs['bicount'], uint32(nseq),
+                     seq_dev, uint32(buflen), localhist)
+        self.events.append((evt, 'calcBicounts'))
+
+    def calcMarkedBicounts(self):
+        self.log("calcMarkedBicounts ")
+        L, nB, nPairs, nhist = self.L, self.nB, self.nPairs, self.nhist
+        nseq = self.nseq['small']
+        seq_dev = self.seqbufs['small']
+
+        localhist = cl.LocalMemory(nhist*nB*nB*dtype(uint32).itemsize)
+        evt = self.prg.countMarkedBivariate(
+                     self.queue, (nPairs*nhist,), (nhist,),
+                     self.bufs['bicount'], uint32(nseq),
+                     self.bufs['marks'], seq_dev, localhist)
+        self.events.append((evt, 'calcMarkedBicounts'))
 
     def calcEnergies(self, seqbufname, Jbufname):
         self.log("calcEnergies " + seqbufname + " " + Jbufname)
 
         energies_dev = self.Ebufs[seqbufname]
         seq_dev = self.seqbufs[seqbufname]
-        nseq = self.nseq[seqbufname]
+        buflen = self.nseq[seqbufname]
+
+        if seqbufname == 'small':
+            nseq = self.nseq[seqbufname]
+        else:
+            nseq = self.nstoredseqs
+            # pad to be a multiple of wgsize (uses dummy seqs at end)
+            nseq = nseq + self.wgsize - (nseq % self.wgsize)
+
         self.packJ(Jbufname)
-        evt = self.prg.getEnergies(self.queue, (nseq,), (self.wgsize,), 
-                             self.bufs['Jpacked'], seq_dev, energies_dev)
+
+        evt = self.prg.getEnergies(self.queue, (nseq,), (self.wgsize,),
+                             self.bufs['Jpacked'], seq_dev, uint32(buflen),
+                             energies_dev)
         self.events.append((evt, 'getEnergies'))
 
     # update front bimarg buffer using back J buffer and large seq buffer
-    def perturbMarg(self): 
+    def perturbMarg(self):
         self.log("perturbMarg")
         self.calcWeights()
         self.wait()
         self.weightedMarg()
 
-    def calcWeights(self): 
+    def calcWeights(self):
         self.log("getWeights")
 
         #overwrites weights, neff
         #assumes seqmem_dev, energies_dev are filled in
-        nseq = self.nseq['large']
+        nseq = self.nstoredseqs
         self.packJ('back')
+        buflen = self.nseq['large']
 
-        evt = self.prg.perturbedWeights(self.queue, (nseq,), (self.wgsize,), 
-                       self.bufs['Jpacked'], self.seqbufs['large'],
+        # pad to be a multiple of wgsize (uses dummy seqs at end)
+        ns_pad = nseq + self.wgsize - (nseq % self.wgsize)
+
+        evt = self.prg.perturbedWeights(self.queue, (ns_pad,), (self.wgsize,),
+                       self.bufs['Jpacked'],
+                       self.seqbufs['large'], uint32(buflen),
                        self.bufs['weights'], self.Ebufs['large'])
         self.events.append((evt, 'perturbedWeights'))
         localarr = cl.LocalMemory(self.vsize*dtype(float32).itemsize)
-        evt = self.prg.sumWeights(self.queue, (self.vsize,), (self.vsize,), 
-                            self.bufs['weights'], self.bufs['neff'], 
+        evt = self.prg.sumWeights(self.queue, (self.vsize,), (self.vsize,),
+                            self.bufs['weights'], self.bufs['neff'],
                             uint32(nseq), localarr)
         self.events.append((evt, 'sumWeights'))
-    
+
     def weightedMarg(self):
         self.log("weightedMarg")
         nB, L, nPairs, nhist = self.nB, self.L, self.nPairs, self.nhist
@@ -338,9 +390,10 @@ class MCMCGPU:
         #perturbMarg
         localhist = cl.LocalMemory(nhist*nB*nB*dtype(float32).itemsize)
         evt = self.prg.weightedMarg(self.queue, (nPairs*nhist,), (nhist,),
-                        self.bibufs['front'], self.bufs['weights'], 
-                        self.bufs['neff'], uint32(self.nseq['large']), 
-                        self.seqbufs['large'], localhist)
+                        self.bibufs['front'], self.bufs['weights'],
+                        self.bufs['neff'], uint32(self.nstoredseqs),
+                        self.seqbufs['large'], uint32(self.nseq['large']),
+                        localhist)
         self.events.append((evt, 'weightedMarg'))
 
     # updates front J buffer using back J and bimarg buffers, possibly clamped
@@ -350,8 +403,8 @@ class MCMCGPU:
         nB, nPairs = self.nB, self.nPairs
         #find next highest multiple of wgsize, for num work units
         nworkunits = self.wgsize*((nPairs*nB*nB-1)//self.wgsize+1)
-        evt = self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,), 
-                                self.bibufs['target'], self.bibufs['back'], 
+        evt = self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,),
+                                self.bibufs['target'], self.bibufs['back'],
                                 float32(gamma), float32(pc), self.Jbufs['main'],
                                 self.Jbufs['back'], self.Jbufs['front'])
         self.events.append((evt, 'updateJPerturb'))
@@ -361,24 +414,37 @@ class MCMCGPU:
     def updateJ_weightfn(self, gamma, pc, fn_lmbda, fn_s):
         self.log("updateJPerturb_weightfn")
         nB, nPairs = self.nB, self.nPairs
-        evt = self.prg.updatedJ_weightfn(self.queue, (nPairs*nB*nB,), (nB*nB,), 
-                                self.bibufs['target'], self.bibufs['back'], 
-                                float32(gamma), float32(pc), 
+        evt = self.prg.updatedJ_weightfn(self.queue, (nPairs*nB*nB,), (nB*nB,),
+                                self.bibufs['target'], self.bibufs['back'],
+                                float32(gamma), float32(pc),
                                 float32(fn_lmbda), float32(fn_s),
                                 self.Jbufs['back'], self.Jbufs['front'])
         self.events.append((evt, 'updateJPerturb_weightfn'))
         if self.packedJ == 'front':
             self.packedJ = None
 
-    def getBuf(self, bufname):
+    def getBuf(self, bufname, truncateLarge=True):
+        """get buffer data. truncateLarge means only return the
+        computed part of the large buffer (rest may be uninitialized)"""
+
         self.log("getBuf " + bufname)
         buftype, bufshape = self.buf_spec[bufname]
         mem = zeros(bufshape, dtype=buftype)
-        evt = cl.enqueue_copy(self.queue, mem, self.bufs[bufname], 
+        evt = cl.enqueue_copy(self.queue, mem, self.bufs[bufname],
                               is_blocking=False)
         self.events.append((evt, 'getBuf', mem.nbytes))
+
         if bufname.split()[0] == 'seq':
+            if bufname in self.largebufs and truncateLarge:
+                nret = self.nstoredseqs
+                return FutureBuf(mem, evt,
+                                 lambda b: self.unpackSeqs(b)[:nret,:])
             return FutureBuf(mem, evt, self.unpackSeqs)
+
+        if bufname in self.largebufs and truncateLarge:
+            nret = self.nstoredseqs
+            return FutureBuf(mem, evt, lambda b: b[:nret])
+
         return FutureBuf(mem, evt)
 
     def setBuf(self, bufname, buf):
@@ -393,10 +459,10 @@ class MCMCGPU:
         assert(dtype(buftype) == buf.dtype)
         assert(bufshape == buf.shape) or (bufshape == (1,) and buf.size == 1)
 
-        evt = cl.enqueue_copy(self.queue, self.bufs[bufname], buf, 
+        evt = cl.enqueue_copy(self.queue, self.bufs[bufname], buf,
                               is_blocking=False)
         self.events.append((evt, 'setBuf', buf.nbytes))
-        
+
         #unset packedJ flag if we modified that J buf
         if bufname.split()[0] == 'J':
             if bufname.split()[1] == self.packedJ:
@@ -405,7 +471,7 @@ class MCMCGPU:
     def swapBuf(self, buftype):
         self.log("swapBuf " + buftype)
         #update convenience dicts
-        bufs = {'J': self.Jbufs, 'bi': self.bibufs}[buftype] 
+        bufs = {'J': self.Jbufs, 'bi': self.bibufs}[buftype]
         bufs['front'], bufs['back'] = bufs['back'], bufs['front']
         #update self.bufs
         bufs, t = self.bufs, buftype
@@ -436,23 +502,61 @@ class MCMCGPU:
         nseq = self.nseq[seqbufname]
         self.setBuf('seq '+seqbufname, tile(startseq, (nseq,1)))
 
-    def storeSeqs(self, offset=0):
+    def storeSeqs(self):
+        offset = self.nstoredseqs
         self.log("storeSeqs " + str(offset))
+
         nseq = self.nseq['small']
         if offset + nseq > self.nseq['large']:
             raise Exception("cannot store seqs past end of large buffer")
-        evt = self.prg.storeSeqs(self.queue, (nseq,), (self.wgsize,), 
-                           self.seqbufs['small'], self.seqbufs['large'], 
+        evt = self.prg.storeSeqs(self.queue, (nseq,), (self.wgsize,),
+                           self.seqbufs['small'], self.seqbufs['large'],
                            uint32(self.nseq['large']), uint32(offset))
+
+        self.nstoredseqs += nseq
         self.events.append((evt, 'storeSeqs'))
 
-    def restoreSeqs(self, offset=0):
+    def markSeqs(self, mask):
+        marks = -ones(mask.shape, dtype='i4')
+        inds = argwhere(mask)
+        marks[inds] = arange(len(inds), dtype='i4')
+        self.setBuf('marks', marks)
+        self.nmarks = sum(mask)
+
+    def storeMarkedSeqs(self):
+        nseq = self.nseq['small']
+        newseq = self.nmarks
+        if nseq == newseq:
+            self.storeSeqs()
+            return
+
+        offset = self.nstoredseqs
+        self.log("storeMarkedSeqs " + str(offset))
+
+        if offset + newseq > self.nseq['large']:
+            raise Exception("cannot store seqs past end of large buffer")
+        evt = self.prg.storeMarkedSeqs(self.queue, (nseq,), (self.wgsize,),
+                           self.seqbufs['small'], self.seqbufs['large'],
+                           uint32(self.nseq['large']), uint32(offset),
+                           self.bufs['marks'])
+
+        self.nstoredseqs += newseq
+        self.events.append((evt, 'storeMarkedSeqs'))
+
+    def clearLargeSeqs(self):
+        self.nstoredseqs = 0
+
+    def restoreSeqs(self):
         self.log("restoreSeqs " + str(offset))
         nseq = self.nseq['small']
+
         if offset + nseq > self.nseq['large']:
             raise Exception("cannot get seqs past end of large buffer")
-        evt = self.prg.restoreSeqs(self.queue, (nseq,), (self.wgsize,), 
-                           self.seqbufs['small'], self.seqbufs['large'], 
+        if self.nstoredseqs < nseq:
+            raise Exception("not enough seqs stored in large buffer")
+
+        evt = self.prg.restoreSeqs(self.queue, (nseq,), (self.wgsize,),
+                           self.seqbufs['small'], self.seqbufs['large'],
                            uint32(self.nseq['large']), uint32(offset))
         self.events.append((evt, 'restoreSeqs'))
 
@@ -461,8 +565,8 @@ class MCMCGPU:
         nseq = self.nseq['large']
         if seqind >= self.nseq['small']:
             raise Exception("given index is past end of small seq buffer")
-        evt = self.prg.copySubseq(self.queue, (nseq,), (self.wgsize,), 
-                           self.seqbufs['small'], self.seqbufs['large'], 
+        evt = self.prg.copySubseq(self.queue, (nseq,), (self.wgsize,),
+                           self.seqbufs['small'], self.seqbufs['large'],
                            uint32(self.nseq['small']), uint32(seqind),
                            self.bufs['fixpos'])
         self.events.append((evt, 'copySubseq'))
@@ -523,7 +627,7 @@ def setupGPUs(scriptpath, scriptfile, param, log):
     platforms = [(p, p.get_devices()) for p in cl.get_platforms()]
     if gpuspec is not None:
         try:
-            dev = [tuple(int(x) for x in a.split(':')) 
+            dev = [tuple(int(x) for x in a.split(':'))
                                 for a in gpuspec.split(',')]
         except:
             raise Exception("Error: GPU specification must be comma separated "
@@ -557,11 +661,11 @@ def setupGPUs(scriptpath, scriptfile, param, log):
     options = [('nB', nB), ('L', L)]
     if measureFPerror:
         options.append(('MEASURE_FP_ERROR', 1))
-    optstr = " ".join(["-D {}={}".format(opt,val) for opt,val in options]) 
+    optstr = " ".join(["-D {}={}".format(opt,val) for opt,val in options])
     log("Compilation Options: ", optstr)
     extraopt = " -cl-nv-verbose -Werror -I {}".format(scriptpath)
     log("Compiling CL...")
-    cl_prg = cl.Program(cl_ctx, src).build(optstr + extraopt) 
+    cl_prg = cl.Program(cl_ctx, src).build(optstr + extraopt)
     #dump compiled program
     ptx = cl_prg.get_info(cl.program_info.BINARIES)
     for n,p in enumerate(ptx):
@@ -589,7 +693,7 @@ def initGPU(devnum, (cl_ctx, cl_prg), device, nwalkers, nlargebuf, param, log):
     wgsize = param.wgsize
     gibbs = param.gibbs
 
-    # wgsize = OpenCL work group size for MCMC kernel. 
+    # wgsize = OpenCL work group size for MCMC kernel.
     # (also for other kernels, although would be nice to uncouple them)
     if wgsize not in [1<<n for n in range(32)]:
         raise Exception("wgsize must be a power of two")
@@ -608,7 +712,7 @@ def initGPU(devnum, (cl_ctx, cl_prg), device, nwalkers, nlargebuf, param, log):
 
     log("Starting GPU {}".format(devnum))
     gpu = MCMCGPU((device, devnum, cl_ctx, cl_prg), (L, nB), outdir,
-                  nwalkers, nlargebuf, wgsize, vsize, 
+                  nwalkers, nlargebuf, wgsize, vsize,
                   nhist, rngPeriod, nsteps, gibbs=gibbs, profile=profile)
     return gpu
 

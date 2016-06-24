@@ -13,7 +13,7 @@ typedef unsigned char uchar;
 typedef unsigned int uint;
 
 float uniformMap(uint i){
-    return (i>>8)*0x1.0p-24f; //converts a 32 bit integer to a float [0,1) 
+    return (i>>8)*0x1.0p-24f; //converts a 32 bit integer to a float [0,1)
 }
 
 #define NCOUPLE ((L*(L-1)*nB*nB)/2)
@@ -23,7 +23,7 @@ float uniformMap(uint i){
 
 //expands couplings stored in a (nPair x nB*nB) form to an (L*L x nB*nB) form
 __kernel //to be called with group size nB*nB, with nPair groups
-void packfV(__global float *v, 
+void packfV(__global float *v,
             __global float *vp){
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
@@ -43,114 +43,56 @@ void packfV(__global float *v,
     lv[li] = v[gi*nB*nB + li];
     barrier(CLK_LOCAL_MEM_FENCE);
     vp[nB*nB*(L*i+j) + li] = lv[li];
-    vp[nB*nB*(i+L*j) + li] = lv[nB*(li%nB) + li/nB]; 
+    vp[nB*nB*(i+L*j) + li] = lv[nB*(li%nB) + li/nB];
 }
 
-__kernel 
-void storeSeqs(__global uint *smallbuf, 
+__kernel
+void storeSeqs(__global uint *smallbuf,
                __global uint *largebuf,
                         uint  nlargebuf,
                         uint  offset){
-    uint w, n;
+    uint w;
     uint nseqs = get_global_size(0);
+    uint n = get_global_id(0);
 
-    #define SWORDS ((L-1)/4+1) 
+    #define SWORDS ((L-1)/4+1)
     for(w = 0; w < SWORDS; w++){
-        for(n = get_local_id(0); n < nseqs; n += get_local_size(0)){
-            largebuf[w*nlargebuf + offset + n] = smallbuf[w*nseqs + n];
+        largebuf[w*nlargebuf + offset + n] = smallbuf[w*nseqs + n];
+    }
+    #undef SWORDS
+}
+
+__kernel
+void storeMarkedSeqs(__global uint *smallbuf,
+                     __global uint *largebuf,
+                              uint  nlarge,
+                              uint  offset,
+                     __global uint *inds){
+    // copies seqs from small seq buffer to large seq buffer
+    // according to indices in "inds".
+
+    uint w;
+    uint nseqs = get_global_size(0);
+    uint n = get_global_id(0);
+
+    #define SWORDS ((L-1)/4+1)
+    for(w = 0; w < SWORDS; w++){
+        if(inds[n] != -1){
+            largebuf[w*nlarge + offset + inds[n]] = smallbuf[w*nseqs + n];
         }
     }
     #undef SWORDS
 }
 
-__ kernel
-void T0inds(__local  uint *scratch,
-            __global uint *inds,
-            __global float *count,
-                     float  T0,
-            __global float *Ts){
-    // this function looks for all elements of Ts which equal T0,
-    // and stores the index/count of that element in inds, or -1 for
-    // elements not equal to T0.
-    // For example, if Ts is [0 1 2 3 1 1 0 0 2 1] and T0 is 1, then 
-    // inds will be [-1 0 -1 -1 1 2 -1 -1 -1 3]
-
-    // use Blelloch scan
-    uint gid = get_global_id(0);
-    uint lid = get_local_id(0);
-    uint dp = 1;
-
-    scratch[2*lid] = (Ts[2*gid] == T0);
-    scratch[2*lid+1] = (Ts[2*gid+1] == T0);
-
-    //upsweep
-    for(uint s = n_items>>1; s > 0; s >>= 1) {
-        barrier(CLK_LOCAL_MEM_FENCE);
-        if(lid < s) {
-            uint i = dp*(2*lid+1)-1;
-            uint j = dp*(2*lid+2)-1;
-            scratch[j] += scratch[i];
-        }
-
-        dp <<= 1;
-    }
-
-    //downsweep
-    if(lid == 0) scratch[n_items - 1] = 0;
-
-    for(uint s = 1; s < n_items; s <<= 1) {
-        dp >>= 1;
-        barrier(CLK_LOCAL_MEM_FENCE);
-
-        if(lid < s) {
-            uint i = dp*(2*lid+1)-1;
-            uint j = dp*(2*lid+2)-1;
-
-            float t = b[j];
-            scratch[j] += scratch[i];
-            scratch[i] = t;
-        }
-    }
-
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-    inds[2*gid] = (Ts[2*gid] == T0 ? scratch[2*lid] : -1);
-    inds[2*gid+1] = (Ts[2*gid+1] == T0 ? scratch[2*lid+1] : -1);
-
-    if(gid == 0){
-        *count = scratch[get_global_size(0)-1];
-    }
-}
-
-__kernel 
-void storeT0Seqs(__global uint *smallbuf, 
-                 __global uint *largebuf,
-                          uint  nlarge,
-                          uint  nstored,
-                 __global uint *inds){
-    uint w, n;
-    uint nseqs = get_global_size(0);
-
-    #define SWORDS ((L-1)/4+1) 
-    for(w = 0; w < SWORDS; w++){
-        for(n = get_local_id(0); n < nseqs; n += get_local_size(0)){
-            if(inds[n] != -1){
-                largebuf[w*nlarge + nstored + inds[n]] = smallbuf[w*nseqs + n];
-            }
-        }
-    }
-    #undef SWORDS
-}
-
-__kernel 
-void restoreSeqs(__global uint *smallbuf, 
+__kernel
+void restoreSeqs(__global uint *smallbuf,
                  __global uint *largebuf,
                           uint  nlargebuf,
                           uint  offset){
     uint w, n;
     uint nseqs = get_global_size(0);
 
-    #define SWORDS ((L-1)/4+1) 
+    #define SWORDS ((L-1)/4+1)
     for(w = 0; w < SWORDS; w++){
         for(n = get_local_id(0); n < nseqs; n += get_local_size(0)){
             smallbuf[w*nseqs + n] = largebuf[w*nlargebuf + offset + n];
@@ -162,7 +104,7 @@ void restoreSeqs(__global uint *smallbuf,
 // copies fixed positions from a sequence in the small buffer to those
 // positions in the large buffer. Call with large-buffer-nseq work units.
 __kernel
-void copySubseq(__global uint *smallbuf, 
+void copySubseq(__global uint *smallbuf,
                 __global uint *largebuf,
                          uint  nsmallbuf,
                          uint  seqnum,
@@ -173,22 +115,23 @@ void copySubseq(__global uint *smallbuf,
     for(pos = 0; pos < L; pos++){
         if(fixedpos[pos]){
             if(pos/4 != lastmod/4){
-                sbl = largebuf[(pos/4)*get_global_size(0) + get_global_id(0)]; 
-                sbs = smallbuf[(pos/4)*nsmallbuf + seqnum]; 
+                sbl = largebuf[(pos/4)*get_global_size(0) + get_global_id(0)];
+                sbs = smallbuf[(pos/4)*nsmallbuf + seqnum];
             }
             setbyte(&sbl, pos%4, getbyte(&sbs, pos%4));
             lastmod = pos;
         }
-        if( (((pos+1)%4 == 0) || (pos+1 == L)) && lastmod/4 == pos/4){ 
+        if( (((pos+1)%4 == 0) || (pos+1 == L)) && lastmod/4 == pos/4){
             largebuf[(pos/4)*get_global_size(0) + get_global_id(0)] = sbl;
         }
     }
 }
- 
+
 
 //only call from kernels with nseqs work units!!!!!!
 inline float getEnergiesf(__global float *J,
                           __global uint *seqmem,
+                                   uint  buflen,
                           __local float *lcouplings){
     // This function is complicated by optimizations for the GPU.
     // For clarity, here is equivalent but clearer (pseudo)code:
@@ -209,19 +152,19 @@ inline float getEnergiesf(__global float *J,
     float energy = 0;
     n = 0;
     while(n < L-1){
-        uint sbn = seqmem[(n/4)*get_global_size(0) + get_global_id(0)]; 
+        uint sbn = seqmem[(n/4)*buflen + get_global_id(0)];
         #pragma unroll //probably ignored
         for(cn = n%4; cn < 4 && n < L-1; cn++, n++){
             seqn = getbyte(&sbn, cn);
             m = n+1;
             while(m < L){
-                uint sbm = seqmem[(m/4)*get_global_size(0) + get_global_id(0)]; 
+                uint sbm = seqmem[(m/4)*buflen + get_global_id(0)];
 
                 #pragma unroll
                 for(cm = m%4; cm < 4 && m < L; cm++, m++){
                     // could add skip for fixpos here...
                     for(k = li; k < nB*nB; k += get_local_size(0)){
-                        lcouplings[k] = J[(n*L + m)*nB*nB + k]; 
+                        lcouplings[k] = J[(n*L + m)*nB*nB + k];
                     }
                     barrier(CLK_LOCAL_MEM_FENCE);
 
@@ -238,9 +181,10 @@ inline float getEnergiesf(__global float *J,
 __kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
 void getEnergies(__global float *J,
                  __global uint *seqmem,
+                          uint  buflen,
                  __global float *energies){
     __local float lcouplings[4*nB*nB];
-    energies[get_global_id(0)] = getEnergiesf(J, seqmem, lcouplings);
+    energies[get_global_id(0)] = getEnergiesf(J, seqmem, buflen, lcouplings);
 }
 
 //****************************** Metropolis sampler **************************
@@ -254,25 +198,25 @@ void initRNG2(__global mwc64xvec2_state_t *rngstates,
     rngstates[get_global_id(0)] = rstate;
 }
 
-inline float UpdateEnergy(__local float *lcouplings, __global float *J, 
-                          global uint *seqmem, uint nseqs, 
+inline float UpdateEnergy(__local float *lcouplings, __global float *J,
+                          global uint *seqmem, uint nseqs,
                           uint pos, uchar seqp, uchar mutres, float energy){
     uint m = 0;
     while(m < L){
         //loop through seq, changing energy by changed coupling with pos
-        
+
         //load the next 4 rows of couplings to local mem
         uint n;
-        for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB; 
+        for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB;
                                                       n += get_local_size(0)){
-            lcouplings[n] = J[(pos*L + m)*nB*nB + n]; 
+            lcouplings[n] = J[(pos*L + m)*nB*nB + n];
         }
 
         //this line is the bottleneck of the entire MCMC analysis
-        uint sbm = seqmem[(m/4)*nseqs + get_global_id(0)]; 
+        uint sbm = seqmem[(m/4)*nseqs + get_global_id(0)];
 
         barrier(CLK_LOCAL_MEM_FENCE); // for lcouplings and sbm
-        
+
         //calculate contribution of those 4 rows to energy
         for(n = 0; n < 4 && m < L; n++, m++){
             if(m == pos){
@@ -290,17 +234,17 @@ inline float UpdateEnergy(__local float *lcouplings, __global float *J,
 
 __kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
 void metropolis(__global float *J,
-                __global mwc64xvec2_state_t *rngstates, 
+                __global mwc64xvec2_state_t *rngstates,
                 __global uint *position_list,
                          uint nsteps, // must be multiple of L
                 __global float *energies, //ony used to measure fp error
-                __global float *temps, //ony used to measure fp error
+                __global float *betas,
                 __global uint *seqmem){
-    
+
     uint nseqs = get_global_size(0);
 	mwc64xvec2_state_t rstate = rngstates[get_global_id(0)];
 
-    //set up local mem 
+    //set up local mem
     __local float lcouplings[nB*nB*4];
     __local uint shared_position;
 
@@ -318,15 +262,15 @@ void metropolis(__global float *J,
     //        newenergy += (J[pos,m,residue,seq[m]] - J[pos,m,seq[pos],seq[m]]);
     //    }
     //    //apply MC criterion and possibly update
-    //    if(exp(-(newenergy - energy)) > rand()){ 
+    //    if(exp(-(newenergy - energy)) > rand()){
     //        seq[pos] = residue;
     //        energy = newenergy;
     //    }
     //}
 
     //initialize energy
-    float energy = getEnergiesf(J, seqmem, lcouplings);
-    float T = temps[get_global_id(0)];
+    float energy = getEnergiesf(J, seqmem, nseqs, lcouplings);
+    float B = betas[get_global_id(0)];
 
     uint i;
     for(i = 0; i < nsteps; i++){
@@ -334,14 +278,14 @@ void metropolis(__global float *J,
         uint2 rng = MWC64XVEC2_NextUint2(&rstate);
         uchar mutres = rng.x%nB;  // small error here if MAX_INT%nB != 0
                                   // of order nB/MAX_INT in marginals
-        uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)]; 
-        uchar seqp = getbyte(&sbn, pos%4); 
+        uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)];
+        uchar seqp = getbyte(&sbn, pos%4);
 
-        float newenergy = UpdateEnergy(lcouplings, J, seqmem, nseqs, 
+        float newenergy = UpdateEnergy(lcouplings, J, seqmem, nseqs,
                                        pos, seqp, mutres, energy);
 
         //apply MC criterion and possibly update
-        if(exp(-T*(newenergy - energy)) > uniformMap(rng.y)){ 
+        if(exp(-B*(newenergy - energy)) > uniformMap(rng.y)){
             setbyte(&sbn, pos%4, mutres);
             seqmem[(pos/4)*nseqs + get_global_id(0)] = sbn;
             energy = newenergy;
@@ -355,18 +299,6 @@ void metropolis(__global float *J,
 #endif
 }
 
-
-__kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
-void swap_PT(){
-    float energy = energies[get_global_id(0)];
-    float T = temps[get_global_id(0)];
-
-    min(1, exp((E1 - E2)*(1/T1 - 1/T2))
-    if(exp(-T*(newenergy - energy)) > uniformMap(rng.y)){ 
-
-
-}
-
 //****************************** Gibbs sampler **************************
 
 __kernel
@@ -378,7 +310,7 @@ void initRNG(__global mwc64x_state_t *rngstates,
     rngstates[get_global_id(0)] = rstate;
 }
 
-inline void GibbsProb(__local float *lcouplings, __global float *J, 
+inline void GibbsProb(__local float *lcouplings, __global float *J,
                       __global uint *seqmem, uint nseqs, uint pos,
                       float *prob){
     uint o;
@@ -389,19 +321,19 @@ inline void GibbsProb(__local float *lcouplings, __global float *J,
     uint m = 0;
     while(m < L){
         //loop through seq, changing energy by changed coupling with pos
-        
+
         //load the next 4 rows of couplings to local mem
         uint n;
-        for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB; 
+        for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB;
                                                       n += get_local_size(0)){
-            lcouplings[n] = J[(pos*L + m)*nB*nB + n]; 
+            lcouplings[n] = J[(pos*L + m)*nB*nB + n];
         }
 
         //this line is the bottleneck of the entire MCMC analysis
-        uint sbm = seqmem[(m/4)*nseqs + get_global_id(0)]; 
+        uint sbm = seqmem[(m/4)*nseqs + get_global_id(0)];
 
         barrier(CLK_LOCAL_MEM_FENCE); // for lcouplings and sbm
-        
+
         //calculate contribution of those 4 rows to energy
         for(n = 0; n < 4 && m < L; n++, m++){
             if(m == pos){
@@ -427,16 +359,16 @@ inline void GibbsProb(__local float *lcouplings, __global float *J,
 
 __kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
 void gibbs(__global float *J,
-           __global mwc64x_state_t *rngstates, 
+           __global mwc64x_state_t *rngstates,
            __global uint *position_list,
                     uint nsteps, // must be multiple of L
            __global float *energies, //ony used to measure fp error
            __global uint *seqmem){
-    
+
     uint nseqs = get_global_size(0);
 	mwc64x_state_t rstate = rngstates[get_global_id(0)];
 
-    //set up local mem 
+    //set up local mem
     __local float lcouplings[nB*nB*4];
     float gibbsprob[nB];
 
@@ -450,9 +382,9 @@ void gibbs(__global float *J,
         while(o < nB-1 && gibbsprob[o] < p){
             o++;
         }
-        
+
         // if we had a byte addressable store, could simply assign
-        uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)]; 
+        uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)];
         setbyte(&sbn, pos%4, o);
         seqmem[(pos/4)*nseqs + get_global_id(0)] = sbn;
     }
@@ -463,10 +395,10 @@ void gibbs(__global float *J,
 //****************************** Histogram Code **************************
 
 __kernel //call with group size = NHIST, for nPair groups
-void countBimarg(__global uint *bicount,
-                 __global float *bimarg, 
+void countBivariate(__global uint *bicount,
                           uint nseq,
                  __global uint *seqmem,
+                          uint  buflen,
                  __local  uint *hist) {
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
@@ -474,9 +406,9 @@ void countBimarg(__global uint *bicount,
     uint i,j,n,m;
 
     //once we get to use atomic operations in openCL 2.0,
-    //this might be sped up by having a single shared histogram, 
+    //this might be sped up by having a single shared histogram,
     //with a much larger work group size.
-    
+
     //figure out which i,j pair we are
     i = 0;
     j = L-1;
@@ -487,18 +419,77 @@ void countBimarg(__global uint *bicount,
     j = gi + L - j; //careful with underflow!
 
     for(n = 0; n < nB*nB; n++){
-        hist[nhist*n + li] = 0; 
+        hist[nhist*n + li] = 0;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 
     uint tmp;
     //loop through all sequences
     for(n = li; n < nseq; n += nhist){
-        tmp = seqmem[(i/4)*nseq+n];
+        tmp = seqmem[(i/4)*buflen + n];
         uchar seqi = ((uchar*)&tmp)[i%4];
-        tmp = seqmem[(j/4)*nseq+n];
+        tmp = seqmem[(j/4)*buflen + n];
         uchar seqj = ((uchar*)&tmp)[j%4];
         hist[nhist*(nB*seqi + seqj) + li]++;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    //merge histograms
+    for(n = 0; n < nB*nB; n++){
+        for(m = nhist/2; m > 0; m >>= 1){
+            if(li < m){
+                hist[nhist*n + li] = hist[nhist*n + li] + hist[nhist*n + li +m];
+            }
+            barrier(CLK_LOCAL_MEM_FENCE);
+        }
+    }
+
+    for(n = li; n < nB*nB; n += nhist){ //only loops once if nhist > nB*nB
+        bicount[gi*nB*nB + n] = hist[nhist*n];
+    }
+}
+
+__kernel //call with group size = NHIST, for nPair groups
+void countMarkedBivariate(__global uint *bicount,
+                          uint nseq,
+                 __global uint *marks,
+                 __global uint *seqmem,
+                 __local  uint *hist) {
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint nhist = get_local_size(0);
+    uint i,j,n,m;
+
+    // only meant to be called for small buffer so nseq == buflen
+
+    //once we get to use atomic operations in openCL 2.0,
+    //this might be sped up by having a single shared histogram,
+    //with a much larger work group size.
+
+    //figure out which i,j pair we are
+    i = 0;
+    j = L-1;
+    while(j <= gi){
+        i++;
+        j += L-1-i;
+    }
+    j = gi + L - j; //careful with underflow!
+
+    for(n = 0; n < nB*nB; n++){
+        hist[nhist*n + li] = 0;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    uint tmp;
+    //loop through all sequences
+    for(n = li; n < nseq; n += nhist){
+        if(marks[n] != -1){
+            tmp = seqmem[(i/4)*nseq+n];
+            uchar seqi = ((uchar*)&tmp)[i%4];
+            tmp = seqmem[(j/4)*nseq+n];
+            uchar seqj = ((uchar*)&tmp)[j%4];
+            hist[nhist*(nB*seqi + seqj) + li]++;
+        }
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     //merge histograms
@@ -510,21 +501,20 @@ void countBimarg(__global uint *bicount,
             barrier(CLK_LOCAL_MEM_FENCE);
         }
     }
-    
+
     for(n = li; n < nB*nB; n += nhist){ //only loops once if nhist > nB*nB
-        uint count = hist[nhist*n];
-        bicount[gi*nB*nB + n] = count;
-        bimarg[gi*nB*nB + n] = ((float)count)/nseq;
+        bicount[gi*nB*nB + n] = hist[nhist*n];
     }
 }
 
 __kernel //call with global work size = to # sequences
-void perturbedWeights(__global float *J, 
+void perturbedWeights(__global float *J,
                       __global uint *seqmem,
+                               uint  buflen,
                       __global float *weights,
                       __global float *energies){
     __local float lcouplings[4*nB*nB];
-    float energy = getEnergiesf(J, seqmem, lcouplings);
+    float energy = getEnergiesf(J, seqmem, buflen, lcouplings);
     weights[get_global_id(0)] = exp(-(energy - energies[get_global_id(0)]));
 }
 
@@ -555,17 +545,18 @@ void sumWeights(__global float *weights,
 }
 
 __kernel //call with group size = NHIST, for nPair groups
-void weightedMarg(__global float *bimarg_new, 
-                  __global float *weights, 
+void weightedMarg(__global float *bimarg_new,
+                  __global float *weights,
                   __global float *sumweights,
-                           uint nseq, 
+                           uint nseq,
                   __global uint *seqmem,
+                           uint  buflen,
                   __local  float *hist) {
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
     uint nhist = get_local_size(0);
     uint i,j,n,m;
-    
+
     //figure out which i,j pair we are
     i = 0;
     j = L-1;
@@ -576,16 +567,16 @@ void weightedMarg(__global float *bimarg_new,
     j = gi + L - j; //careful with underflow!
 
     for(n = 0; n < nB*nB; n++){
-        hist[nhist*n + li] = 0; 
+        hist[nhist*n + li] = 0;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 
     uint tmp;
     //loop through all sequences
     for(n = li; n < nseq; n += nhist){
-        tmp = seqmem[(i/4)*nseq+n];
+        tmp = seqmem[(i/4)*buflen + n];
         uchar seqi = ((uchar*)&tmp)[i%4];
-        tmp = seqmem[(j/4)*nseq+n];
+        tmp = seqmem[(j/4)*buflen + n];
         uchar seqj = ((uchar*)&tmp)[j%4];
         hist[nhist*(nB*seqi + seqj) + li] += weights[n];
     }
@@ -606,7 +597,7 @@ void weightedMarg(__global float *bimarg_new,
     }
 }
 
-__kernel 
+__kernel
 void updatedJ(__global float *bimarg_target,
               __global float *bimarg,
                        float gamma,
@@ -624,9 +615,9 @@ void updatedJ(__global float *bimarg_target,
 }
 
 // expects to be called with work-group size of nB*nB
-// Local scratch memory must be provided: 
+// Local scratch memory must be provided:
 // zeroj is nB*nB elements, rsums and csums are nB elements.
-float zeroGauge(float J, uint li, __local float *zeroj, 
+float zeroGauge(float J, uint li, __local float *zeroj,
                 __local float *rsums, __local float *csums){
     uint m;
 
@@ -672,7 +663,7 @@ float zeroGauge(float J, uint li, __local float *zeroj,
 }
 
 // expects to be called with work-group size of nB*nB
-// Local scratch memory must be provided: 
+// Local scratch memory must be provided:
 // sums is nB*nB elements
 float fbnorm(float J, uint li, __local float *sums){
     uint m;
@@ -688,7 +679,7 @@ float fbnorm(float J, uint li, __local float *sums){
     return sqrt(sums[0]);
 }
 
-__kernel 
+__kernel
 void updatedJ_weightfn(__global float *bimarg_target,
               __global float *bimarg,
                        float gamma,

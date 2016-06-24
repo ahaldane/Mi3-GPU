@@ -3,7 +3,7 @@ from __future__ import print_function
 from scipy import *
 import scipy
 import numpy as np
-from numpy.random import randint
+from numpy.random import randint, shuffle
 import numpy.random
 import pyopencl as cl
 import pyopencl.array as cl_array
@@ -37,7 +37,7 @@ printsome = lambda a: " ".join(map(str,a.flatten()[-5:]))
 #Helper funcs
 
 def writeStatus(name, ferr, ssr, wdf, bicount, bimarg_model, couplings, 
-                seqs, startseq, energies, alpha, outdir, log):
+                seqs, startseq, energies, alpha, ptrate, outdir, log):
 
     #print some details 
     disp = ["Start Seq: " + "".join([alpha[c] for c in startseq]),
@@ -48,6 +48,9 @@ def writeStatus(name, ferr, ssr, wdf, bicount, bimarg_model, couplings,
             "Couplings: " + printsome(couplings) + "...",
             "Energies: Lowest =  {}, Mean = {}".format(min(energies), 
                                                        mean(energies))]
+    if ptrate != 0:
+        disp.append("PT swap rate: {:.2f}%".format(ptrate*100))
+
     dispstr = "\n".join(disp)
     with open(os.path.join(outdir, name, 'info.txt'), 'wt') as f:
         f.write(dispstr)
@@ -121,7 +124,7 @@ def newtonStep(n, bimarg_target, gamma, pc, reg_param, gpus, log):
 
     return SSR, bimarg_model
 
-def iterNewton(param, gpus, log):
+def iterNewton(param, bimarg_model, gpus, log):
     gamma = gamma0 = param.gamma0
     newtonSteps = param.newtonSteps
     pc = param.pcdamping
@@ -139,6 +142,7 @@ def iterNewton(param, gpus, log):
         gpu.calcEnergies('large', 'main')
         gpu.copyBuf('J main', 'J back')
         gpu.copyBuf('J main', 'J front')
+        gpu.setBuf('bi main', bimarg_model)
         gpu.copyBuf('bi main', 'bi back')
 
     log("Local target: ", printsome(bimarg_target))
@@ -197,9 +201,10 @@ def preOpt(param, gpus, log):
     for gpu in gpus:
         gpu.setBuf('J main', couplings)
         gpu.calcEnergies('large', 'main')
-        gpu.calcBimarg('large')
-    res = readGPUbufs(['bi main', 'bicount', 'seq large'], gpus)
-    bimarg, bicount, seqs = meanarr(res[0]), sumarr(res[1]), res[2]
+        gpu.calcBicounts('large')
+    res = readGPUbufs(['bicount', 'seq large'], gpus)
+    bicount, seqs = sumarr(res[1]), res[2]
+    bimarg = bicount.astype(float32)/float32(sum(bicount[0,:]))
     
     #store initial setup
     mkdir_p(os.path.join(outdir, 'preopt'))
@@ -210,16 +215,56 @@ def preOpt(param, gpus, log):
     for n,s in enumerate(seqs):
         seqload.writeSeqs(os.path.join(outdir, 'preopt', 'seqs-'+str(n)), 
                           s, alpha)
-
-    ferr = mean((abs(bimarg_target - bimarg)/bimarg_target)[bimarg_target > 0.01])
+    
+    topbi = bimarg_target > 0.01
+    ferr = mean((abs(bimarg_target - bimarg)/bimarg_target)[topbi])
     ssr = sum((bimarg_target - bimarg)**2)
     wdf = sum(bimarg_target*abs(bimarg_target - bimarg))
     log("S Ferr: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(ferr,ssr,wdf))
 
     #modify couplings a little
-    couplings, bimarg_p = iterNewton(param, gpus, log)
+    couplings, bimarg_p = iterNewton(param, bimarg, gpus, log)
     save(os.path.join(outdir, 'preopt', 'perturbedbimarg'), bimarg_p)
     save(os.path.join(outdir, 'preopt', 'perturbedJ'), couplings)
+
+def swapTemps(gpus, N, B0):
+    for gpu in gpus:
+        gpu.calcEnergies('small', 'main')
+    es, Bs = readGPUbufs(['E small', 'Bs'], gpus)
+    es = concatenate(es)
+    Bs = concatenate(Bs)
+    #starttime = time.time()
+    #print("--------")
+    #print(starttime, es[0], mean(es[Bs == B0]), sqrt(var(es[Bs == B0])))
+    
+    nswaps = 0
+    nBs = len(Bs)
+    #swaptypes = {}
+    for i in range(N):
+        i = j = 0
+        while Bs[i] == Bs[j]:
+            i,j = np.random.randint(nBs), np.random.randint(nBs)
+        if (es[i] - es[j])*(Bs[i] - Bs[j]) > np.log(rand()):
+            Bs[i], Bs[j] = Bs[j], Bs[i] 
+            
+            ## update counters
+            nswaps += 1
+            #pp = (Bs[i], Bs[j]) if Bs[i] < Bs[j] else (Bs[j], Bs[i])
+            #swaptypes[pp] = swaptypes.get(pp, 0) + 1
+
+    #print("{} swaps succeeded out of {} ({}%)".format(nswaps, N, float(nswaps)/N*100))
+    #k = swaptypes.keys()
+    #k.sort()
+    #print([swaptypes[x] for x in k], mean(es[Bs == B0]))
+    #endtime = time.time()
+    #print(endtime, endtime - starttime)
+
+    Bs = split(Bs, len(gpus)) 
+    for B,gpu in zip(Bs, gpus):
+        gpu.setBuf('Bs', B)
+        gpu.markSeqs(B == B0)
+
+    return float32(nswaps)/N
 
 def runMCMC(gpus, startseq, couplings, runName, param):
     nloop = param.equiltime
@@ -234,11 +279,15 @@ def runMCMC(gpus, startseq, couplings, runName, param):
         gpu.setBuf('J main', couplings)
     
     #equilibration MCMC
+    meanswapfreq = 0
     if trackequil == 0:
         #keep nloop iterator on outside to avoid filling queue with only 1 gpu
         for i in range(nloop):
             for gpu in gpus:
                 gpu.runMCMC()
+            if param.tempering is not None:
+                meanswapfreq += swapTemps(gpus, param.nswaps, 
+                                          param.tempering[0])
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
         mkdir_p(os.path.join(outdir, runName, 'equilibration'))
@@ -246,59 +295,41 @@ def runMCMC(gpus, startseq, couplings, runName, param):
             for i in range(trackequil):
                 for gpu in gpus:
                     gpu.runMCMC()
+                if param.tempering is not None:
+                    meanswapfreq += swapTemps(gpus, param.nswaps, 
+                                              param.tempering[0])
             for gpu in gpus:
-                gpu.calcBimarg('small')
-            bimarg_model = meanarr(readGPUbufs(['bi main'], gpus)[0])
+                gpu.calcMarkedBicounts()
+            bicounts = sumarr(readGPUbufs(['bicount'], gpus)[0])
+            bimarg_model = bicounts.astype(float32)/float32(sum(bicounts[0,:]))
             save(os.path.join(outdir, runName, 
                  'equilibration', 'bimarg_{}'.format(j)), bimarg_model)
 
     #post-equilibration samples
     for gpu in gpus:
-        gpu.storeSeqs(offset=0) #save seqs from smallbuf to largebuf
+        gpu.clearLargeSeqs()
+        gpu.storeMarkedSeqs() #save seqs from smallbuf to largebuf
     for j in range(1,nsamples):
         for i in range(nsampleloops):
             for gpu in gpus:
                 gpu.runMCMC()
+            if param.tempering is not None:
+                swapTemps(gpus, param.nswaps, param.tempering[0])
         for gpu in gpus:
-            gpu.storeSeqs(offset=j*gpu.nseq['small'])
+            gpu.storeMarkedSeqs()
     
     #process results
     for gpu in gpus:
-        gpu.calcBimarg('large')
+        gpu.calcBicounts('large')
         gpu.calcEnergies('large', 'main')
-    res = readGPUbufs(['bi main', 'bicount', 'E large', 'seq large'], gpus)
-    bimarg_model, bicount = meanarr(res[0]), sumarr(res[1])
-    sampledenergies, sampledseqs = concatenate(res[2]), res[3]
-
-    return bimarg_model, bicount, sampledenergies, sampledseqs
-
-def swapTems(gpus, N):
-    es, ts = readGPUbufs(['E small', 'temps'], gpus)
-
-    for i in range(N):
-        i,j = np.choice(xx, 2)
-        if exp((es[i] - es[j])*(bs[i] - bs[j])) < rand():
-            ts[i], ts[j] = ts[j], ts[i] 
-        
-    for gpu in gpus:
-        gpu.setBuf('temps', ts)
-    # difficulty is each gpu will have a diff num of low-temp sequences
-
-    # what is plan? Should equilibrate with PT, then do sampling without?
-    # or do sampling with too?
-
-    # across all gpus, should get consistent number of sequences
-    # downside is each gpu has to allocate space for worst case scenario.
-    # maybe each gpu should keep track of number of sequences stored in 
-    # large seq buffer.
-    #
-    # alternately, maybe can skip large seq buffer, and simply update
-    # bi-counts. Oh right but this doesn't work for the sequence reweighting step
-    # hmm that's a bit annoying. Maybe best is really to mix within a gpu only.
-    # That's not ideal since then the program output depends on how many gpus
-    # you use.
-    # I think easiest is just to allocate more memory than we need as described above.
+    res = readGPUbufs(['bicount', 'E large', 'seq large'], gpus)
+    bicount = sumarr(res[0])
+    # assert sum(bicount, axis=1) are all equal here
+    bimarg_model = bicount.astype(float32)/float32(sum(bicount[0,:]))
+    sampledenergies, sampledseqs = concatenate(res[1]), res[2]
     
+    ptrate = meanswapfreq/nloop
+    return bimarg_model, bicount, sampledenergies, sampledseqs, ptrate
 
 def MCMCstep(runName, startseq, couplings, param, gpus, log):
     outdir = param.outdir
@@ -326,24 +357,29 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
     (bimarg_model, 
      bicount, 
      sampledenergies, 
-     sampledseqs) = runMCMC(gpus, startseq, couplings, runName, param)
+     sampledseqs,
+     ptrate) = runMCMC(gpus, startseq, couplings, runName, param)
 
     #get summary statistics and output them
-    ferr = mean((abs(bimarg_target - bimarg_model)/bimarg_target)[bimarg_target > 0.01])
+    topbi = bimarg_target > 0.01
+    ferr = mean((abs(bimarg_target - bimarg_model)/bimarg_target)[topbi])
     ssr = sum((bimarg_target - bimarg_model)**2)
     wdf = sum(bimarg_target*abs(bimarg_target - bimarg_model))
     writeStatus(runName, ferr, ssr, wdf, bicount, bimarg_model, 
                 couplings, sampledseqs, startseq, sampledenergies, 
-                alpha, outdir, log)
+                alpha, ptrate, outdir, log)
     
     #compute new J using local newton updates (in-place on GPU)
-    couplings, bimarg_p = iterNewton(param, gpus, log)
+    couplings, bimarg_p = iterNewton(param, bimarg_model, gpus, log)
     save(os.path.join(outdir, runName, 'predictedBimarg'), bimarg_p)
 
     #choose seed sequence for next round
     rseq_ind = numpy.random.randint(0, len(sampledenergies))
-    nseq = gpus[0].nseq['large'] #assumes all gpus the same
-    rseq = sampledseqs[rseq_ind/nseq][rseq_ind%nseq]
+    for s in sampledseqs:
+        if rseq_ind < s.shape[0]:
+            rseq = s[rseq_ind]
+            break
+        rseq_ind -= s.shape[0]
 
     return rseq, couplings
 
@@ -353,6 +389,19 @@ def newtonMCMC(param, gpus, log):
 
     if startseq is None:
         raise Exception("Error: Potts inference requires a starting sequence")
+    
+    if param.tempering is not None:
+        if param.nwalkers % len(param.tempering) != 0:
+            raise Exception("# of temperatures must evenly divide # walkers")
+        B0 = param.tempering[0]
+        Bs = concatenate([
+             ones(param.nwalkers/len(param.tempering), dtype='f4')/t 
+                          for t in param.tempering])
+        shuffle(Bs)
+        Bs = split(Bs, len(gpus)) 
+        for B,gpu in zip(Bs, gpus):
+            gpu.setBuf('Bs', B)
+            gpu.markSeqs(B == B0)
     
     # pre-optimization
     if param.preopt:
@@ -374,6 +423,8 @@ def newtonMCMC(param, gpus, log):
         for i in range(param.preequiltime):
             for gpu in gpus:
                 gpu.runMCMC()
+            if param.tempering is not None:
+                swapTemps(gpus, param.nswaps, param.tempering[0])
         log("Preequilibration done.")
     else:
         log("No Pre-optimization")
