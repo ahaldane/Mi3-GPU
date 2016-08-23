@@ -242,7 +242,7 @@ void metropolis(__global float *J,
                 __global uint *seqmem){
 
     uint nseqs = get_global_size(0);
-	mwc64xvec2_state_t rstate = rngstates[get_global_id(0)];
+    mwc64xvec2_state_t rstate = rngstates[get_global_id(0)];
 
     //set up local mem
     __local float lcouplings[nB*nB*4];
@@ -366,7 +366,7 @@ void gibbs(__global float *J,
            __global uint *seqmem){
 
     uint nseqs = get_global_size(0);
-	mwc64x_state_t rstate = rngstates[get_global_id(0)];
+    mwc64x_state_t rstate = rngstates[get_global_id(0)];
 
     //set up local mem
     __local float lcouplings[nB*nB*4];
