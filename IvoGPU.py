@@ -4,7 +4,7 @@ from scipy import *
 from scipy.misc import logsumexp
 import scipy
 import numpy as np
-from numpy.random import randint
+from numpy.random import randint, permutation
 import pyopencl as cl
 import pyopencl.array as cl_array
 import sys, os, errno, argparse, time, ConfigParser
@@ -456,7 +456,6 @@ def subseqFreq(args, log):
     
     p = attrdict({'outdir': args.outdir})
     args.trackequil = 0
-    args.seqmodel
     mkdir_p(args.outdir)
     p.update(process_potts_args(args, p.L, p.nB, None, log))
     L, nB, alpha = p.L, p.nB, p.alpha
@@ -509,6 +508,84 @@ def subseqFreq(args, log):
     #save result
     log("Saving result (log frequency) to file {}".format(args.out))
     save(args.out, logf)
+
+def shuffletest(args, log):
+    descr = ('Compute Delta-E for shuffle test')
+    parser = argparse.ArgumentParser(prog=progname + ' subseqFreq',
+                                     description=descr)
+    add = parser.add_argument
+    add('fixpos', help="comma separated list of fixed positions")
+    add('out', default='output', help='Output File')
+    addopt(parser, 'GPU options',         'wgsize gpus')
+    addopt(parser, 'Potts Model Options', 'alpha couplings L')
+    addopt(parser,  None,                 'outdir')
+    group = parser.add_argument_group('Sequence Options')
+    add = group.add_argument
+    add('seqs')
+    
+    args = parser.parse_args(args)
+    args.measurefperror = False
+
+    log("Initialization")
+    log("===============")
+    log("")
+
+    p = attrdict({'outdir': args.outdir})
+    args.trackequil = 0
+    mkdir_p(args.outdir)
+    p.update(process_potts_args(args, p.L, p.nB, None, log))
+    L, nB, alpha = p.L, p.nB, p.alpha
+
+    # try to load sequence files
+    seqs = loadSequenceFile(args.seqs, alpha, log)
+    
+    args.nwalkers = 1
+    gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, 1, log)
+    p.update(gpup)
+    p.nsteps = 1
+    gpuwalkers = divideWalkers(len(bseqs), len(gdevs), p.wgsize, log)
+    gpus = [initGPU(n, cldat, dev, len(seqs), nwalk, p, log)
+            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
+
+    #fix positions
+    fixedpos = array([int(x) for x in args.fixpos.split(',')])
+    
+    #load buffers
+    for gpu in gpus:
+        gpu.setBuf('J main', p.couplings)
+    log("")
+
+    log("Shuffle Delta-E Calculation")
+    log("===========================")
+    log("")
+
+    transferSeqsToGPU(gpus, 'small', seqs, log)
+
+    for gpu in gpus:
+        gpu.calcEnergies('small', 'main')
+    origEs = concatenate(readGPUbufs(['E small'], gpus)[0])
+
+    # shuffle subseq on CPU
+    seqs[:,seqpos] = seqs[:,p][permutation(seqs.shape[0])]
+    transferSeqsToGPU(gpus, 'small', seqs, log)
+
+    for gpu in gpus:
+        gpu.calcEnergies('small', 'main')
+    shufEs = concatenate(readGPUbufs(['E small'], gpus)[0])
+    
+    with open(args.out, 'wt'):
+        mO, mS = mean(origEs), mean(shufEs)
+        f.write("{} {} {}".format(mO, mS, mS - mO)
+
+def nestedZ(args, log):
+    raise Exception("Not implemented yet")
+    # Plan is to implement nested sampling algorithm to compute Z.
+    # Use parallel method described in 
+    #    Exploring the energy landscapes of protein folding simulations with
+    #    Bayesian computation
+    #    Nikolas S. Burkoff, Csilla Várnai, Stephen A. Wells and David L. Wild
+    # we can probably do K = 1024, P = 256 or even better
+
     
 
 ################################################################################
@@ -827,7 +904,9 @@ def main(args):
       'benchmark':      MCMCbenchmark,
       #'measureFPerror': measureFPerror,
       'subseqFreq':     subseqFreq,
-      'mcmc':            equilibrate
+      'mcmc':           equilibrate,
+      'shuffletest':    shuffletest,
+      'nestedZ':        nestedZ,
      }
     
     descr = 'Perform biophysical Potts Model calculations on the GPU'
