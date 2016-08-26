@@ -129,7 +129,9 @@ class MCMCGPU:
                             'E small': ('<f4',  (self.nseq['small'],)),
                             'E large': ('<f4',  (self.nseq['large'],)),
                             'weights': ('<f4',  (self.nseq['large'],)),
+                            'indepJm': ('<f4',  (nPairs,)),
                                'neff': ('<f4',  (1,)),
+                             'output': ('<f4',  (1,)),
                             'randpos': ('<u4',  (self.nsteps,))}
 
         self.bufs = {}
@@ -147,9 +149,10 @@ class MCMCGPU:
         self.seqbufs = getBufs('seq')
         self.Ebufs = getBufs('E')
 
-        self.bufs['fixpos'] = cl.Buffer(ctx, cl.mem_flags.READ_ONLY, size=L)
-        self.buf_spec['fixpos'] = ('<u1', (L,))
-        self.setBuf('fixpos', zeros(L, '<u1'))
+        self.bufs['markpos'] = cl.Buffer(ctx, cl.mem_flags.READ_ONLY, 
+                                         size=self.SBYTES)
+        self.buf_spec['markpos'] = ('<u1', (self.SBYTES,))
+        self.setBuf('markpos', zeros(self.SBYTES, '<u1'))
 
 
         self.packedJ = None #use to keep track of which Jbuf is packed
@@ -309,6 +312,24 @@ class MCMCGPU:
         A6 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         #print("ResL", A1, A2, A3, A4)
 
+    def calcSDE(self, seqbufname, Jbufname):
+        # stores result in energy buffer
+        self.log("calcSDE " + seqbufname + " " + Jbufname)
+
+        energies_dev = self.Ebufs[seqbufname]
+        seq_dev = self.seqbufs[seqbufname]
+        nseq = self.nseq[seqbufname]
+        self.packJ(Jbufname)
+        evt = self.prg.getSDE(self.queue, (nseq,), (self.wgsize,), 
+                             self.bufs['Jpacked'], seq_dev, self.bufs['indepJM'],
+                             self.bufs['markpos'], energies_dev)
+        self.events.append((evt, 'getSDE'))
+        localarr = cl.LocalMemory(self.vsize*dtype(float32).itemsize)
+        evt = self.prg.sumFloats(self.queue, (self.vsize,), (self.vsize,), 
+                            energies_dev, self.bufs['output'], 
+                            uint32(nseq), localarr)
+        self.events.append((evt, 'sumFloats'))
+
     # update front bimarg buffer using back J buffer and large seq buffer
     def perturbMarg(self): 
         self.log("perturbMarg")
@@ -329,10 +350,10 @@ class MCMCGPU:
                        self.bufs['weights'], self.Ebufs['large'])
         self.events.append((evt, 'perturbedWeights'))
         localarr = cl.LocalMemory(self.vsize*dtype(float32).itemsize)
-        evt = self.prg.sumWeights(self.queue, (self.vsize,), (self.vsize,), 
+        evt = self.prg.sumFloats(self.queue, (self.vsize,), (self.vsize,), 
                             self.bufs['weights'], self.bufs['neff'], 
                             uint32(nseq), localarr)
-        self.events.append((evt, 'sumWeights'))
+        self.events.append((evt, 'sumFloats'))
     
     def weightedMarg(self):
         self.log("weightedMarg")
@@ -436,6 +457,11 @@ class MCMCGPU:
         if dstname.split()[0] == 'J' and self.packedJ == dstname.split()[1]:
             self.packedJ = None
 
+    def markPos(self, marks):
+        if len(marks) != self.SBYTES:
+            marks = np.zeros(SBYTES, dtype='u1')
+        self.setBuf('markpos', marks)
+
     def fillSeqs(self, startseq, seqbufname='small'):
         #write a kernel function for this?
         self.log("fillSeqs " + seqbufname)
@@ -470,7 +496,7 @@ class MCMCGPU:
         evt = self.prg.copySubseq(self.queue, (nseq,), (self.wgsize,), 
                            self.seqbufs['small'], self.seqbufs['large'], 
                            uint32(self.nseq['small']), uint32(seqind),
-                           self.bufs['fixpos'])
+                           self.bufs['markpos'])
         self.events.append((evt, 'copySubseq'))
 
     def wait(self):
@@ -600,7 +626,7 @@ def initGPU(devnum, (cl_ctx, cl_prg), device, nwalkers, nlargebuf, param, log):
     if wgsize not in [1<<n for n in range(32)]:
         raise Exception("wgsize must be a power of two")
 
-    vsize = 256 #power of 2. Work group size for 1d vector operations.
+    vsize = 1024 #power of 2. Work group size for 1d vector operations.
 
     #Number of histograms used in counting kernels (power of two),
     #which is the maximum parallelization of the counting step.

@@ -482,7 +482,7 @@ def subseqFreq(args, log):
     for gpu,bs in zip(gpus, gpubseqs):
         gpu.setBuf('seq small', sseqs)
         gpu.setBuf('seq large', bs)
-        gpu.setBuf('fixpos', fixedmarks)
+        gpu.markPos(fixedmarks)
         gpu.setBuf('J main', p.couplings)
     log("")
 
