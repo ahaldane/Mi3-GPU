@@ -4,10 +4,10 @@ from scipy import *
 from scipy.misc import logsumexp
 import scipy
 import numpy as np
-from numpy.random import randint, permutation
+from numpy.random import randint, shuffle
 import pyopencl as cl
 import pyopencl.array as cl_array
-import sys, os, errno, argparse, time, ConfigParser
+import sys, os, errno, argparse, time, ConfigParser, resource
 import seqload
 from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
 from mcmcGPU import setupGPUs, initGPU, divideWalkers, printGPUs, readGPUbufs
@@ -525,6 +525,11 @@ def shuffletest(args, log):
     
     args = parser.parse_args(args)
     args.measurefperror = False
+    args.seqmodel = None
+    args.nsteps = 1
+    args.nwalkers = 1
+    args.gibbs = False
+    args.profile = False
 
     log("Initialization")
     log("===============")
@@ -539,16 +544,18 @@ def shuffletest(args, log):
     # try to load sequence files
     seqs = loadSequenceFile(args.seqs, alpha, log)
     
-    args.nwalkers = 1
     gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, 1, log)
     p.update(gpup)
-    p.nsteps = 1
-    gpuwalkers = divideWalkers(len(bseqs), len(gdevs), p.wgsize, log)
-    gpus = [initGPU(n, cldat, dev, len(seqs), nwalk, p, log)
+    gpuwalkers = divideWalkers(len(seqs), len(gdevs), p.wgsize, log)
+    gpus = [initGPU(n, cldat, dev, nwalk, nwalk, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
 
     #fix positions
-    fixedpos = array([int(x) for x in args.fixpos.split(',')])
+    #with open(args.fixpos) as f:
+    #    fixedpos = [array([int(x) for x in l.split(',')]) for l in f]
+    fixedpos = []
+    for l in range(10, 174, 10):
+        fixedpos += [randint(0,L,size=l) for i in range(256)]
     
     #load buffers
     for gpu in gpus:
@@ -559,23 +566,76 @@ def shuffletest(args, log):
     log("===========================")
     log("")
 
-    transferSeqsToGPU(gpus, 'small', seqs, log)
+    transferSeqsToGPU(gpus, 'small', [seqs], log)
 
+    log("Calculating reference energy")
     for gpu in gpus:
         gpu.calcEnergies('small', 'main')
     origEs = concatenate(readGPUbufs(['E small'], gpus)[0])
+    mO = mean(origEs)
 
-    # shuffle subseq on CPU
-    seqs[:,seqpos] = seqs[:,p][permutation(seqs.shape[0])]
-    transferSeqsToGPU(gpus, 'small', seqs, log)
+    # search for motifs
+    shufseqs = np.empty(seqs.shape, dtype=seqs.dtype)
+    def getshufDE(fp):
+        #shufseqs[:] = seqs
+        #fixedseq = seqs[:,fp]
+        #n1 = sys.getrefcount(fixedseq)
+        #shuffle(fixedseq)
+        #shufseqs[:,fp] = fixedseq
+        ##transferSeqsToGPU(gpus, 'small', [shufseqs], log)
+        for gpu in gpus:
+            gpu.calcEnergies('small', 'main')
+        print('A7', resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        return 10
+        shufEs = concatenate(readGPUbufs(['E small'], gpus)[0])
+        mS = mean(shufEs)
+        #print("Refs", n1, sys.getrefcount(fixedseq))
+        return mS - mO + 10
 
-    for gpu in gpus:
-        gpu.calcEnergies('small', 'main')
-    shufEs = concatenate(readGPUbufs(['E small'], gpus)[0])
+    def rec_findmotif(fp):
+        if len(fp) > 3:
+            return
+
+        minj = None
+        minde = 100000
+        for j in range(L):
+            if j not in fp:
+                de = getshufDE(fp + [j])
+                if de < minde:
+                    minj = j
+                    minde = de
+        #print(fp, minde)
+        rec_findmotif(fp + [minj])
+
+    for i in range(28,L):
+        print("#### {}    {}".format(i, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+        rec_findmotif([i])
+
+    ## shuffle subseq on CPU
+    #shufseqs = np.empty(seqs.shape, dtype=seqs.dtype)
+    #log("Calculating shuffled energy")
+    #for fp in fixedpos:
+    #    start = time.time()
+    #    shufseqs[:] = seqs
+    #    fixedseq = seqs[:,fp]
+    #    shuffle(fixedseq)
+    #    shufseqs[:,fp] = fixedseq
+    #    transferSeqsToGPU(gpus, 'small', [shufseqs], log)
+
+    #    mid = time.time()
+    #    for gpu in gpus:
+    #        gpu.calcEnergies('small', 'main')
+    #    shufEs = concatenate(readGPUbufs(['E small'], gpus)[0])
+    #    end = time.time()
+
+    #    print(mid - start, end - mid, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    #    mS = mean(shufEs)
+    #    msg = "000 {} {} {} {}".format(mO, len(fp), mS, mS - mO)
+    #    log(msg)
     
-    with open(args.out, 'wt'):
-        mO, mS = mean(origEs), mean(shufEs)
-        f.write("{} {} {}".format(mO, mS, mS - mO)
+    #log("Printing results")
+    #save(args.out, c_[origEs, shufEs])
+    #log("Done")
 
 def nestedZ(args, log):
     raise Exception("Not implemented yet")
@@ -583,7 +643,7 @@ def nestedZ(args, log):
     # Use parallel method described in 
     #    Exploring the energy landscapes of protein folding simulations with
     #    Bayesian computation
-    #    Nikolas S. Burkoff, Csilla Várnai, Stephen A. Wells and David L. Wild
+    #    Nikolas S. Burkoff, Csilla Varnai, Stephen A. Wells and David L. Wild
     # we can probably do K = 1024, P = 256 or even better
 
     
@@ -832,7 +892,7 @@ def loadSequenceDir(sdir, alpha, log):
     return seqs
 
 def transferSeqsToGPU(gpus, bufname, seqs, log):
-    log("Transferring {} seqs to gpu's {} seq buffer...".format(str([len(s) for s in seqs]), bufname))
+    #log("Transferring {} seqs to gpu's {} seq buffer...".format(str([len(s) for s in seqs]), bufname))
     if len(seqs) == 1:
         # split up seqs into parts for each gpu
         seqs = seqs[0]

@@ -7,7 +7,7 @@ from numpy.random import randint
 import numpy.random
 import pyopencl as cl
 import pyopencl.array as cl_array
-import os, time
+import os, time, resource
 import seqload
 import textwrap
 
@@ -161,8 +161,11 @@ class MCMCGPU:
 
     def log(self, str):
         #logs are rare, so just open the file every time
+        A1 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         with open(self.logfn, "at") as f:
             print(time.clock(), str, file=f)
+        A2 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        print("LOG", A1, A2)
 
     def logProfile(self):
         #XXX don't call this if there are uncompleted events
@@ -290,15 +293,21 @@ class MCMCGPU:
         self.events.append((evt, 'calcBimarg'))
 
     def calcEnergies(self, seqbufname, Jbufname):
-        self.log("calcEnergies " + seqbufname + " " + Jbufname)
+        A1 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        #self.log("calcEnergies " + seqbufname + " " + Jbufname)
+        A2 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
         energies_dev = self.Ebufs[seqbufname]
+        A3 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         seq_dev = self.seqbufs[seqbufname]
+        A4 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         nseq = self.nseq[seqbufname]
         self.packJ(Jbufname)
         evt = self.prg.getEnergies(self.queue, (nseq,), (self.wgsize,), 
                              self.bufs['Jpacked'], seq_dev, energies_dev)
         self.events.append((evt, 'getEnergies'))
+        A6 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        #print("ResL", A1, A2, A3, A4)
 
     # update front bimarg buffer using back J buffer and large seq buffer
     def perturbMarg(self): 
