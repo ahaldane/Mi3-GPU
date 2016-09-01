@@ -7,7 +7,7 @@ from numpy.random import randint
 import numpy.random
 import pyopencl as cl
 import pyopencl.array as cl_array
-import os, time, resource
+import os, time
 import seqload
 import textwrap
 
@@ -129,9 +129,7 @@ class MCMCGPU:
                             'E small': ('<f4',  (self.nseq['small'],)),
                             'E large': ('<f4',  (self.nseq['large'],)),
                             'weights': ('<f4',  (self.nseq['large'],)),
-                            'indepJm': ('<f4',  (nPairs,)),
                                'neff': ('<f4',  (1,)),
-                             'output': ('<f4',  (1,)),
                             'randpos': ('<u4',  (self.nsteps,))}
 
         self.bufs = {}
@@ -152,8 +150,7 @@ class MCMCGPU:
         self.bufs['markpos'] = cl.Buffer(ctx, cl.mem_flags.READ_ONLY, 
                                          size=self.SBYTES)
         self.buf_spec['markpos'] = ('<u1', (self.SBYTES,))
-        self.setBuf('markpos', zeros(self.SBYTES, '<u1'))
-
+        self.markPos(zeros(self.SBYTES, '<u1'))
 
         self.packedJ = None #use to keep track of which Jbuf is packed
         #(This class keeps track of Jpacked internally)
@@ -164,11 +161,22 @@ class MCMCGPU:
 
     def log(self, str):
         #logs are rare, so just open the file every time
-        A1 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         with open(self.logfn, "at") as f:
             print(time.clock(), str, file=f)
-        A2 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        print("LOG", A1, A2)
+
+    def saveEvt(self, evt, name, nbytes=None):
+        # don't save events if not profiling.
+        # note that saved events use up memory - this needs to be freed
+        # using logProfile
+        if not self.profile:
+            return
+        if len(self.events)%1000 == 0 and self.events != []:
+            log("Warning: Over {} profiling events are not flushed "
+                "(using up memory)".format(len(self.events)))
+        if nbytes:
+            self.events.append((evt, name, nbytes))
+        else:
+            self.events.append((evt, name))
 
     def logProfile(self):
         #XXX don't call this if there are uncompleted events
@@ -218,7 +226,7 @@ class MCMCGPU:
         J_dev = self.Jbufs[Jbufname]
         evt = self.prg.packfV(self.queue, (nPairs*nB*nB,), (nB*nB,), 
                         J_dev, self.bufs['Jpacked'])
-        self.events.append((evt, 'packJ'))
+        self.saveEvt(evt, 'packJ')
         self.packedJ = Jbufname
 
     def initRNG(self, nMCMCcalls, gibbs, log):
@@ -251,7 +259,7 @@ class MCMCGPU:
             wgsize = wgsize/2
         evt = initkernel(self.queue, (nseq,), (wgsize,), 
                          self.bufs['rngstates'], offset, nsamples)
-        self.events.append((evt, 'initRNG'))
+        self.saveEvt(evt, 'initRNG')
 
     def runMCMC(self):
         self.log("runMCMC")
@@ -263,7 +271,7 @@ class MCMCGPU:
                           self.bufs['Jpacked'], self.bufs['rngstates'], 
                           self.bufs['randpos'], uint32(nsteps), 
                           self.Ebufs['small'], self.seqbufs['small'])
-        self.events.append((evt, 'mcmc'))
+        self.saveEvt(evt, 'mcmc')
 
     def measureFPerror(self, log, nloops=3):
         log("Measuring FP Error")
@@ -293,42 +301,18 @@ class MCMCGPU:
         evt = self.prg.countBimarg(self.queue, (nPairs*nhist,), (nhist,), 
                      self.bufs['bicount'], self.bibufs['main'], 
                      uint32(nseq), seq_dev, localhist)
-        self.events.append((evt, 'calcBimarg'))
+        self.saveEvt(evt, 'calcBimarg')
 
     def calcEnergies(self, seqbufname, Jbufname):
-        A1 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        #self.log("calcEnergies " + seqbufname + " " + Jbufname)
-        A2 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        self.log("calcEnergies " + seqbufname + " " + Jbufname)
 
         energies_dev = self.Ebufs[seqbufname]
-        A3 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         seq_dev = self.seqbufs[seqbufname]
-        A4 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         nseq = self.nseq[seqbufname]
         self.packJ(Jbufname)
         evt = self.prg.getEnergies(self.queue, (nseq,), (self.wgsize,), 
                              self.bufs['Jpacked'], seq_dev, energies_dev)
-        self.events.append((evt, 'getEnergies'))
-        A6 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        #print("ResL", A1, A2, A3, A4)
-
-    def calcSDE(self, seqbufname, Jbufname):
-        # stores result in energy buffer
-        self.log("calcSDE " + seqbufname + " " + Jbufname)
-
-        energies_dev = self.Ebufs[seqbufname]
-        seq_dev = self.seqbufs[seqbufname]
-        nseq = self.nseq[seqbufname]
-        self.packJ(Jbufname)
-        evt = self.prg.getSDE(self.queue, (nseq,), (self.wgsize,), 
-                             self.bufs['Jpacked'], seq_dev, self.bufs['indepJM'],
-                             self.bufs['markpos'], energies_dev)
-        self.events.append((evt, 'getSDE'))
-        localarr = cl.LocalMemory(self.vsize*dtype(float32).itemsize)
-        evt = self.prg.sumFloats(self.queue, (self.vsize,), (self.vsize,), 
-                            energies_dev, self.bufs['output'], 
-                            uint32(nseq), localarr)
-        self.events.append((evt, 'sumFloats'))
+        self.saveEvt(evt, 'getEnergies')
 
     # update front bimarg buffer using back J buffer and large seq buffer
     def perturbMarg(self): 
@@ -348,12 +332,12 @@ class MCMCGPU:
         evt = self.prg.perturbedWeights(self.queue, (nseq,), (self.wgsize,), 
                        self.bufs['Jpacked'], self.seqbufs['large'],
                        self.bufs['weights'], self.Ebufs['large'])
-        self.events.append((evt, 'perturbedWeights'))
+        self.saveEvt(evt, 'perturbedWeights')
         localarr = cl.LocalMemory(self.vsize*dtype(float32).itemsize)
         evt = self.prg.sumFloats(self.queue, (self.vsize,), (self.vsize,), 
                             self.bufs['weights'], self.bufs['neff'], 
                             uint32(nseq), localarr)
-        self.events.append((evt, 'sumFloats'))
+        self.saveEvt(evt, 'sumFloats')
     
     def weightedMarg(self):
         self.log("weightedMarg")
@@ -368,7 +352,7 @@ class MCMCGPU:
                         self.bibufs['front'], self.bufs['weights'], 
                         self.bufs['neff'], uint32(self.nseq['large']), 
                         self.seqbufs['large'], localhist)
-        self.events.append((evt, 'weightedMarg'))
+        self.saveEvt(evt, 'weightedMarg')
 
     # updates front J buffer using back J and bimarg buffers, possibly clamped
     # to orig coupling
@@ -381,7 +365,7 @@ class MCMCGPU:
                                 self.bibufs['target'], self.bibufs['back'], 
                                 float32(gamma), float32(pc), self.Jbufs['main'],
                                 self.Jbufs['back'], self.Jbufs['front'])
-        self.events.append((evt, 'updateJPerturb'))
+        self.saveEvt(evt, 'updateJPerturb')
         if self.packedJ == 'front':
             self.packedJ = None
 
@@ -393,7 +377,7 @@ class MCMCGPU:
                                 float32(gamma), float32(pc), 
                                 float32(fn_lmbda), float32(fn_s),
                                 self.Jbufs['back'], self.Jbufs['front'])
-        self.events.append((evt, 'updateJPerturb_weightfn'))
+        self.saveEvt(evt, 'updateJPerturb_weightfn')
         if self.packedJ == 'front':
             self.packedJ = None
 
@@ -403,7 +387,7 @@ class MCMCGPU:
         mem = zeros(bufshape, dtype=buftype)
         evt = cl.enqueue_copy(self.queue, mem, self.bufs[bufname], 
                               is_blocking=False)
-        self.events.append((evt, 'getBuf', mem.nbytes))
+        self.saveEvt(evt, 'getBuf', mem.nbytes)
         if bufname.split()[0] == 'seq':
             return FutureBuf(mem, evt, self.unpackSeqs)
         return FutureBuf(mem, evt)
@@ -422,7 +406,7 @@ class MCMCGPU:
 
         evt = cl.enqueue_copy(self.queue, self.bufs[bufname], buf, 
                               is_blocking=False)
-        self.events.append((evt, 'setBuf', buf.nbytes))
+        self.saveEvt(evt, 'setBuf', buf.nbytes)
         
         #unset packedJ flag if we modified that J buf
         if bufname.split()[0] == 'J':
@@ -453,13 +437,14 @@ class MCMCGPU:
         srcbuf = self.bufs[srcname]
         dstbuf = self.bufs[dstname]
         evt = cl.enqueue_copy(self.queue, dstbuf, srcbuf)
-        self.events.append((evt, 'copyBuf'))
+        self.saveEvt(evt, 'copyBuf')
         if dstname.split()[0] == 'J' and self.packedJ == dstname.split()[1]:
             self.packedJ = None
 
     def markPos(self, marks):
-        if len(marks) != self.SBYTES:
-            marks = np.zeros(SBYTES, dtype='u1')
+        marks = marks.astype('<u1')
+        if len(marks) == self.L:
+            marks.resize(self.SBYTES)
         self.setBuf('markpos', marks)
 
     def fillSeqs(self, startseq, seqbufname='small'):
@@ -476,7 +461,7 @@ class MCMCGPU:
         evt = self.prg.storeSeqs(self.queue, (nseq,), (self.wgsize,), 
                            self.seqbufs['small'], self.seqbufs['large'], 
                            uint32(self.nseq['large']), uint32(offset))
-        self.events.append((evt, 'storeSeqs'))
+        self.saveEvt(evt, 'storeSeqs')
 
     def restoreSeqs(self, offset=0):
         self.log("restoreSeqs " + str(offset))
@@ -486,7 +471,7 @@ class MCMCGPU:
         evt = self.prg.restoreSeqs(self.queue, (nseq,), (self.wgsize,), 
                            self.seqbufs['small'], self.seqbufs['large'], 
                            uint32(self.nseq['large']), uint32(offset))
-        self.events.append((evt, 'restoreSeqs'))
+        self.saveEvt(evt, 'restoreSeqs')
 
     def copySubseq(self, seqind):
         self.log("copySubseq " + str(seqind))
@@ -497,7 +482,7 @@ class MCMCGPU:
                            self.seqbufs['small'], self.seqbufs['large'], 
                            uint32(self.nseq['small']), uint32(seqind),
                            self.bufs['markpos'])
-        self.events.append((evt, 'copySubseq'))
+        self.saveEvt(evt, 'copySubseq')
 
     def wait(self):
         self.log("wait")

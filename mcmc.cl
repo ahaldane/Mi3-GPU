@@ -156,69 +156,6 @@ inline float getEnergiesf(__global float *J,
     return energy;
 }
 
-//only call from kernels with nseqs work units!!!!!!
-__kernel
-void getSDE(__global float *J,
-            __global uint *seqmem,
-            __global float *indepJm,
-            __global uint *fixpos,
-            __global float *demem){ //each byte says whether to load
-    // similar code to getEnergies, but skips non-fixed positions
-    uint li = get_local_id(0);
-    __local float lcouplings[4*nB*nB];
-
-    uchar seqm, seqn, seqp;
-    uint cn, cm;
-    uint sbn, sbm;
-    uint n,m,k;
-    float dE = 0;
-    n = 0;
-    while(n < L-1){
-        uint fixn = fixpos[n/4];
-        if(fixn == 0){ //optimization: skip if no fixed bytes
-            n += 4;
-            continue;
-        }
-
-        uint sbn = seqmem[(n/4)*get_global_size(0) + get_global_id(0)];
-        #pragma unroll //probably ignored
-        for(cn = n%4; cn < 4 && n < L-1; cn++, n++){
-            if(getbyte(&fixn, cn) == 0){
-                continue;
-            }
-
-            seqn = getbyte(&sbn, cn);
-            m = n+1;
-            while(m < L){
-                uint fixm = fixpos[m/4];
-                if(fixm == 0){
-                    m += 4;
-                    continue;
-                }
-                uint sbm = seqmem[(m/4)*get_global_size(0) + get_global_id(0)];
-
-                #pragma unroll
-                for(cm = m%4; cm < 4 && m < L; cm++, m++){
-                    if(getbyte(&fixm, cm) == 0){
-                        continue;
-                    }
-
-                    for(k = li; k < nB*nB; k += get_local_size(0)){
-                        lcouplings[k] = J[(n*L + m)*nB*nB + k];
-                    }
-                    float iJm = indepJm[n*L + m];
-                    barrier(CLK_LOCAL_MEM_FENCE);
-
-                    seqm = getbyte(&sbm, cm);
-                    dE += lcouplings[nB*seqn + seqm] - iJm;
-                    barrier(CLK_LOCAL_MEM_FENCE);
-                }
-            }
-        }
-    }
-    demem[get_global_id(0)] = dE;
-}
-
 __kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
 void getEnergies(__global float *J,
                  __global uint *seqmem,

@@ -4,10 +4,10 @@ from scipy import *
 from scipy.misc import logsumexp
 import scipy
 import numpy as np
-from numpy.random import randint, shuffle
+from numpy.random import randint
 import pyopencl as cl
 import pyopencl.array as cl_array
-import sys, os, errno, argparse, time, ConfigParser, resource
+import sys, os, errno, argparse, time, ConfigParser
 import seqload
 from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
 from mcmcGPU import setupGPUs, initGPU, divideWalkers, printGPUs, readGPUbufs
@@ -56,6 +56,13 @@ def getEnergiesMultiPrec(s, couplings):
         cpl = (r[b] for b in (nB*s[:,i] + s[:,j]))
         pairenergy = [x+n for x,n in zip(pairenergy, cpl)]
     return pairenergy
+
+def unimarg(bimarg):
+    L, nB = seqsize_from_param_shape(bimarg.shape)
+    ff = bimarg.reshape((L*(L-1)/2,nB,nB))
+    marg = (array([sum(ff[0],axis=1)] + 
+            [sum(ff[n],axis=0) for n in range(L-1)]))
+    return marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
 
 ################################################################################
 
@@ -509,134 +516,6 @@ def subseqFreq(args, log):
     log("Saving result (log frequency) to file {}".format(args.out))
     save(args.out, logf)
 
-def shuffletest(args, log):
-    descr = ('Compute Delta-E for shuffle test')
-    parser = argparse.ArgumentParser(prog=progname + ' subseqFreq',
-                                     description=descr)
-    add = parser.add_argument
-    add('fixpos', help="comma separated list of fixed positions")
-    add('out', default='output', help='Output File')
-    addopt(parser, 'GPU options',         'wgsize gpus')
-    addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'outdir')
-    group = parser.add_argument_group('Sequence Options')
-    add = group.add_argument
-    add('seqs')
-    
-    args = parser.parse_args(args)
-    args.measurefperror = False
-    args.seqmodel = None
-    args.nsteps = 1
-    args.nwalkers = 1
-    args.gibbs = False
-    args.profile = False
-
-    log("Initialization")
-    log("===============")
-    log("")
-
-    p = attrdict({'outdir': args.outdir})
-    args.trackequil = 0
-    mkdir_p(args.outdir)
-    p.update(process_potts_args(args, p.L, p.nB, None, log))
-    L, nB, alpha = p.L, p.nB, p.alpha
-
-    # try to load sequence files
-    seqs = loadSequenceFile(args.seqs, alpha, log)
-    
-    gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, 1, log)
-    p.update(gpup)
-    gpuwalkers = divideWalkers(len(seqs), len(gdevs), p.wgsize, log)
-    gpus = [initGPU(n, cldat, dev, nwalk, nwalk, p, log)
-            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
-
-    #fix positions
-    #with open(args.fixpos) as f:
-    #    fixedpos = [array([int(x) for x in l.split(',')]) for l in f]
-    fixedpos = []
-    for l in range(10, 174, 10):
-        fixedpos += [randint(0,L,size=l) for i in range(256)]
-    
-    #load buffers
-    for gpu in gpus:
-        gpu.setBuf('J main', p.couplings)
-    log("")
-
-    log("Shuffle Delta-E Calculation")
-    log("===========================")
-    log("")
-
-    transferSeqsToGPU(gpus, 'small', [seqs], log)
-
-    log("Calculating reference energy")
-    for gpu in gpus:
-        gpu.calcEnergies('small', 'main')
-    origEs = concatenate(readGPUbufs(['E small'], gpus)[0])
-    mO = mean(origEs)
-
-    # search for motifs
-    shufseqs = np.empty(seqs.shape, dtype=seqs.dtype)
-    def getshufDE(fp):
-        #shufseqs[:] = seqs
-        #fixedseq = seqs[:,fp]
-        #n1 = sys.getrefcount(fixedseq)
-        #shuffle(fixedseq)
-        #shufseqs[:,fp] = fixedseq
-        ##transferSeqsToGPU(gpus, 'small', [shufseqs], log)
-        for gpu in gpus:
-            gpu.calcEnergies('small', 'main')
-        print('A7', resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-        return 10
-        shufEs = concatenate(readGPUbufs(['E small'], gpus)[0])
-        mS = mean(shufEs)
-        #print("Refs", n1, sys.getrefcount(fixedseq))
-        return mS - mO + 10
-
-    def rec_findmotif(fp):
-        if len(fp) > 3:
-            return
-
-        minj = None
-        minde = 100000
-        for j in range(L):
-            if j not in fp:
-                de = getshufDE(fp + [j])
-                if de < minde:
-                    minj = j
-                    minde = de
-        #print(fp, minde)
-        rec_findmotif(fp + [minj])
-
-    for i in range(28,L):
-        print("#### {}    {}".format(i, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
-        rec_findmotif([i])
-
-    ## shuffle subseq on CPU
-    #shufseqs = np.empty(seqs.shape, dtype=seqs.dtype)
-    #log("Calculating shuffled energy")
-    #for fp in fixedpos:
-    #    start = time.time()
-    #    shufseqs[:] = seqs
-    #    fixedseq = seqs[:,fp]
-    #    shuffle(fixedseq)
-    #    shufseqs[:,fp] = fixedseq
-    #    transferSeqsToGPU(gpus, 'small', [shufseqs], log)
-
-    #    mid = time.time()
-    #    for gpu in gpus:
-    #        gpu.calcEnergies('small', 'main')
-    #    shufEs = concatenate(readGPUbufs(['E small'], gpus)[0])
-    #    end = time.time()
-
-    #    print(mid - start, end - mid, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    #    mS = mean(shufEs)
-    #    msg = "000 {} {} {} {}".format(mO, len(fp), mS, mS - mO)
-    #    log(msg)
-    
-    #log("Printing results")
-    #save(args.out, c_[origEs, shufEs])
-    #log("Done")
-
 def nestedZ(args, log):
     raise Exception("Not implemented yet")
     # Plan is to implement nested sampling algorithm to compute Z.
@@ -867,11 +746,7 @@ def generateSequences(gentype, L, nB, nseqs, bimarg, log):
         log("Generating {} logscore-independent sequences...".format(nseqs))
         if bimarg is None:
             raise Exception("Bimarg must be provided to generate sequences")
-        ff = bimarg.reshape((L*(L-1)/2,nB,nB))
-        marg = (array([sum(ff[0],axis=1)] + 
-                [sum(ff[n],axis=0) for n in range(L-1)]))
-        marg = marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
-        cumprob = cumsum(marg, axis=1)
+        cumprob = cumsum(unimarg(bimarg), axis=1)
         cumprob = cumprob/(cumprob[:,-1][:,newaxis]) #correct fp errors?
         return array([searchsorted(cp, rand(nseqs)) for cp in cumprob], 
                      dtype='<u1').T
@@ -911,12 +786,13 @@ def transferSeqsToGPU(gpus, bufname, seqs, log):
         gpu.setBuf('seq ' + bufname, seq)
 
 def process_sample_args(args, log):
-    p = attrdict({'preequiltime': args.preequiltime,
-                  'equiltime': args.equiltime,
+    p = attrdict({'equiltime': args.equiltime,
                   'sampletime': args.sampletime,
                   'nsamples': args.nsamples,
                   'trackequil': args.trackequil})
 
+    if 'preequiltime' in args:
+        p['preequiltime'] = args.preequiltime
     if p.nsamples == 0:
         raise Exception("nsamples must be at least 1")
 
@@ -965,7 +841,6 @@ def main(args):
       #'measureFPerror': measureFPerror,
       'subseqFreq':     subseqFreq,
       'mcmc':           equilibrate,
-      'shuffletest':    shuffletest,
       'nestedZ':        nestedZ,
      }
     
