@@ -615,8 +615,9 @@ void updatedJ_weightfn(__global float *bimarg_target,
 
     float J = Ji[n];
     float Jz = zeroGauge(J, li, l_nBnB, l_nB1, l_nB2);
-    float fn = fbnorm(Jz, li, l_nBnB);
-    float bias = fn_lmbda*exp(-fn_s*fn)*Jz;
+    //float fn = fbnorm(Jz, li, l_nBnB);
+    //float bias = fn_lmbda*exp(-fn_s*fn)*Jz;
+    float bias = fn_lmbda*sign(Jz);
 
     Jo[n] = J - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
 }
