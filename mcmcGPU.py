@@ -123,6 +123,7 @@ class MCMCGPU:
                             'bi back': ('<f4',  (nPairs, nB*nB)),
                           'bi target': ('<f4',  (nPairs, nB*nB)),
                             'bicount': ('<u4',  (nPairs, nB*nB)),
+                               'corr': ('<f4',  (nPairs, nB*nB)),
                           'seq small': ('<u4',  (SWORDS, self.nseq['small'])),
                           'seq large': ('<u4',  (SWORDS, self.nseq['large'])),
                           'rngstates': (rngdtype, (self.nseq['small'],)),
@@ -369,13 +370,13 @@ class MCMCGPU:
         if self.packedJ == 'front':
             self.packedJ = None
 
-    def updateJ_weightfn(self, gamma, pc, fn_lmbda, fn_s):
+    def updateJ_weightfn(self, gamma, pc, fn_lmbda):
         self.log("updateJPerturb_weightfn")
         nB, nPairs = self.nB, self.nPairs
         evt = self.prg.updatedJ_weightfn(self.queue, (nPairs*nB*nB,), (nB*nB,), 
                                 self.bibufs['target'], self.bibufs['back'], 
                                 float32(gamma), float32(pc), 
-                                float32(fn_lmbda), float32(fn_s),
+                                float32(fn_lmbda),
                                 self.Jbufs['back'], self.Jbufs['front'])
         self.saveEvt(evt, 'updateJPerturb_weightfn')
         if self.packedJ == 'front':

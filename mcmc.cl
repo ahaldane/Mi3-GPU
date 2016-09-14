@@ -457,6 +457,7 @@ void sumFloats(__global float *data,
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
+    // assumes li is even. Need to add last element if odd
     if(li == 0){
         *output = sums[0];
     }
@@ -596,13 +597,60 @@ float fbnorm(float J, uint li, __local float *sums){
     return sqrt(sums[0]);
 }
 
+float Xijbias(float J, float f, uint li, __local float *scratch,
+                __local float *rsums, __local float *csums){
+    uint m;
+
+    //get row unimarg
+    scratch[li] = f;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = nB/2; m > 0; m >>= 1){
+        if(li%nB < m){
+            scratch[li] = scratch[li] + scratch[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if(li < nB){
+        rsums[li] = scratch[nB*li];
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    //get col unimarg
+    scratch[nB*(li%nB) + li/nB] = f;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = nB/2; m > 0; m >>= 1){
+        if(li%nB < m){
+            scratch[li] = scratch[li] + scratch[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if(li < nB){
+        csums[li] = scratch[nB*li];
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    //get final sum (Xij)
+    float C = (f - rsums[li/nB]*csums[li%nB]);
+    scratch[li] = J*C;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = nB*nB/2; m > 0; m >>= 1){
+        if(li < m){
+            scratch[li] = scratch[li] + scratch[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    // XXX assumes nB is even. Need to add last element if odd
+    
+    // regularization step is sign(Xij)*Cijab
+    return sign(scratch[0])*C;
+}
+
 __kernel
 void updatedJ_weightfn(__global float *bimarg_target,
               __global float *bimarg,
                        float gamma,
                        float pc,
                        float fn_lmbda,
-                       float fn_s,
               __global float *Ji,
               __global float *Jo){
     uint li = get_local_id(0);
@@ -613,11 +661,7 @@ void updatedJ_weightfn(__global float *bimarg_target,
     __local float l_nB1[nB];
     __local float l_nB2[nB];
 
-    float J = Ji[n];
-    float Jz = zeroGauge(J, li, l_nBnB, l_nB1, l_nB2);
-    //float fn = fbnorm(Jz, li, l_nBnB);
-    //float bias = fn_lmbda*exp(-fn_s*fn)*Jz;
-    float bias = fn_lmbda*sign(Jz);
+    float bias = fn_lmbda*Xijbias(Ji[n], bimarg[n], li, l_nBnB, l_nB1, l_nB2);
 
-    Jo[n] = J - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
+    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
 }

@@ -101,7 +101,7 @@ def optionRegistry():
     add('damping', default=0.001, type=float32, 
         help="Damping parameter")
     add('regularize', default=None, 
-        help="Specify as a 'lambda,s' pair to turn on regularization") 
+        help="specify lambda do use with l1 regularization") 
     add('preopt', action='store_true', 
         help="Perform a round of newton steps before first MCMC run") 
     add('resetseqs', action='store_false', 
@@ -258,9 +258,10 @@ def getEnergies(args, log):
     log("===============")
     log("")
 
-    param = attrdict({'outdir': args.outdir})
-    param.update(process_potts_args(args, None, None, None, log))
-    L, nB, alpha = param.L, param.nB, param.alpha
+    p = attrdict({'outdir': args.outdir})
+    mkdir_p(args.outdir)
+    p.update(process_potts_args(args, None, None, None, log))
+    L, nB, alpha = p.L, p.nB, p.alpha
     log("Sequence Setup")
     log("--------------")
     seqs = loadSequenceFile(args.seqs, alpha, log)
@@ -273,9 +274,9 @@ def getEnergies(args, log):
     args.nsteps = 1
     args.nlargebuf = 1
     gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, 1, log)
+    p.update(gpup)
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
-    param.update(gpup)
-    gpus = [initGPU(n, cldat, dev, nwalk, 1, param, log)
+    gpus = [initGPU(n, cldat, dev, nwalk, 1, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
     transferSeqsToGPU(gpus, 'small', [seqs], log)
     log("")
@@ -285,7 +286,33 @@ def getEnergies(args, log):
     log("==================")
     
     for gpu in gpus:
-        gpu.setBuf('J main', param.couplings)
+        gpu.setBuf('J main', p.couplings)
+    
+    #XXX
+    for gpu in gpus:
+        gpu.calcBimarg('small')
+    res = readGPUbufs(['bi main'], gpus)
+    def sumarr(arrlist):
+        #low memory usage (rather than sum(arrlist, axis=0))
+        tot = arrlist[0].copy()
+        for a in arrlist[1:]:
+            np.add(tot, a, tot)
+        return tot
+    def meanarr(arrlist):
+        return sumarr(arrlist)/len(arrlist)
+    bimarg = meanarr(res[0])
+    for gpu in gpus:
+        gpu.setBuf('bi back', bimarg)
+        gpu.setBuf('bi target', bimarg)
+        gpu.copyBuf('J main', 'J front')
+        gpu.copyBuf('J main', 'J back')
+
+    for gpu in gpus:
+        gpu.updateJ_weightfn(0.004, 0.001, 0.001)
+    res = readGPUbufs(['J front'], gpus)[0][0]
+    save('testdat', res)
+    save('testbimarg', bimarg)
+    return
     
     for gpu in gpus:
         gpu.calcEnergies('small', 'main')
@@ -566,16 +593,14 @@ def process_newton_args(args, log):
 
     if args.regularize is not None:
         param['regularize'] = True
-        fn_lmbda, fn_s = args.regularize.split(',')
-        param['fn_lmbda'] = float(fn_lmbda)
-        param['fn_s'] = float(fn_s)
+        param['fn_lmbda'] = float(args.regularize)
 
     p = attrdict(param)
 
     log("Updating J locally with gamma={}, and pc-damping {}".format(
         p.gamma0, p.pcdamping))
     if p.regularize:
-        log("Regularizing J with lambda={}, s={}".format(p.fn_lmbda, p.fn_s))
+        log("Regularizing J with lambda={}".format(p.fn_lmbda))
     log("Running {} Newton update steps per round.".format(p.newtonSteps))
 
     log("Reading target marginals from file {}".format(args.bimarg))
@@ -634,10 +659,10 @@ def process_potts_args(args, L, nB, bimarg, log):
 def getCouplings(args, L, nB, bimarg, log):
     couplings = None
 
-    if args.seqmodel and args.seqmodel in ['zero', 'logscore']:
+    if hasattr(args, 'seqmodel') and args.seqmodel in ['zero', 'logscore']:
         args.couplings = args.seqmodel
 
-    if args.couplings is not None:
+    if hasattr(args, 'couplings'):
         #first try to generate couplings (requires L, nB)
         if args.couplings in ['zero', 'logscore']:
             if L is None: # we are sure to have nB

@@ -97,7 +97,7 @@ def newtonStep(n, bimarg_target, gamma, pc, reg_param, gpus, log):
         # note: updateJ should give same result on all GPUs
         # overwrites J front using bi back and J back
         if reg_param is not None:
-            gpu.updateJ_weightfn(gamma, pc, reg_param.fn_lmbda, reg_param.fn_s)
+            gpu.updateJ_weightfn(gamma, pc, reg_param)
         else:
             gpu.updateJ(gamma, pc)
 
@@ -169,7 +169,7 @@ def iterNewton(param, gpus, log):
 
     
     if param.regularize:
-        reg_param = attrdict({'fn_lmbda': param.fn_lmbda, 'fn_s': param.fn_s})
+        reg_param = param.fn_lmbda
     else:
         reg_param = None
 
