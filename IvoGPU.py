@@ -39,12 +39,6 @@ def seqsize_from_param_shape(shape):
     nB = int(sqrt(shape[1]) + 0.5) 
     return L, nB
 
-def getUnimarg(bimarg):
-    L, nB = seqsize_from_param_shape(bimarg.shape)
-    ff = bimarg.reshape((L*(L-1)/2,nB,nB))
-    f = array([sum(ff[0],axis=1)] + [sum(ff[n],axis=0) for n in range(L-1)])
-    return f/(sum(f,axis=1)[:,newaxis]) # correct any fp errors
-
 #identical calculation as CL kernel, but with high precision (to check fp error)
 def getEnergiesMultiPrec(s, couplings): 
     from mpmath import mpf, mp
@@ -60,9 +54,8 @@ def getEnergiesMultiPrec(s, couplings):
 def unimarg(bimarg):
     L, nB = seqsize_from_param_shape(bimarg.shape)
     ff = bimarg.reshape((L*(L-1)/2,nB,nB))
-    marg = (array([sum(ff[0],axis=1)] + 
-            [sum(ff[n],axis=0) for n in range(L-1)]))
-    return marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
+    f = (array([sum(ff[0],axis=1)] + [sum(ff[n],axis=0) for n in range(L-1)]))
+    return f/(sum(f,axis=1)[:,newaxis]) # correct any fp errors
 
 ################################################################################
 
@@ -657,7 +650,7 @@ def getCouplings(args, L, nB, bimarg, log):
             if bimarg is None:
                 raise Exception("Need bivariate marginals to generate "
                                 "logscore couplings")
-            h = -np.log(getUnimarg(bimarg))
+            h = -np.log(unimarg(bimarg))
             J = zeros((L*(L-1)/2,nB*nB), dtype='<f4')
             couplings = fieldlessGaugeEven(h, J)[1]
         else: #otherwise load them from file

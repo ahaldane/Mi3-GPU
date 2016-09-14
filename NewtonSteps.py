@@ -2,6 +2,7 @@
 from __future__ import print_function
 from scipy import *
 import scipy
+import scipy.stats.distributions as dists
 import numpy as np
 from numpy.random import randint
 import numpy.random
@@ -13,6 +14,18 @@ import seqload
 from scipy.optimize import leastsq
 from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
 from mcmcGPU import readGPUbufs
+
+def unimarg(bimarg):
+    L, nB = seqsize_from_param_shape(bimarg.shape)
+    ff = bimarg.reshape((L*(L-1)/2,nB,nB))
+    marg = (array([sum(ff[0],axis=1)] + 
+            [sum(ff[n],axis=0) for n in range(L-1)]))
+    return marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
+
+def seqsize_from_param_shape(shape):
+    L = int(((1+sqrt(1+8*shape[0]))/2) + 0.5) 
+    nB = int(sqrt(shape[1]) + 0.5) 
+    return L, nB
 
 ################################################################################
 # Set up enviroment and some helper functions
@@ -121,12 +134,39 @@ def newtonStep(n, bimarg_target, gamma, pc, reg_param, gpus, log):
 
     return SSR, bimarg_model
 
+import pseudocount
+def resample_target(unicounts, gpus):
+    L, nB = unicounts.shape
+    N = sum(unicounts[0,:])
+
+    unimarg = unicounts/float(N)
+    bins = cumsum(unimarg, axis=1)
+    unicountss = [bincount(searchsorted(cp, rand(N)), minlength=8)
+                  for cp in bins]
+    unimargss = array(unicountss)/float(N)
+    pairs = [(i,j) for i in range(L-1) for j in range(i+1,L)]
+    bimarg_indep_ss = array([outer(unimargss[i], unimargss[j]).flatten()
+                             for i,j in pairs], dtype='<f4')
+    bimarg_indep_ss = pseudocount.prior(bimarg_indep_ss, 0.001)
+
+    for gpu in gpus:
+        gpu.setBuf('bi target', bimarg_indep_ss)
+
+def resampled_target(ff, N, gpus):
+    ct = N*ff
+    sample = dists.binom.rvs(N, dists.beta.rvs(1+ct, 1+N-ct))
+    ff = sample/sum(sample, axis=1).astype('<f4')[:,newaxis]
+    return pseudocount.prior(ff, 0.001).astype('<f4')
+
 def iterNewton(param, gpus, log):
     gamma = gamma0 = param.gamma0
     newtonSteps = param.newtonSteps
     pc = param.pcdamping
     gammasteps = 16
     bimarg_target = param.bimarg
+
+    #unicounts = load('unicount5000.npy')
+
     
     if param.regularize:
         reg_param = attrdict({'fn_lmbda': param.fn_lmbda, 'fn_s': param.fn_s})
@@ -149,6 +189,10 @@ def iterNewton(param, gpus, log):
     lastSSR = inf
     nrejects = 0
     for i in range(newtonSteps): 
+        #resample_target(unicounts, gpus)
+        bimarg_target_noise = resampled_target(bimarg_target, 1304, gpus)
+        for gpu in gpus:
+            gpu.setBuf('bi target', bimarg_target_noise)
 
         # increase gamma every gammasteps steps
         if 0 and i != 0 and i % gammasteps == 0:
