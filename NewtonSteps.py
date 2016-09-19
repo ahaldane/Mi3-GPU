@@ -22,6 +22,12 @@ def unimarg(bimarg):
             [sum(ff[n],axis=0) for n in range(L-1)]))
     return marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
 
+def indep_bimarg(bimarg):
+    f = unimarg(bimarg)
+    L = f.shape[0]
+    return array([outer(f[i], f[j]).flatten() for i in range(L-1) 
+                                    for j in range(i+1,L)])
+
 def seqsize_from_param_shape(shape):
     L = int(((1+sqrt(1+8*shape[0]))/2) + 0.5) 
     nB = int(sqrt(shape[1]) + 0.5) 
@@ -51,11 +57,16 @@ printsome = lambda a: " ".join(map(str,a.flatten()[-5:]))
 
 def writeStatus(name, ferr, ssr, wdf, bicount, bimarg_model, couplings, 
                 seqs, startseq, energies, alpha, outdir, log):
+    
+    C = bimarg_model - indep_bimarg(bimarg_model)
+    X = sum(couplings*C, axis=1)
 
     #print some details 
     disp = ["Start Seq: " + "".join([alpha[c] for c in startseq]),
             "{} Ferr: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(
                                                      name, ferr,ssr,wdf),
+            "{} dX: {: 9.7f}  SSR: {: 9.5f}".format(
+                                           name, sum(X), ssr),
             "Bicounts: " + printsome(bicount) + '...',
             "Marginals: " + printsome(bimarg_model) + '...',
             "Couplings: " + printsome(couplings) + "...",

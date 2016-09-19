@@ -659,10 +659,10 @@ def process_potts_args(args, L, nB, bimarg, log):
 def getCouplings(args, L, nB, bimarg, log):
     couplings = None
 
-    if hasattr(args, 'seqmodel') and args.seqmodel in ['zero', 'logscore']:
+    if args.seqmodel and args.seqmodel in ['zero', 'logscore']:
         args.couplings = args.seqmodel
 
-    if hasattr(args, 'couplings'):
+    if args.couplings:
         #first try to generate couplings (requires L, nB)
         if args.couplings in ['zero', 'logscore']:
             if L is None: # we are sure to have nB

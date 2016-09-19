@@ -628,9 +628,22 @@ float Xijbias(float J, float f, uint li, __local float *scratch,
         csums[li] = scratch[nB*li];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
+    float C = (f - rsums[li/nB]*csums[li%nB]);
+
+
+    //get norm of C
+    scratch[li] = 0.0001 + sqrt(C*C);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = nB*nB/2; m > 0; m >>= 1){
+        if(li < m){
+            scratch[li] = scratch[li] + scratch[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    C = C/scratch[0];
+
 
     //get final sum (Xij)
-    float C = (f - rsums[li/nB]*csums[li%nB]);
     scratch[li] = J*C;
     barrier(CLK_LOCAL_MEM_FENCE);
     for(m = nB*nB/2; m > 0; m >>= 1){
@@ -661,7 +674,7 @@ void updatedJ_weightfn(__global float *bimarg_target,
     __local float l_nB1[nB];
     __local float l_nB2[nB];
 
-    float bias = fn_lmbda*Xijbias(Ji[n], bimarg[n], li, l_nBnB, l_nB1, l_nB2);
+    float bias = fn_lmbda*Xijbias(Ji[n], bimarg_target[n], li, l_nBnB, l_nB1, l_nB2);
 
     Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
 }
