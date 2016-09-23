@@ -9,8 +9,8 @@
 
 #pragma OPENCL EXTENSION cl_khr_fp64: enable
 
-typedef unsigned char uchar;
-typedef unsigned int uint;
+//typedef unsigned char uchar;
+//typedef unsigned int uint;
 
 float uniformMap(uint i){
     return (i>>8)*0x1.0p-24f; //converts a 32 bit integer to a float [0,1)
@@ -443,7 +443,7 @@ void sumFloats(__global float *data,
     uint li = get_local_id(0);
     uint vsize = get_local_size(0);
     uint n;
-    
+
     // accumulate through array
     sums[li] = 0;
     for(n = li; n < len; n += vsize){
@@ -597,59 +597,10 @@ float fbnorm(float J, uint li, __local float *sums){
     return sqrt(sums[0]);
 }
 
-float Xijbias(float J, float f, uint li, __local float *scratch,
-                __local float *rsums, __local float *csums){
+float sumqq(float v, uint li, __local float *scratch){
     uint m;
 
-    //get row unimarg
-    scratch[li] = f;
-    barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = nB/2; m > 0; m >>= 1){
-        if(li%nB < m){
-            scratch[li] = scratch[li] + scratch[li + m];
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    if(li < nB){
-        rsums[li] = scratch[nB*li];
-    }
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-    //get col unimarg
-    scratch[nB*(li%nB) + li/nB] = f;
-    barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = nB/2; m > 0; m >>= 1){
-        if(li%nB < m){
-            scratch[li] = scratch[li] + scratch[li + m];
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    if(li < nB){
-        csums[li] = scratch[nB*li];
-    }
-    barrier(CLK_LOCAL_MEM_FENCE);
-    float C = (f - rsums[li/nB]*csums[li%nB]);
-
-
-    //get norm of C
-    scratch[li] = C*C;
-    barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = nB*nB/2; m > 0; m >>= 1){
-        if(li < m){
-            scratch[li] = scratch[li] + scratch[li + m];
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    C = C/(0.0001 + sqrt(scratch[0]));
-
-    // turn off regularization for top 6283 pairs
-    //if(sqrt(scratch[0]) > 0.0005){
-    if(sqrt(scratch[0]) > 0.03){
-        C = 0;
-    }
-
-    //get final sum (Xij)
-    scratch[li] = J*C;
+    scratch[li] = v;
     barrier(CLK_LOCAL_MEM_FENCE);
     for(m = nB*nB/2; m > 0; m >>= 1){
         if(li < m){
@@ -658,14 +609,14 @@ float Xijbias(float J, float f, uint li, __local float *scratch,
         barrier(CLK_LOCAL_MEM_FENCE);
     }
     // XXX assumes nB is even. Need to add last element if odd
-    
-    // regularization step is sign(Xij)*Cijab
-    return sign(scratch[0])*C;
+
+    return scratch[0];
 }
 
 __kernel
 void updatedJ_weightfn(__global float *bimarg_target,
               __global float *bimarg,
+              __global float *Creg,
                        float gamma,
                        float pc,
                        float fn_lmbda,
@@ -676,10 +627,10 @@ void updatedJ_weightfn(__global float *bimarg_target,
     uint n = gi*nB*nB + li;
 
     __local float l_nBnB[nB*nB];
-    __local float l_nB1[nB];
-    __local float l_nB2[nB];
-
-    float bias = fn_lmbda*Xijbias(Ji[n], bimarg_target[n], li, l_nBnB, l_nB1, l_nB2);
+    float X = sumqq(Ji[n]*Creg[n], li, l_nBnB);
+    float lN = sumqq(Creg[n]*Creg[n]/bimarg[n], li, l_nBnB);
+    float lambda = min(fn_lmbda, fabs(X)/(gamma*lN));
+    float bias = lambda*Creg[n]*sign(X);
 
     Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
 }

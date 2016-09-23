@@ -409,6 +409,12 @@ def newtonMCMC(param, gpus, log):
     for gpu in gpus:
         gpu.setBuf('bi target', param.bimarg)
     
+    # setup up regularization if needed
+    if param.regularize:
+        for gpu in gpus:
+            gpu.setBuf('Creg', param.Creg)
+        
+    
     # solve using newton-MCMC
     for i in range(param.mcmcsteps):
         runname = 'run_{}'.format(i)
