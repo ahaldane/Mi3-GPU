@@ -632,7 +632,7 @@ float Xijbias(float J, float f, uint li, __local float *scratch,
 
 
     //get norm of C
-    scratch[li] = 0.0001 + sqrt(C*C);
+    scratch[li] = C*C;
     barrier(CLK_LOCAL_MEM_FENCE);
     for(m = nB*nB/2; m > 0; m >>= 1){
         if(li < m){
@@ -640,8 +640,13 @@ float Xijbias(float J, float f, uint li, __local float *scratch,
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-    C = C/scratch[0];
+    C = C/(0.0001 + sqrt(scratch[0]));
 
+    // turn off regularization for top 6283 pairs
+    //if(sqrt(scratch[0]) > 0.0005){
+    if(sqrt(scratch[0]) > 0.03){
+        C = 0;
+    }
 
     //get final sum (Xij)
     scratch[li] = J*C;

@@ -63,10 +63,9 @@ def writeStatus(name, ferr, ssr, wdf, bicount, bimarg_model, couplings,
 
     #print some details 
     disp = ["Start Seq: " + "".join([alpha[c] for c in startseq]),
-            "{} Ferr: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(
-                                                     name, ferr,ssr,wdf),
-            "{} dX: {: 9.7f}  SSR: {: 9.5f}".format(
-                                           name, sum(X), ssr),
+            "{} Ferr: {: 9.7f}  SSR: {: 9.5f}  dX: {: 9.5f}".format(
+                                                     name, ferr,ssr,sum(X)),
+            "{} wdf: {: 9.7f}".format(name, wdf),
             "Bicounts: " + printsome(bicount) + '...',
             "Marginals: " + printsome(bimarg_model) + '...',
             "Couplings: " + printsome(couplings) + "...",
