@@ -164,7 +164,7 @@ void getEnergies(__global float *J,
     energies[get_global_id(0)] = getEnergiesf(J, seqmem, lcouplings);
 }
 
-//****************************** Metropolis sampler **************************
+// ****************************** Metropolis sampler **************************
 
 __kernel
 void initRNG2(__global mwc64xvec2_state_t *rngstates,
@@ -225,7 +225,7 @@ void metropolis(__global float *J,
     __local uint shared_position;
 
     // The rest of this function is complicated by optimizations for the GPU.
-    // For clarity, here is equivalent but clearer (pseudo)code:
+    // For clarity, here is equivalent but clearer pseudocode.
     //
     //energy = energies[get_global_id(0)];
     //uint pos = 0; //position to mutate
@@ -243,6 +243,7 @@ void metropolis(__global float *J,
     //        energy = newenergy;
     //    }
     //}
+    //
 
     //initialize energy
     float energy = getEnergiesf(J, seqmem, lcouplings);
@@ -274,7 +275,7 @@ void metropolis(__global float *J,
 #endif
 }
 
-//****************************** Gibbs sampler **************************
+// ****************************** Gibbs sampler **************************
 
 __kernel
 void initRNG(__global mwc64x_state_t *rngstates,
@@ -367,7 +368,7 @@ void gibbs(__global float *J,
     rngstates[get_global_id(0)] = rstate;
 }
 
-//****************************** Histogram Code **************************
+// ****************************** Histogram Code **************************
 
 __kernel //call with group size = NHIST, for nPair groups
 void countBimarg(__global uint *bicount,
@@ -399,7 +400,7 @@ void countBimarg(__global uint *bicount,
     barrier(CLK_LOCAL_MEM_FENCE);
 
     uint tmp;
-    //loop through all sequences
+    // loop through all sequences
     for(n = li; n < nseq; n += nhist){
         tmp = seqmem[(i/4)*nseq+n];
         uchar seqi = ((uchar*)&tmp)[i%4];
@@ -628,9 +629,9 @@ void updatedJ_weightfn(__global float *bimarg_target,
 
     __local float l_nBnB[nB*nB];
     float X = sumqq(Ji[n]*Creg[n], li, l_nBnB);
-    float lN = sumqq(Creg[n]*Creg[n]/bimarg[n], li, l_nBnB);
-    float lambda = min(fn_lmbda, fabs(X)/(gamma*lN));
-    float bias = lambda*Creg[n]*sign(X);
+    float lN = sumqq(Creg[n]*Creg[n]/(bimarg[n]+pc), li, l_nBnB);
+    float lmbda = fmin(fn_lmbda, fabs(X)/(gamma*lN));
+    float bias = lmbda*Creg[n]*sign(X);
 
     Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
 }
