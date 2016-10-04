@@ -50,7 +50,7 @@ class attrdict(dict):
         except KeyError:
             return None
 
-printsome = lambda a: " ".join(map(str,a.flatten()[-5:]))
+printsome = lambda a: " ".join(map(str,a.flatten()[:5]))
 
 ################################################################################
 #Helper funcs
@@ -281,7 +281,7 @@ def preOpt(param, gpus, log):
     save(os.path.join(outdir, 'preopt', 'perturbedbimarg'), bimarg_p)
     save(os.path.join(outdir, 'preopt', 'perturbedJ'), couplings)
 
-def swapTemps(gpus, N, B0):
+def swapTemps(gpus, N):
     for gpu in gpus:
         gpu.calcEnergies('small', 'main')
     es, Bs = readGPUbufs(['E small', 'Bs'], gpus)
@@ -316,10 +316,66 @@ def swapTemps(gpus, N, B0):
     Bs = split(Bs, len(gpus)) 
     for B,gpu in zip(Bs, gpus):
         gpu.setBuf('Bs', B)
-        gpu.markSeqs(B == B0)
+        #gpu.markSeqs(B == B0)
 
-    return float32(nswaps)/N
+    return nswaps, Bs
 
+def swapTemps(gpus, N):
+    for gpu in gpus:
+        gpu.calcEnergies('small', 'main')
+    es, Bs = map(concatenate, readGPUbufs(['E small', 'Bs'], gpus))
+    ns = len(es)
+
+    nswaps = 0
+    for n in range(N):
+        i = np.random.randint(ns)
+        
+        delta = exp(min((es[i] - es)*(Bs[i] - Bs), 0))
+        cumsum(delta, out=delta)
+        j = searchsorted(delta, rand()*delta[-1])
+        
+        if Bs[i] != Bs[j]:
+            Bs[i], Bs[j] = Bs[j], Bs[i] 
+            nswaps += 1
+
+    Bs = split(Bs, len(gpus)) 
+    for B,gpu in zip(Bs, gpus):
+        gpu.setBuf('Bs', B)
+
+    return nswaps, Bs
+
+def swapTemps(gpus, N):
+    for gpu in gpus:
+        gpu.calcEnergies('small', 'main')
+    es, Bs = map(concatenate, readGPUbufs(['E small', 'Bs'], gpus))
+    ns = len(es)
+
+    tmp1 = empty(len(es), dtype=es.dtype)
+    tmp2 = empty(len(es), dtype=es.dtype)
+
+    nswaps = 0
+    for n in range(N):
+        i = np.random.randint(ns)
+
+        np.subtract(es[i], es, out=tmp1)
+        np.subtract(Bs[i], Bs, out=tmp2)
+        np.multiply(tmp1, tmp2, out=tmp2)
+        np.minimum(tmp2, 0, out=tmp2)
+        np.exp(tmp2, out=tmp2)
+        np.cumsum(tmp2, out=tmp2)
+        j = searchsorted(tmp2, rand()*tmp2[-1])
+        
+        if Bs[i] != Bs[j]:
+            Bs[i], Bs[j] = Bs[j], Bs[i] 
+            nswaps += 1
+
+    Bs = split(Bs, len(gpus)) 
+    for B,gpu in zip(Bs, gpus):
+        gpu.setBuf('Bs', B)
+
+    return nswaps, Bs
+
+# probably should just have a second version of this with PT, instead of all the ifs
 def runMCMC(gpus, startseq, couplings, runName, param):
     nloop = param.equiltime
     nsamples = param.nsamples
@@ -327,6 +383,9 @@ def runMCMC(gpus, startseq, couplings, runName, param):
     trackequil = param.trackequil
     outdir = param.outdir
     # assumes small sequence buffer is already filled
+
+    if param.tempering is not None:
+        B0 = param.tempering[0]
 
     #get ready for MCMC
     for gpu in gpus:
@@ -339,9 +398,10 @@ def runMCMC(gpus, startseq, couplings, runName, param):
         for i in range(nloop):
             for gpu in gpus:
                 gpu.runMCMC()
+
             if param.tempering is not None:
-                meanswapfreq += swapTemps(gpus, param.nswaps, 
-                                          param.tempering[0])
+                nswp, Bs = swapTemps(gpus, param.nswaps)
+                meanswapfreq += float(nswp)/param.nswaps
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
         mkdir_p(os.path.join(outdir, runName, 'equilibration'))
@@ -349,9 +409,15 @@ def runMCMC(gpus, startseq, couplings, runName, param):
             for i in range(trackequil):
                 for gpu in gpus:
                     gpu.runMCMC()
+
                 if param.tempering is not None:
-                    meanswapfreq += swapTemps(gpus, param.nswaps, 
-                                              param.tempering[0])
+                    nswp, Bs = swapTemps(gpus, param.nswaps)
+                    meanswapfreq += float(nswp)/param.nswaps
+
+            if param.tempering is not None:
+                for B,gpu in zip(Bs,gpus):
+                    gpu.markSeqs(B == B0)
+
             for gpu in gpus:
                 gpu.calcMarkedBicounts()
             bicounts = sumarr(readGPUbufs(['bicount'], gpus)[0])
@@ -367,10 +433,17 @@ def runMCMC(gpus, startseq, couplings, runName, param):
         for i in range(nsampleloops):
             for gpu in gpus:
                 gpu.runMCMC()
+
             if param.tempering is not None:
-                swapTemps(gpus, param.nswaps, param.tempering[0])
-        for gpu in gpus:
-            gpu.storeMarkedSeqs()
+                nswp, Bs = swapTemps(gpus, param.nswaps)
+
+        if param.tempering is not None:
+            for B,gpu in zip(Bs,gpus):
+                gpu.markSeqs(B == B0)
+                gpu.storeMarkedSeqs()
+        else:
+            for gpu in gpus:
+                gpu.storeSeqs()
     
     #process results
     for gpu in gpus:
@@ -478,7 +551,7 @@ def newtonMCMC(param, gpus, log):
             for gpu in gpus:
                 gpu.runMCMC()
             if param.tempering is not None:
-                swapTemps(gpus, param.nswaps, param.tempering[0])
+                swapTemps(gpus, param.nswaps)
         log("Preequilibration done.")
     else:
         log("No Pre-optimization")

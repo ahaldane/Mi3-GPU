@@ -127,6 +127,45 @@ void copySubseq(__global uint *smallbuf,
     }
 }
 
+//__kernel
+//void PTswapj(__global float *es,
+//             __global float *Bs,
+//             __global float *tmp,
+//                      uint  i,
+             //__global float *j,
+//                      float rng){
+//    uint li = get_local_id(0);
+//    uint vsize = get_local_size(0);
+//    uint n;
+
+//    tmp[gi] = exp(min( (es[i] - es[gi])*(Bs[i] - Bs[gi]), 0));
+    
+//    // get cumulative sum
+
+//    // accumulate through array
+//    sums[li] = 0;
+//    for(n = li; n < get_global_size(0); n += vsize){
+//        sums[li] += tmp[n];
+//        barrier(CLK_LOCAL_MEM_FENCE);
+
+          //get cumulative sums up to this point
+    //    for(n = vsize/2; n > 0; n >>= 1){
+    //        if(li < n){
+    //            sums[li] = sums[li] + sums[li + n];
+    //        }
+    //        barrier(CLK_LOCAL_MEM_FENCE);
+    //    }
+        //if(sums[vsize-1] > rng){
+        //    break
+        //}
+//    }
+    
+    //if(sums[li] > rng && sums[li-1] <= rng){
+    //    *j = li + n*vsize;
+    //}
+//}
+
+
 
 //only call from kernels with nseqs work units!!!!!!
 inline float getEnergiesf(__global float *J,

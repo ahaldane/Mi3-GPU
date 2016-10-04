@@ -133,7 +133,7 @@ class MCMCGPU:
                             'E large': ('<f4',  (self.nseq['large'],)),
                             'weights': ('<f4',  (self.nseq['large'],)),
                                'neff': ('<f4',  (1,)),
-                            'markseq': ('<i4',  (self.nseq['small'],)),
+                           'markseqs': ('<i4',  (self.nseq['small'],)),
                             'randpos': ('<u4',  (self.nsteps,))}
 
         self.bufs = {}
@@ -154,7 +154,7 @@ class MCMCGPU:
         self.Ebufs = getBufs('E')
 
         self.setBuf('Bs', ones(self.nseq['small'], dtype='<f4'))
-        self.setBuf('markseq', arange(self.nseq['small'], dtype='<i4'))
+        self.setBuf('markseqs', arange(self.nseq['small'], dtype='<i4'))
         self.nmarks = self.nseq['small']
 
         self.bufs['markpos'] = cl.Buffer(ctx, cl.mem_flags.READ_ONLY, 
@@ -240,8 +240,10 @@ class MCMCGPU:
         """convert from format where every row is a unique ij pair (L choose 2
         rows) to format with every pair, all orders (L^2 rows)."""
 
+        # quit if J already loaded/packed
         if self.packedJ == Jbufname:
-            return
+            return  
+
         self.log("packJ " + Jbufname)
 
         nB, nPairs = self.nB, self.nPairs
@@ -330,7 +332,7 @@ class MCMCGPU:
         localhist = cl.LocalMemory(nhist*nB*nB*dtype(uint32).itemsize)
         evt = self.prg.countBivariate(self.queue, (nPairs*nhist,), (nhist,), 
                      self.bufs['bicount'], 
-                     uint32(nseq), seq_dev, localhist)
+                     uint32(nseq), seq_dev, uint32(buflen), localhist)
         self.events.append((evt, 'calcBicounts'))
 
     def calcMarkedBicounts(self):
@@ -343,7 +345,7 @@ class MCMCGPU:
         evt = self.prg.countMarkedBivariate(
                      self.queue, (nPairs*nhist,), (nhist,),
                      self.bufs['bicount'], uint32(nseq),
-                     self.bufs['marks'], seq_dev, localhist)
+                     self.bufs['markseqs'], seq_dev, localhist)
         self.events.append((evt, 'calcMarkedBicounts'))
 
     def calcEnergies(self, seqbufname, Jbufname):
@@ -465,6 +467,8 @@ class MCMCGPU:
 
     def setBuf(self, bufname, buf):
         self.log("setBuf " + bufname)
+        if bufname == 'Bs':
+            self.log("                {} {}".format(max(buf), min(buf)))
 
         if bufname.split()[0] == 'seq':
             buf = self.packSeqs(buf)
@@ -540,8 +544,9 @@ class MCMCGPU:
         marks = -ones(mask.shape, dtype='i4')
         inds = argwhere(mask)
         marks[inds] = arange(len(inds), dtype='i4')
-        self.setBuf('marks', marks)
+        self.setBuf('markseqs', marks)
         self.nmarks = sum(mask)
+        self.log("marked {} seqs".format(self.nmarks))
 
     def storeMarkedSeqs(self):
         nseq = self.nseq['small']
@@ -551,14 +556,14 @@ class MCMCGPU:
             return
 
         offset = self.nstoredseqs
-        self.log("storeMarkedSeqs " + str(offset))
+        self.log("storeMarkedSeqs {} {}".format(offset, newseq))
 
         if offset + newseq > self.nseq['large']:
             raise Exception("cannot store seqs past end of large buffer")
         evt = self.prg.storeMarkedSeqs(self.queue, (nseq,), (self.wgsize,),
                            self.seqbufs['small'], self.seqbufs['large'],
                            uint32(self.nseq['large']), uint32(offset),
-                           self.bufs['marks'])
+                           self.bufs['markseqs'])
 
         self.nstoredseqs += newseq
         self.events.append((evt, 'storeMarkedSeqs'))
@@ -598,7 +603,7 @@ class MCMCGPU:
 ################################################################################
 # Set up enviroment and some helper functions
 
-printsome = lambda a: " ".join(map(str,a.flatten()[-5:]))
+printsome = lambda a: " ".join(map(str,a.flatten()[:5]))
 
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '0'
 os.environ['PYOPENCL_NO_CACHE'] = '1'

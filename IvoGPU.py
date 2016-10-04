@@ -11,7 +11,7 @@ import sys, os, errno, argparse, time, ConfigParser
 import seqload
 from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
 from mcmcGPU import setupGPUs, initGPU, divideWalkers, printGPUs, readGPUbufs
-from NewtonSteps import newtonMCMC, runMCMC
+from NewtonSteps import newtonMCMC, runMCMC, swapTemps
 
 ################################################################################
 # Set up enviroment and some helper functions
@@ -25,7 +25,7 @@ def mkdir_p(path):
         if not (exc.errno == errno.EEXIST and os.path.isdir(path)):
             raise
 scriptPath = os.path.dirname(os.path.realpath(__file__))
-printsome = lambda a: " ".join(map(str,a.flatten()[-5:]))
+printsome = lambda a: " ".join(map(str,a.flatten()[:5]))
 
 class attrdict(dict):
     def __getattr__(self, attr):
@@ -138,7 +138,7 @@ def optionRegistry():
     add('trackequil', type=uint32, default=0,
         help='Save bimarg every TRACKEQUIL steps during equilibration')
     add('tempering',
-        help='optional Temperature schedule')
+        help='optional inverse Temperature schedule')
     add('nswaps_temp', type=uint32, default=10000,
         help='optional number of pt swaps')
 
@@ -470,8 +470,8 @@ def equilibrate(args, log):
 
         if p.nwalkers % len(p.tempering) != 0:
             raise Exception("# of temperatures must evenly divide # walkers")
-        Bs = concatenate([ones(p.nwalkers/len(p.tempering), dtype='f4')/t 
-                          for t in p.tempering])
+        Bs = concatenate([ones(p.nwalkers/len(p.tempering), dtype='f4')*b 
+                          for b in p.tempering])
         shuffle(Bs)
         Bs = split(Bs, len(gpus)) 
         for B,gpu in zip(Bs, gpus):
@@ -504,6 +504,100 @@ def equilibrate(args, log):
 
     log("Done!")
 
+def equil_PT(args, log):
+    descr = ('Run MCMC equilibration on the GPU with parallel tempering')
+    parser = argparse.ArgumentParser(prog=progname + ' equil_pt',
+                                     description=descr)
+    add = parser.add_argument
+    addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
+                                          'gibbs gpus profile')
+    addopt(parser, 'Sequence Options',    'startseq seqs')
+    addopt(parser, 'Sampling Options',    'equiltime trackequil tempering '
+                                          'nswaps_temp')
+    addopt(parser, 'Potts Model Options', 'alpha couplings L')
+    addopt(parser,  None,                 'seqmodel outdir')
+
+    args = parser.parse_args(args)
+    args.measurefperror = False
+
+    log("Initialization")
+    log("===============")
+
+    p = attrdict({'outdir': args.outdir})
+    mkdir_p(args.outdir)
+
+    p.update(process_potts_args(args, None, None, None, log))
+    L, nB, alpha = p.L, p.nB, p.alpha
+    
+    args.sampletime = 1
+    args.nsamples = 1
+    p.update(process_sample_args(args, log))
+    rngPeriod = (p.equiltime + p.sampletime*p.nsamples)
+    gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, rngPeriod, log)
+    p.update(gpup)
+    gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
+    gpus = [initGPU(n, cldat, dev, nwalk, nwalk*p.nsamples, p, log)
+            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
+    preopt_seqs = sum([g.nseq['small'] for g in gpus])
+    p.update(process_sequence_args(args, L, alpha, None, log,
+                                   nseqs=preopt_seqs))
+    log("")
+    
+    # set up gpu buffers
+    if p.seqs is not None:
+        transferSeqsToGPU(gpus, 'small', p.seqs, log)
+    elif p.startseq is not None:
+        log("Loading small seq buffer with startseq")
+        for gpu in gpus:
+            gpu.fillSeqs(p.startseq)
+    else:
+        raise Exception("Error: Must either supply startseq or seqs")
+
+    for gpu in gpus:
+        gpu.setBuf('J main', p.couplings)
+
+    if p.nwalkers % len(p.tempering) != 0:
+        raise Exception("# of temperatures must evenly divide # walkers")
+    Bs = concatenate([ones(p.nwalkers/len(p.tempering), dtype='f4')*b 
+                      for b in p.tempering])
+    log("Using {} beta from {} to {}".format(
+               len(p.tempering), max(Bs), min(Bs)))
+    for B,gpu in zip(split(Bs, len(gpus)), gpus):
+        gpu.setBuf('Bs', B)
+    log("")
+
+    outdir = p.outdir
+    trackequil = p.trackequil
+    nloop = p.equiltime
+    
+    # actually run the mcmc
+    def getPTBufs(gpus):
+        return map(concatenate, readGPUbufs(['E small', 'seq small', 'Bs'], gpus))
+
+    def writePTBufs(dir, energies, seqs, Bs):
+        save(os.path.join(dir, 'energies'), energies)
+        save(os.path.join(dir, 'Bs'), Bs)
+        seqload.writeSeqs(os.path.join(dir, 'seqs'), seqs, p.alpha)
+
+    log("Equilibrating ...")
+    if trackequil == 0:
+        trackequil = nloop
+
+    for j in range(nloop/trackequil):
+        for i in range(trackequil):
+            for gpu in gpus:
+                gpu.runMCMC()
+            nswp = swapTemps(gpus, p.nswaps)[0]
+            log("Swap freq: {}  ({} swaps)".format(float(nswp)/p.nswaps, nswp))
+        
+        if j != (nloop/trackequil - 1): # don't write last one, written below
+            dir = os.path.join(outdir, 'equilibration', str(j*trackequil))
+            mkdir_p(dir)
+            writePTBufs(dir, *getPTBufs(gpus))
+
+    writePTBufs(outdir, *getPTBufs(gpus))
+
+    log("Done!")
 
 def subseqFreq(args, log):
     descr = ('Compute relative frequency of subsequences at fixed positions')
@@ -699,7 +793,7 @@ def process_potts_args(args, L, nB, bimarg, log):
     # * from coupling dimensions
 
     alpha = args.alpha
-    argL = args.L if 'L' in args else None
+    argL = int(args.L) if 'L' in args else None
     L, nB = updateLnB(argL, len(alpha), L, nB, 'bimarg')
 
     # next try to get couplings (may determine L, nB)
@@ -868,7 +962,12 @@ def process_sample_args(args, log):
                   'trackequil': args.trackequil})
 
     if 'tempering' in args and args.tempering:
-        p['tempering'] = [float(x) for x in args.tempering.split(",")]
+        try:
+            Bs = np.load(args.tempering)
+        except:
+            fls = [float(x) for x in args.tempering.split(",")]
+            Bs = array(fls, dtype='f4')
+        p['tempering'] = Bs
         p['nswaps'] = args.nswaps_temp
     if 'preequiltime' in args:
         p['preequiltime'] = args.preequiltime
@@ -889,7 +988,7 @@ def process_sample_args(args, log):
             raise Exception("Error: trackequil must be a divisor of equiltime")
         log("Tracking equilibration every {} loops.".format(p.trackequil))
 
-    if p.preequiltime != 0:
+    if p.preequiltime is not None and p.preequiltime != 0:
         log("Pre-equilibration for {} steps".format(p.preequiltime))
 
     log("")
@@ -923,6 +1022,7 @@ def main(args):
       #'measureFPerror': measureFPerror,
       'subseqFreq':     subseqFreq,
       'mcmc':           equilibrate,
+      'equil_pt':       equil_PT,
       'nestedZ':        nestedZ,
      }
 
