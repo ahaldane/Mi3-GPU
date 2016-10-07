@@ -127,44 +127,213 @@ void copySubseq(__global uint *smallbuf,
     }
 }
 
-//__kernel
-//void PTswapj(__global float *es,
-//             __global float *Bs,
-//             __global float *tmp,
-//                      uint  i,
-             //__global float *j,
-//                      float rng){
-//    uint li = get_local_id(0);
-//    uint vsize = get_local_size(0);
-//    uint n;
+__kernel
+void initRNG(__global mwc64x_state_t *rngstates,
+                       ulong offset,
+                       ulong nsamples){
+    mwc64x_state_t rstate;
+    MWC64X_SeedStreams(&rstate, offset, nsamples);
+    rngstates[get_global_id(0)] = rstate;
+}
 
-//    tmp[gi] = exp(min( (es[i] - es[gi])*(Bs[i] - Bs[gi]), 0));
+__kernel
+void PTswap(__global float *es,
+            __global float *Bs,
+            __global  uint *rngi,
+                      uint  n_replicas,
+                      uint  nswap,
+            __local  float *vals,
+            __local   uint *inds,
+            __global mwc64x_state_t *rngstates){
+    uint li = get_local_id(0);
+    __shared uint i;
+    int n;
+
+    mwc64x_state_t rstate = rngstates[get_global_id(0)];
     
-//    // get cumulative sum
+    for(n = 0; n < nswaps; n++){
+        // select next random position i (given in rngi)
+        float ei = es[rngi[n]];
+        float Bi = bs[rngi[n]];
 
-//    // accumulate through array
-//    sums[li] = 0;
-//    for(n = li; n < get_global_size(0); n += vsize){
-//        sums[li] += tmp[n];
-//        barrier(CLK_LOCAL_MEM_FENCE);
+        // performs gibbs sampling to get j given i:
+        // For all j, compute the swap delta
+        //       deltaij = (e[i] - e[j])*(b[i] - b[j])
+        // The *unnormalized* swap probability is then 
+        //          pij = exp(max(deltaij,0))
+        //
+        // To do a weighted random sample from this, one strategy
+        // could be to normalize then find position of a signle rng
+        // in cumulative sum array. But this is bad on GPU.
+        //
+        // Instead, note that if we generate n_replicas exponentially
+        // distributed rngs with scales pij, then choose the minimum one,
+        // the probability of selecting ij is pij/sum(pij), just as desired.
 
-          //get cumulative sums up to this point
-    //    for(n = vsize/2; n > 0; n >>= 1){
-    //        if(li < n){
-    //            sums[li] = sums[li] + sums[li + n];
-    //        }
-    //        barrier(CLK_LOCAL_MEM_FENCE);
-    //    }
-        //if(sums[vsize-1] > rng){
-        //    break
-        //}
-//    }
-    
-    //if(sums[li] > rng && sums[li-1] <= rng){
-    //    *j = li + n*vsize;
-    //}
-//}
+        // first go through j and record minimum rng for each li
+        float best = INFTY;
+        int bestj = -1;
+        for(j = li; j < n_replicas; j += get_local_size(0)){
+            float p = exp(min( (ei - es[j])*(Bi - Bs[j]), 0));
+            uint rng = MWC64X_NextUint(&rstate);
+            float score = -log(uniformMap(rng))/p;
+            if(score < best){
+                bestj = j;
+                best = score;
+            }
+        }
 
+        // now reduce over li to get argmin j
+        vals[li] = best;
+        inds[li] = bestj;
+        barrier(CLK_LOCAL_MEM_FENCE);
+        for(m = get_local_size(0)/2; m > 0; m >>= 1){
+            if(li < m){
+                if(vals[li] > vals[li + n]){
+                    vals[li] = vals[li + n];
+                    inds[li] = inds[li + n];
+                }
+            }
+            barrier(CLK_LOCAL_MEM_FENCE);
+        }
+        // local size must not be odd
+
+        // first work unit does the swap
+        if(li == 0){
+            uint j = inds[0];
+
+            es[i] = es[j];
+            es[j] = ei;
+
+            Bs[i] = Bs[j]
+            Bs[j] = Bi;
+        }
+        barrier(CLK_GLOBAL_MEM_FENCE); //there should only be 1 wg though
+    }
+}
+
+__kernel
+void PTswap_neighbors(__global float *Eevn, __blobal float *Eodd,
+            __global float *Bs,
+            __global  uint *rngi,
+                      uint  n_replicas,
+                      uint  nswap,
+            __global mwc64x_state_t *rngstates){
+    uint n,l;
+
+    mwc64x_state_t rstate = rngstates[get_global_id(0)];
+    __shared float extraB;
+
+    for(n = 0; n < nswap/2; n++){
+        for(l = li; l < n_replicas/2; l += get_local_size(0)){
+            ei = Eevn[l];
+            ej = Eodd[l];
+            Bi = Bevn[l];
+            Bj = Bodd[l];
+
+            float rng = uniformMap(MWC64X_NextUint(&rstate));
+            if((ei - ej)*(Bi - Bj) > log(rng)){
+                // effectively swap temps
+                if(li == 0){
+                    Bevn[0] = Bj;  //globa write for first element
+                }
+                Bj = Bi;
+            }
+
+            // now swap with left neighbor
+            // no need to reload from global memory, just shift even over
+            if(i > 0){
+                Escratch[li-1] = ei;
+                Bscratch[li-1] = Bi;
+            else{
+                // need to do a global memory read to get the border element
+                // maybe this can be pre-loaded?
+                Escratch[get_local_size(0)-1] = Eevn[];
+                Bscratch[get_local_size(0)-1] = Bevn[];
+            }
+            barrier(CLK_LOCAL_MEM_FENCE);
+            ei = Escratch[li];
+            Bi = Escratch[li];
+
+            float rng = uniformMap(MWC64X_NextUint(&rstate));
+            if((ei - ej)*(Bi - Bj) > log(rng)){
+                float tmp = Bi;
+                Bi = Bj;
+                Bj = tmp;
+            }
+
+            Bevn[l] = Bi;
+            Bodd[l] = Bj;
+            barrier(CLK_LOCAL_MEM_FENCE);
+        }
+    }
+}
+
+__kernel
+void PTswap_neighbors(__global float *Eevn, __blobal float *Eodd,
+            __global float *Bs,
+            __global float  e0,
+            __global float  B0,
+            __global  uint *rngi,
+                      uint  n_replicas,
+                      uint  nswap,
+            __global mwc64x_state_t *rngstates){
+    uint n,l;
+
+    // we expect Eevn to contain 2,4,6,8,10... spots, and
+    // Eodd to contain 1,3,5,7,11... spits, and 0 is in e0.
+
+    mwc64x_state_t rstate = rngstates[get_global_id(0)];
+
+    __shared float extrae, extraB;
+    if(li == 0){
+        extrae = e0;
+        extraB = B0;
+    }
+
+    for(n = 0; n < nswap/2; n++){
+        for(l = li; l < n_replicas/2; l += get_local_size(0)){
+            // first do "odd" swaps: 1-2, 3-4, 5-6 etc
+            ei = Eevn[l];
+            ej = Eodd[l];
+            Bi = Bevn[l];
+            Bj = Bodd[l];
+
+            float rng = uniformMap(MWC64X_NextUint(&rstate));
+            if((ei - ej)*(Bi - Bj) > log(rng)){
+                float tmp = Bi;
+                Bi = Bj;
+                Bj = tmp;
+            }
+
+            // now do 'even' swaps
+
+            // now swap with left neighbor
+            // no need to reload from global memory, just shift even over
+            if(li > 0){
+                Escratch[li] = ei;
+                Bscratch[li] = Bi;
+            else{
+                Escratch[0] = extrae;
+                Bscratch[0] = extraB
+            }
+            barrier(CLK_LOCAL_MEM_FENCE);
+            ei = Escratch[li];
+            Bi = Escratch[li];
+
+            float rng = uniformMap(MWC64X_NextUint(&rstate));
+            if((ei - ej)*(Bi - Bj) > log(rng)){
+                float tmp = Bi;
+                Bi = Bj;
+                Bj = tmp;
+            }
+
+            Bevn[l] = Bi;
+            Bodd[l] = Bj;
+            barrier(CLK_LOCAL_MEM_FENCE);
+        }
+    }
+}
 
 
 //only call from kernels with nseqs work units!!!!!!
@@ -286,27 +455,6 @@ void metropolis(__global float *J,
     //set up local mem
     __local float lcouplings[nB*nB*4];
     __local uint shared_position;
-
-    // The rest of this function is complicated by optimizations for the GPU.
-    // For clarity, here is equivalent but clearer pseudocode.
-    //
-    //energy = energies[get_global_id(0)];
-    //uint pos = 0; //position to mutate
-    //for(i = 0; i < nsteps; i++){
-    //    uint pos = rand()%L; //position to mutate
-    //    uint residue = rand()%nB; //calculate new residue
-    //    float newenergy = energy; //calculate new energy
-    //    for(m = 0; m < L; m++){
-    //        if(m == pos) continue;
-    //        newenergy += (J[pos,m,residue,seq[m]] - J[pos,m,seq[pos],seq[m]]);
-    //    }
-    //    //apply MC criterion and possibly update
-    //    if(exp(-(newenergy - energy)) > rand()){
-    //        seq[pos] = residue;
-    //        energy = newenergy;
-    //    }
-    //}
-    //
 
     //initialize energy
     float energy = getEnergiesf(J, seqmem, nseqs, lcouplings);

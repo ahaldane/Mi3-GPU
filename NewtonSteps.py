@@ -281,46 +281,9 @@ def preOpt(param, gpus, log):
     save(os.path.join(outdir, 'preopt', 'perturbedbimarg'), bimarg_p)
     save(os.path.join(outdir, 'preopt', 'perturbedJ'), couplings)
 
-def swapTemps(gpus, N):
-    for gpu in gpus:
-        gpu.calcEnergies('small', 'main')
-    es, Bs = readGPUbufs(['E small', 'Bs'], gpus)
-    es = concatenate(es)
-    Bs = concatenate(Bs)
-    #starttime = time.time()
-    #print("--------")
-    #print(starttime, es[0], mean(es[Bs == B0]), sqrt(var(es[Bs == B0])))
-    
-    nswaps = 0
-    nBs = len(Bs)
-    #swaptypes = {}
-    for i in range(N):
-        i = j = 0
-        while Bs[i] == Bs[j]:
-            i,j = np.random.randint(nBs), np.random.randint(nBs)
-        if (es[i] - es[j])*(Bs[i] - Bs[j]) > np.log(rand()):
-            Bs[i], Bs[j] = Bs[j], Bs[i] 
-            
-            ## update counters
-            nswaps += 1
-            #pp = (Bs[i], Bs[j]) if Bs[i] < Bs[j] else (Bs[j], Bs[i])
-            #swaptypes[pp] = swaptypes.get(pp, 0) + 1
+def swapTempsCPU(gpus, N):
+    # CPU implementation of PT swap
 
-    #print("{} swaps succeeded out of {} ({}%)".format(nswaps, N, float(nswaps)/N*100))
-    #k = swaptypes.keys()
-    #k.sort()
-    #print([swaptypes[x] for x in k], mean(es[Bs == B0]))
-    #endtime = time.time()
-    #print(endtime, endtime - starttime)
-
-    Bs = split(Bs, len(gpus)) 
-    for B,gpu in zip(Bs, gpus):
-        gpu.setBuf('Bs', B)
-        #gpu.markSeqs(B == B0)
-
-    return nswaps, Bs
-
-def swapTemps(gpus, N):
     for gpu in gpus:
         gpu.calcEnergies('small', 'main')
     es, Bs = map(concatenate, readGPUbufs(['E small', 'Bs'], gpus))
@@ -328,8 +291,10 @@ def swapTemps(gpus, N):
 
     nswaps = 0
     for n in range(N):
+        # randomly select position i
         i = np.random.randint(ns)
         
+        # the gibbs sample to get position j
         delta = exp(min((es[i] - es)*(Bs[i] - Bs), 0))
         cumsum(delta, out=delta)
         j = searchsorted(delta, rand()*delta[-1])
@@ -344,36 +309,62 @@ def swapTemps(gpus, N):
 
     return nswaps, Bs
 
-def swapTemps(gpus, N):
+def swapTempsCPU(gpus, N):
+    # CPU implementation of PT swap
+
     for gpu in gpus:
         gpu.calcEnergies('small', 'main')
     es, Bs = map(concatenate, readGPUbufs(['E small', 'Bs'], gpus))
     ns = len(es)
 
-    tmp1 = empty(len(es), dtype=es.dtype)
-    tmp2 = empty(len(es), dtype=es.dtype)
+    order = argsort(es)
+    es = es[order]
+    Bs = Bs[order]
+
+    deEvn = es[ :-1:2] - es[1::2]
+    deOdd = es[1:-1:2] - es[2::2]
 
     nswaps = 0
     for n in range(N):
-        i = np.random.randint(ns)
+        # swap even
+        delta1 = deEven*(bs[:-1:2] - bs[1::2])
+        swap = 2*where(exp(min(delta1,0)) < rand(ns-1))[0]
+        tmp = Bs[swap]
+        Bs[swap] = Bs[swap+1]
+        Bs[swap+1] = tmp
 
-        np.subtract(es[i], es, out=tmp1)
-        np.subtract(Bs[i], Bs, out=tmp2)
-        np.multiply(tmp1, tmp2, out=tmp2)
-        np.minimum(tmp2, 0, out=tmp2)
-        np.exp(tmp2, out=tmp2)
-        np.cumsum(tmp2, out=tmp2)
-        j = searchsorted(tmp2, rand()*tmp2[-1])
-        
-        if Bs[i] != Bs[j]:
-            Bs[i], Bs[j] = Bs[j], Bs[i] 
-            nswaps += 1
-
+        # swap odd
+        delta2 = deOdd*(bs[1:-1:2] - bs[2::2])
+        swap = 2*where(exp(min(delta2,0)) < rand(ns-1))[0] + 1
+        tmp = Bs[swap]
+        Bs[swap] = Bs[swap+1]
+        Bs[swap+1] = tmp
+    
+    Bs[order] = Bs.copy()
     Bs = split(Bs, len(gpus)) 
     for B,gpu in zip(Bs, gpus):
         gpu.setBuf('Bs', B)
 
     return nswaps, Bs
+
+def swapTempsGPU(gpus, N):
+    # GPU implementation of PT swap.
+
+    for gpu in gpus:
+        gpu.calcEnergies('small', 'main')
+    es, Bs = map(concatenate, readGPUbufs(['E small', 'Bs'], gpus))
+
+    gpus[0].setBuf('E pt', es)
+    gpus[0].setBuf('B pt', Bs)
+    gpus[0].PTswap(N)
+    Bs = readGPUbufs(['B pt'], gpus)[0]
+
+    for B,gpu in zip(split(Bs, len(gpus)), gpus):
+        gpu.setBuf('Bs', B)
+
+    return 0, Bs
+
+swapTemps = swapTempsGPU
 
 # probably should just have a second version of this with PT, instead of all the ifs
 def runMCMC(gpus, startseq, couplings, runName, param):

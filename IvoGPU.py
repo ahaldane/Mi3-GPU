@@ -201,12 +201,20 @@ def inverseIsing(args, log):
     L, nB, alpha = p.L, p.nB, p.alpha
 
     p.update(process_sample_args(args, log))
-    rngPeriod = (p.equiltime + p.sampletime*p.nsamples)*p.mcmcsteps
-    gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, rngPeriod, log)
+    gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, log)
     p.update(gpup)
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
-    gpus = [initGPU(n, cldat, dev, nwalk, nwalk*p.nsamples, p, log)
+    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
+
+    rngPeriod = (p.equiltime + p.sampletime*p.nsamples)*p.mcmcsteps
+    for gpu in gpus:
+        gpu.initMCMC(p.nsteps, rngPeriod)
+        gpu.initLargeBufs(gpu.nseq['main']*p.nsamples):
+        gpu.initJstep()
+        gpu.initBackBufs()
+        if p.tempering:
+            gpu.initMarkSeq()
     log("")
     #log(("Running {} MCMC walkers in parallel over {} GPUs, with {} MC "
     #    "steps per kernel call").format(p.nwalkers, len(gpus),
@@ -221,16 +229,16 @@ def inverseIsing(args, log):
         transferSeqsToGPU(gpus, 'large', p.seqs, log)
 
     #if we're not initializing seqs to single sequence, need to load
-    # a set of initial sequences into small buffer
+    # a set of initial sequences into main buffer
     if not p.resetseqs:
         if p.seqs is None:
             raise Exception("Need to provide seqs if not using startseq")
         #get required seqs from end of detected seqs
         if len(p.seqs) == 1:
-            smallseq = [p.seqs[-sum([g.nseq['small'] for f in gpus]):]]
+            mainseq = [p.seqs[-sum([g.nseq['main'] for f in gpus]):]]
         else:
-            smallseq = [s[-g.nseq['small']:] for s,g in zip(p.seqs, gpus)]
-        transferSeqsToGPU(gpus, 'small', smallseq, log)
+            mainseq = [s[-g.nseq['main']:] for s,g in zip(p.seqs, gpus)]
+        transferSeqsToGPU(gpus, 'main', mainseq, log)
     log("")
 
     log("Computation Overview")
@@ -297,7 +305,7 @@ def getEnergies(args, log):
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
     gpus = [initGPU(n, cldat, dev, nwalk, 1, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
-    transferSeqsToGPU(gpus, 'small', [seqs], log)
+    transferSeqsToGPU(gpus, 'main', [seqs], log)
     log("")
 
 
@@ -307,35 +315,9 @@ def getEnergies(args, log):
     for gpu in gpus:
         gpu.setBuf('J main', p.couplings)
 
-    #XXX
     for gpu in gpus:
-        gpu.calcBimarg('small')
-    res = readGPUbufs(['bi main'], gpus)
-    def sumarr(arrlist):
-        #low memory usage (rather than sum(arrlist, axis=0))
-        tot = arrlist[0].copy()
-        for a in arrlist[1:]:
-            np.add(tot, a, tot)
-        return tot
-    def meanarr(arrlist):
-        return sumarr(arrlist)/len(arrlist)
-    bimarg = meanarr(res[0])
-    for gpu in gpus:
-        gpu.setBuf('bi back', bimarg)
-        gpu.setBuf('bi target', bimarg)
-        gpu.copyBuf('J main', 'J front')
-        gpu.copyBuf('J main', 'J back')
-
-    for gpu in gpus:
-        gpu.updateJ_weightfn(0.004, 0.001, 0.001)
-    res = readGPUbufs(['J front'], gpus)[0][0]
-    save('testdat', res)
-    save('testbimarg', bimarg)
-    return
-
-    for gpu in gpus:
-        gpu.calcEnergies('small', 'main')
-    es = concatenate(readGPUbufs(['E small'], gpus)[0])
+        gpu.calcEnergies('main', 'main')
+    es = concatenate(readGPUbufs(['E main'], gpus)[0])
 
     log("Saving results to file '{}'".format(args.out))
     save(args.out, es)
@@ -367,24 +349,26 @@ def MCMCbenchmark(args, log):
     p.update(process_potts_args(args, p.L, p.nB, None, log))
     L, nB, alpha = p.L, p.nB, p.alpha
     args.nlargebuf = 1
-    gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, 2*nloop, log)
+    gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, log)
     p.update(gpup)
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
-    gpus = [initGPU(n, cldat, dev, nwalk, 1, p, log)
+    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
+    for gpu in gpus:
+        gpu.initMCMC(p.nsteps, 2*nloop)
     log("")
-    preopt_seqs = sum([g.nseq['small'] for g in gpus])
+    preopt_seqs = sum([g.nseq['main'] for g in gpus])
     p.update(process_sequence_args(args, L, alpha, None, log,nseqs=preopt_seqs))
 
     if p.seqs is not None:
-        transferSeqsToGPU(gpus, 'small', p.seqs, log)
+        transferSeqsToGPU(gpus, 'main', p.seqs, log)
     elif p.startseq is not None:
-        log("Loading small seq buffer with startseq")
+        log("Loading main seq buffer with startseq")
         for gpu in gpus:
             gpu.fillSeqs(p.startseq)
     else:
         raise Exception("Error: To benchmark, must either supply startseq or "
-                        "load seqs into small seq buffer")
+                        "load seqs into main seq buffer")
     log("")
 
 
@@ -405,7 +389,6 @@ def MCMCbenchmark(args, log):
     #initialize
     for gpu in gpus:
         gpu.setBuf('J main', p.couplings)
-        gpu.setBuf('J back', p.couplings)
 
     #warmup
     log("Warmup run...")
@@ -450,11 +433,16 @@ def equilibrate(args, log):
 
     p.update(process_sample_args(args, log))
     rngPeriod = (p.equiltime + p.sampletime*p.nsamples)
-    gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, rngPeriod, log)
+    gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, log)
     p.update(gpup)
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
-    gpus = [initGPU(n, cldat, dev, nwalk, nwalk*p.nsamples, p, log)
+    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
+    for gpu in gpus:
+        gpu.initMCMC(p.nsteps, rngPeriod)
+        gpu.initLargeBufs(gpu.nseq['main']*p.nsamples):
+        if p.tempering:
+            gpu.initMarkSeq()
     preopt_seqs = sum([g.nseq['large'] for g in gpus])
     p.update(process_sequence_args(args, L, alpha, None, log,
                                    nseqs=preopt_seqs))
@@ -493,11 +481,11 @@ def equilibrate(args, log):
         seqload.writeSeqs(os.path.join(outdir, 'seqs-{}'.format(n)),
                           seqbuf, alpha)
     for gpu in gpus:
-        gpu.calcEnergies('small', 'main')
-    se, ss, sB = readGPUbufs(['E small', 'seq small', 'Bs'], gpus)
-    seqload.writeSeqs(os.path.join(outdir, 'smallseqs'), concatenate(ss), alpha)
-    save(os.path.join(outdir, 'smallE'), concatenate(se))
-    save(os.path.join(outdir, 'smallB'), concatenate(sB))
+        gpu.calcEnergies('main', 'main')
+    se, ss, sB = readGPUbufs(['E main', 'seq main', 'Bs'], gpus)
+    seqload.writeSeqs(os.path.join(outdir, 'mainseqs'), concatenate(ss), alpha)
+    save(os.path.join(outdir, 'mainE'), concatenate(se))
+    save(os.path.join(outdir, 'mainB'), concatenate(sB))
 
     #slarge = gpus[-1].getBuf('seq large', False).read()
     #seqload.writeSeqs('gpu3seqbuf', slarge, alpha)
@@ -533,21 +521,25 @@ def equil_PT(args, log):
     args.nsamples = 1
     p.update(process_sample_args(args, log))
     rngPeriod = (p.equiltime + p.sampletime*p.nsamples)
-    gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, rngPeriod, log)
+    gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, log)
     p.update(gpup)
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
-    gpus = [initGPU(n, cldat, dev, nwalk, nwalk*p.nsamples, p, log)
+    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
-    preopt_seqs = sum([g.nseq['small'] for g in gpus])
+    preopt_seqs = sum([g.nseq['main'] for g in gpus])
     p.update(process_sequence_args(args, L, alpha, None, log,
                                    nseqs=preopt_seqs))
+
+    for gpu in gpus:
+        gpu.initMCMC(p.nsteps, rngPeriod)
+        gpu.initPT(p.nwalkers)
     log("")
     
     # set up gpu buffers
     if p.seqs is not None:
-        transferSeqsToGPU(gpus, 'small', p.seqs, log)
+        transferSeqsToGPU(gpus, 'main', p.seqs, log)
     elif p.startseq is not None:
-        log("Loading small seq buffer with startseq")
+        log("Loading main seq buffer with startseq")
         for gpu in gpus:
             gpu.fillSeqs(p.startseq)
     else:
@@ -572,7 +564,7 @@ def equil_PT(args, log):
     
     # actually run the mcmc
     def getPTBufs(gpus):
-        return map(concatenate, readGPUbufs(['E small', 'seq small', 'Bs'], gpus))
+        return map(concatenate, readGPUbufs(['E main', 'seq main', 'Bs'], gpus))
 
     def writePTBufs(dir, energies, seqs, Bs):
         save(os.path.join(dir, 'energies'), energies)
@@ -647,7 +639,7 @@ def subseqFreq(args, log):
     #load buffers
     gpubseqs = split(bseqs, cumsum(gpuwalkers)[:-1])
     for gpu,bs in zip(gpus, gpubseqs):
-        gpu.setBuf('seq small', sseqs)
+        gpu.setBuf('seq main', sseqs)
         gpu.setBuf('seq large', bs)
         gpu.markPos(fixedmarks)
         gpu.setBuf('J main', p.couplings)
@@ -690,7 +682,7 @@ def nestedZ(args, log):
 
 ################################################################################
 
-def process_GPU_args(args, L, nB, outdir, rngPeriod, log):
+def process_GPU_args(args, L, nB, outdir, log):
     log("GPU setup")
     log("---------")
 
