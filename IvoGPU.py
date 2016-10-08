@@ -210,7 +210,7 @@ def inverseIsing(args, log):
     rngPeriod = (p.equiltime + p.sampletime*p.nsamples)*p.mcmcsteps
     for gpu in gpus:
         gpu.initMCMC(p.nsteps, rngPeriod)
-        gpu.initLargeBufs(gpu.nseq['main']*p.nsamples):
+        gpu.initLargeBufs(gpu.nseq['main']*p.nsamples)
         gpu.initJstep()
         gpu.initBackBufs()
         if p.tempering:
@@ -440,7 +440,7 @@ def equilibrate(args, log):
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
     for gpu in gpus:
         gpu.initMCMC(p.nsteps, rngPeriod)
-        gpu.initLargeBufs(gpu.nseq['main']*p.nsamples):
+        gpu.initLargeBufs(gpu.nseq['main']*p.nsamples)
         if p.tempering:
             gpu.initMarkSeq()
     preopt_seqs = sum([g.nseq['large'] for g in gpus])
@@ -470,8 +470,7 @@ def equilibrate(args, log):
     (bimarg_model, 
      bicount, 
      energies, 
-     seqs,
-     ptrate) = runMCMC(gpus, p.startseq, p.couplings, '.', p)
+     seqs) = runMCMC(gpus, p.startseq, p.couplings, '.', p)
     
     outdir = p.outdir
     savetxt(os.path.join(outdir, 'bicounts'), bicount, fmt='%d')
@@ -529,10 +528,8 @@ def equil_PT(args, log):
     preopt_seqs = sum([g.nseq['main'] for g in gpus])
     p.update(process_sequence_args(args, L, alpha, None, log,
                                    nseqs=preopt_seqs))
-
     for gpu in gpus:
         gpu.initMCMC(p.nsteps, rngPeriod)
-        gpu.initPT(p.nwalkers)
     log("")
     
     # set up gpu buffers
@@ -579,8 +576,8 @@ def equil_PT(args, log):
         for i in range(trackequil):
             for gpu in gpus:
                 gpu.runMCMC()
-            nswp = swapTemps(gpus, p.nswaps)[0]
-            log("Swap freq: {}  ({} swaps)".format(float(nswp)/p.nswaps, nswp))
+            swapTemps(gpus, p.nswaps)
+            log("Step {} done".format(i))
         
         if j != (nloop/trackequil - 1): # don't write last one, written below
             dir = os.path.join(outdir, 'equilibration', str(j*trackequil))
@@ -695,7 +692,7 @@ def process_GPU_args(args, L, nB, outdir, log):
                       'fperror': args.measurefperror})
 
     p = attrdict(param.copy())
-    p.update({'L': L, 'nB': nB, 'outdir': outdir, 'rngPeriod': rngPeriod})
+    p.update({'L': L, 'nB': nB, 'outdir': outdir})
 
     scriptfile = os.path.join(scriptPath, "mcmc.cl")
 

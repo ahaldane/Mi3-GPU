@@ -55,15 +55,18 @@ def readGPUbufs(bufnames, gpus):
 class MCMCGPU:
     def __init__(self, gpuinfo, (L, nB), nseq, wgsize, outdir, 
                  nhist, vsize, profile=False):
-        gpu, gpunum, ctx, prg = gpuinfo
         self.L = L
         self.nB = nB
         self.nPairs = L*(L-1)/2
         self.events = []
-        self.gpunum = gpunum
         self.SWORDS = ((L-1)/4+1)     #num words needed to store a sequence
         self.SBYTES = (4*self.SWORDS) #num bytes needed to store a sequence
         self.nseq = {'main': nseq}
+
+        gpu, gpunum, ctx, prg = gpuinfo
+        self.gpunum = gpunum
+        self.ctx = ctx
+        self.prg = prg
 
         self.wgsize = wgsize
         self.nhist = nhist
@@ -76,7 +79,6 @@ class MCMCGPU:
         self.mcmcprg = prg.metropolis
 
         #setup opencl for this device
-        self.prg = prg
         self.log("Getting CL Queue")
         self.profile = profile
         if profile:
@@ -90,6 +92,16 @@ class MCMCGPU:
                  cl.kernel_work_group_info.WORK_GROUP_SIZE, gpu)
         self.log("Max MCMC WGSIZE: {}".format(maxwgs))
         
+        self.initted = []
+
+        self.bufs = {}
+        self.buf_spec = {}
+        self.Jbufs = {}
+        self.bibufs = {}
+        self.seqbufs = {}
+        self.Ebufs = {}
+        self.largebufs = []
+
         # setup generally needed buffers
         nPairs, SWORDS = self.nPairs, self.SWORDS
         self._setupBuffer( 'Jpacked', '<f4', (L*L, nB*nB))
@@ -132,7 +144,7 @@ class MCMCGPU:
     def _setupBuffer(self, bufname, buftype, bufshape, 
                           flags=cf.READ_WRITE | cf.ALLOC_HOST_PTR):
         size = dtype(buftype).itemsize*product(bufshape)
-        buf = cl.Buffer(ctx, flags, size=size)
+        buf = cl.Buffer(self.ctx, flags, size=size)
 
         self.bufs[bufname] = buf
         self.buf_spec[bufname] = (buftype, bufshape, flags)
@@ -141,7 +153,7 @@ class MCMCGPU:
         names = bufname.split()
         if len(names) > 1:
             {'J': self.Jbufs, 'bi': self.bibufs, 'seq': self.seqbufs, 
-             'E': self.Ebufs}.get(names[0], []).append(buf)
+             'E': self.Ebufs}[names[0]][names[1]] = buf
 
     def require(self, *reqs):
         for r in reqs:
@@ -187,17 +199,6 @@ class MCMCGPU:
         self._setupBuffer('markpos', '<u1',  (self.SBYTES,), cf.READ_ONLY)
         self.markPos(zeros(self.SBYTES, '<u1'))
 
-    def initPT(self, size, ptsteps):
-        self._initcomponent('PT')
-        
-        nPairs, nB = sef.nPairs, self.nB
-        self._setupBuffer(      'E pt', '<f4',  (size,))
-        self._setupBuffer(     'Bs pt', '<f4',  (size,))
-        self._setupBuffer(    'rng pt', '<u8',  (size,))
-        self._setupBuffer('randpos pt', '<u4',  (ptsteps,))
-
-        self._initPT_RNG(size, ptsteps)
-        
     # we may want to select replicas at a particular temperature
     def initMarkSeq(self):
         self._initcomponent('Markseq')
@@ -287,18 +288,6 @@ class MCMCGPU:
         evt = self.prg.initRNG2(self.queue, (nseq,), (wgsize,),
                          self.bufs['rngstates'], offset, nsamples)
         self.saveEvt(evt, 'initMCMC_RNG')
-
-    def _initPT_RNG(self, size, nsteps):
-        self.require('PT')
-        self.log("initPT_RNG")
-
-        nsamples = uint64(2**40) #upper bound for # of rngs generated
-        wgsize = self.wgsize
-        while wgsize > size:
-            wgsize = wgsize/2
-        evt = self.prg.initRNG(self.queue, (size,), (wgsize,),
-                         self.bufs['pt rng'], uint64(0), nsamples)
-        self.saveEvt(evt, 'initPT_RNG')
 
     def runMCMC(self):
         """Performs a single round of mcmc sampling (nsteps MC steps)"""
@@ -464,26 +453,13 @@ class MCMCGPU:
         if self.packedJ == 'front':
             self.packedJ = None
 
-    def PTswaps(self, nswap):
-        self.require('PT')
-        self.log("PTswaps")
-
-        self.setBuf('randpos pt', randint(0, self.L, size=size).astype('u4'))
-        localvals = cl.LocalMemory(self.ptsize*dtype(float32).itemsize)
-        localinds = cl.LocalMemory(self.ptsize*dtype(uint32).itemsize)
-        evt = self.prg.PTswaps(self.queue, (,), (nB*nB,),
-                               self.bufs['E pt'], self.bufs['Bs pt'], 
-                               self.bufs['randpos pt'],
-                               uint32(size), uint32(nswap), 
-                               localvals, localinds, self.bufs['rng pt'])
-        self.saveEvt(evt, 'PTswaps')
-
     def getBuf(self, bufname, truncateLarge=True):
         """get buffer data. truncateLarge means only return the
         computed part of the large buffer (rest may be uninitialized)"""
 
         self.log("getBuf " + bufname)
-        buftype, bufshape = self.buf_spec[bufname]
+        bufspec = self.buf_spec[bufname]
+        buftype, bufshape = bufspec[0], bufspec[1]
         mem = zeros(bufshape, dtype=buftype)
         evt = cl.enqueue_copy(self.queue, mem, self.bufs[bufname],
                               is_blocking=False)
@@ -507,7 +483,8 @@ class MCMCGPU:
         if bufname.split()[0] == 'seq':
             buf = self.packSeqs(buf)
 
-        buftype, bufshape = self.buf_spec[bufname]
+        bufspec = self.buf_spec[bufname]
+        buftype, bufshape = bufspec[0], bufspec[1]
         if not isinstance(buf, ndarray):
             buf = array(buf, dtype=buftype)
         assert(dtype(buftype) == buf.dtype)

@@ -178,9 +178,6 @@ def iterNewton(param, gpus, log):
     gammasteps = 16
     bimarg_target = param.bimarg
 
-    #unicounts = load('unicount5000.npy')
-
-    
     if param.regularize:
         reg_param = param.fn_lmbda
     else:
@@ -281,90 +278,42 @@ def preOpt(param, gpus, log):
     save(os.path.join(outdir, 'preopt', 'perturbedbimarg'), bimarg_p)
     save(os.path.join(outdir, 'preopt', 'perturbedJ'), couplings)
 
-def swapTempsCPU(gpus, N):
+def swapTemps(gpus, N):
     # CPU implementation of PT swap
 
     for gpu in gpus:
-        gpu.calcEnergies('small', 'main')
-    es, Bs = map(concatenate, readGPUbufs(['E small', 'Bs'], gpus))
+        gpu.calcEnergies('main', 'main')
+    es, Bs = map(concatenate, readGPUbufs(['E main', 'Bs'], gpus))
     ns = len(es)
-
-    nswaps = 0
-    for n in range(N):
-        # randomly select position i
-        i = np.random.randint(ns)
-        
-        # the gibbs sample to get position j
-        delta = exp(min((es[i] - es)*(Bs[i] - Bs), 0))
-        cumsum(delta, out=delta)
-        j = searchsorted(delta, rand()*delta[-1])
-        
-        if Bs[i] != Bs[j]:
-            Bs[i], Bs[j] = Bs[j], Bs[i] 
-            nswaps += 1
-
-    Bs = split(Bs, len(gpus)) 
-    for B,gpu in zip(Bs, gpus):
-        gpu.setBuf('Bs', B)
-
-    return nswaps, Bs
-
-def swapTempsCPU(gpus, N):
-    # CPU implementation of PT swap
-
-    for gpu in gpus:
-        gpu.calcEnergies('small', 'main')
-    es, Bs = map(concatenate, readGPUbufs(['E small', 'Bs'], gpus))
-    ns = len(es)
-
+    
+    # swap consecutive replicas, where consecutive is in E order
     order = argsort(es)
     es = es[order]
     Bs = Bs[order]
 
     deEvn = es[ :-1:2] - es[1::2]
     deOdd = es[1:-1:2] - es[2::2]
-
-    nswaps = 0
+    
+    # could be made even faster in C
     for n in range(N):
         # swap even
-        delta1 = deEven*(bs[:-1:2] - bs[1::2])
-        swap = 2*where(exp(min(delta1,0)) < rand(ns-1))[0]
-        tmp = Bs[swap]
-        Bs[swap] = Bs[swap+1]
-        Bs[swap+1] = tmp
+        delta = deEvn*(Bs[:-1:2] - Bs[1::2])
+        swap = 2*where(exp(delta) > rand(len(delta)))[0]
+        Bs[swap], Bs[swap+1] = Bs[swap+1], Bs[swap]
 
         # swap odd
-        delta2 = deOdd*(bs[1:-1:2] - bs[2::2])
-        swap = 2*where(exp(min(delta2,0)) < rand(ns-1))[0] + 1
-        tmp = Bs[swap]
-        Bs[swap] = Bs[swap+1]
-        Bs[swap+1] = tmp
+        delta = deOdd*(Bs[1:-1:2] - Bs[2::2])
+        swap = 2*where(exp(delta) > rand(len(delta)))[0] + 1
+        Bs[swap], Bs[swap+1] = Bs[swap+1], Bs[swap]
     
+    # get back to original order
     Bs[order] = Bs.copy()
+
     Bs = split(Bs, len(gpus)) 
     for B,gpu in zip(Bs, gpus):
         gpu.setBuf('Bs', B)
 
-    return nswaps, Bs
-
-def swapTempsGPU(gpus, N):
-    # GPU implementation of PT swap.
-
-    for gpu in gpus:
-        gpu.calcEnergies('small', 'main')
-    es, Bs = map(concatenate, readGPUbufs(['E small', 'Bs'], gpus))
-
-    gpus[0].setBuf('E pt', es)
-    gpus[0].setBuf('B pt', Bs)
-    gpus[0].PTswap(N)
-    Bs = readGPUbufs(['B pt'], gpus)[0]
-
-    for B,gpu in zip(split(Bs, len(gpus)), gpus):
-        gpu.setBuf('Bs', B)
-
-    return 0, Bs
-
-swapTemps = swapTempsGPU
+    return Bs
 
 # probably should just have a second version of this with PT, instead of all the ifs
 def runMCMC(gpus, startseq, couplings, runName, param):
@@ -383,7 +332,6 @@ def runMCMC(gpus, startseq, couplings, runName, param):
         gpu.setBuf('J main', couplings)
     
     #equilibration MCMC
-    meanswapfreq = 0
     if trackequil == 0:
         #keep nloop iterator on outside to avoid filling queue with only 1 gpu
         for i in range(nloop):
@@ -391,8 +339,7 @@ def runMCMC(gpus, startseq, couplings, runName, param):
                 gpu.runMCMC()
 
             if param.tempering is not None:
-                nswp, Bs = swapTemps(gpus, param.nswaps)
-                meanswapfreq += float(nswp)/param.nswaps
+                Bs = swapTemps(gpus, param.nswaps)
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
         mkdir_p(os.path.join(outdir, runName, 'equilibration'))
@@ -402,8 +349,7 @@ def runMCMC(gpus, startseq, couplings, runName, param):
                     gpu.runMCMC()
 
                 if param.tempering is not None:
-                    nswp, Bs = swapTemps(gpus, param.nswaps)
-                    meanswapfreq += float(nswp)/param.nswaps
+                    Bs = swapTemps(gpus, param.nswaps)
 
             if param.tempering is not None:
                 for B,gpu in zip(Bs,gpus):
@@ -426,7 +372,7 @@ def runMCMC(gpus, startseq, couplings, runName, param):
                 gpu.runMCMC()
 
             if param.tempering is not None:
-                nswp, Bs = swapTemps(gpus, param.nswaps)
+                Bs = swapTemps(gpus, param.nswaps)
 
         if param.tempering is not None:
             for B,gpu in zip(Bs,gpus):
@@ -446,8 +392,7 @@ def runMCMC(gpus, startseq, couplings, runName, param):
     bimarg_model = bicount.astype(float32)/float32(sum(bicount[0,:]))
     sampledenergies, sampledseqs = concatenate(res[1]), res[2]
     
-    ptrate = meanswapfreq/nloop
-    return bimarg_model, bicount, sampledenergies, sampledseqs, ptrate
+    return bimarg_model, bicount, sampledenergies, sampledseqs
 
 def MCMCstep(runName, startseq, couplings, param, gpus, log):
     outdir = param.outdir
@@ -475,8 +420,7 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
     (bimarg_model, 
      bicount, 
      sampledenergies, 
-     sampledseqs,
-     ptrate) = runMCMC(gpus, startseq, couplings, runName, param)
+     sampledseqs) = runMCMC(gpus, startseq, couplings, runName, param)
 
     #get summary statistics and output them
     topbi = bimarg_target > 0.01
