@@ -294,7 +294,6 @@ def swapTemps(gpus, N):
     deEvn = es[ :-1:2] - es[1::2]
     deOdd = es[1:-1:2] - es[2::2]
     
-    # could be made even faster in C
     for n in range(N):
         # swap even
         delta = deEvn*(Bs[:-1:2] - Bs[1::2])

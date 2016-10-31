@@ -186,6 +186,207 @@ void getEnergies(__global float *J,
     energies[get_global_id(0)] = getEnergiesf(J, seqmem, buflen, lcouplings);
 }
 
+#define SWAPF(a,b) {float tmp = a; a = b; b = tmp;}
+
+inline float logZE(__global float *J, int offset){
+    uint seqm, seqn;
+    uint n,m,k;
+    float energy = 0;
+    seqn = get_global_id(0) + offset;
+    k = 0;
+    for(n = 0; n < L-1; n++){
+        seqm = seqn/nB;
+        for(m = n+1; m < L; m++){
+            // this loads nB*nB floats at a time. Might be sped up by loading
+            // multiple rows at once to shared like in getEnergies?
+            // Does this cause each warp to load the same block?
+            // XXX also, should the J matrix rows be aligned by padding?
+            // or can we overcome this with dummy padding in the local mem
+            // on the other hand we have no memory barriers and caching may help
+            energy += J[k*nB*nB + nB*(seqn%nB) + (seqm%nB)];
+            seqm = seqm/nB;
+            k++;
+        }
+        seqn = seqn/nB;
+    }
+    return energy;
+}
+
+inline float logZE_prefetch(__global float *J, int offset){
+    __local float localJ[WGSIZE + nB*nB];
+    int rowsLoaded = WGSIZE/(nB*nB);
+    int leftover = WGSIZE - rowsLoaded*nB*nB;
+    int fetchind;
+    float prefetch = J[li];
+
+    uint seqm, seqn;
+    uint n,m;
+
+    float energy = 0;
+    seqn = get_global_id(0) + offset;
+    seqm = seqn/nB;
+    n = 0;
+    for(fetchind = li + WGSIZE; ; fetchind += WGSIZE){
+        // put prefetchd data in local mem
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if(WGSIZE%(nB*nB) != 0){
+            if(li < leftover){ //move leftover to front
+                localJ[li] = localJ[rowsLoaded*nB*nB + li];
+            }
+            barrier(CLK_LOCAL_MEM_FENCE);
+        }
+        localJ[leftover + li] = prefetch; 
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        // prefetch next Js (except last loop)
+        if(fetchind < NCOUPLE){
+            prefetch = J[fetchind];
+        }
+        // rest of this block should execute while prefetch is loading
+
+        rowsLoaded = (leftover + WGSIZE)/(nB*nB);
+        leftover = (leftover + WGSIZE) - rowsLoaded*nB*nB;
+        
+        uint k;
+        for(k = 0; k < rowsLoaded; k++){
+            energy += localJ[k*nB*nB + nB*(seqn%nB) + (seqm%nB)];
+
+            m++;
+            seqm = seqm/nB;
+            if(m == L){
+                n++;
+                seqn = seqn/nB;
+                if(n == L-1){
+                    return energy;
+                }
+                m = n+1;
+                seqm = seqn/nB;
+            }
+        }
+    }
+}
+
+
+inline float logZE_prefetch2(__global float *J, int offset){
+    uint seqm, seqn;
+    uint n,m,k=0;
+    __local float localJ[WGSIZE + nB*nB];
+    int lenLoaded = 0;
+    int leftover = 0;
+    int fetch = 0;
+    float prefetch = J[li];
+
+    float energy = 0;
+    seqn = get_global_id(0) + offset;
+    k = 0;
+    for(n = 0; n < L-1; n++){
+        seqm = seqn/nB;
+        for(m = n+1; m < L; m++){
+            if(k == rowsLoaded){
+                // put prefetchd data in local mem
+                barrier(CLK_LOCAL_MEM_FENCE);
+                int leftover = lenLoaded - rowsLoaded*nB*nB;
+                if(li < leftover){
+                    localJ[li] = localJ[li + rowsLoaded*nB*nB];
+                }
+                barrier(CLK_LOCAL_MEM_FENCE);
+                localJ[li+leftover] = prefetch; 
+                barrier(CLK_LOCAL_MEM_FENCE);
+                lenLoaded = leftover + WGSIZE;
+                rowsLoaded = lenLoaded/(nB*nB);
+
+                // prefetch
+                prefetch = J[li + fetch*WGSIZE]; // needs padding to WGSIZE
+                fetch++;
+                k = 0;
+            }
+
+            energy += localJ[k*nB*nB + nB*(seqn%nB) + (seqm%nB)];
+            seqm = seqm/nB;
+            k++;
+            rowsleft--;
+        }
+        seqn = seqn/nB;
+    }
+    return energy;
+}
+
+inline float logZpart(__global float *J){
+    float F = logZE(0);  // free energy
+    float E = F;  // average energy
+    int i;
+    for(i = 1; i < nloops; i++){
+        float energy = logZE_prefetch(i*get_global_size(0));
+        float dF = F - energy;
+        if(dF > 0){
+            dF = -dF;
+            F = energy;
+            SWAPF(E, energy);
+        }
+        float expdF = exp(dF);
+        F = F - log1p(expdF);
+        E = (E + energy*expdF)/(1+expdF);
+    }
+
+    // sum up F in workgroup
+    local_F[li] = F;
+    local_E[li] = E;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(n = vsize/2; n > 0; n >>= 1){
+        if(li < n){
+            float F1 = local_F[li];
+            float F2 = local_F[li+n];
+            float E1 = local_E[li];
+            float E2 = local_E[li+n];
+            float dF = F1 - F2;
+            if(dF > 0){
+                dF = -dF;
+                F1 = F2;
+                SWAPF(E1, E2);
+            }
+            float expdF = exp(dF);
+            local_F[li] = F1 - log1p(expdF);
+            local_E[li] = (E1 + E2*expdF)/(1+expdF);
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if(li == 0){
+        outF[gi] = local_F[0];
+        outE[gi] = local_E[0];
+    }
+
+    // (note: might get a way with a single scratch
+    //  array if we alternate loading E/F into it)
+    // or maybe we only need half of scratch for each of E/F.
+    for(n = vsize/2; n > 0; n >>= 1){
+        float F2;
+        if(li > n && li < 2*n){
+            scratch[li] = F;
+            scratch[li+n] = E;
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        if(li < n){
+            float F2 = scratch[li];
+            float E2 = scratch[li+n];
+            float dF = F - F2;
+            if(dF > 0){
+                dF = -dF;
+                F = F2;
+                SWAPF(E,E2);
+            }
+            float expdF = exp(dF);
+            F = F - log1p(expdF);
+            E = (E + E2*expdF)/(1+expdF);
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if(li == 0){
+        outF[gi] = F;
+        outE[gi] = E;
+    }
+}
+
 // ****************************** Metropolis sampler **************************
 
 __kernel

@@ -675,6 +675,14 @@ def nestedZ(args, log):
     #    Nikolas S. Burkoff, Csilla Varnai, Stephen A. Wells and David L. Wild
     # we can probably do K = 1024, P = 256 or even better
 
+def ExactZS(args, log):
+    raise Exception("Not implemented yet")
+    # plan is to implement exact solution of small systems by enumeration on
+    # GPU. Would need to compute energy of all sequences, so kernel
+    # would be similar to energy calculation kernel, except the actual
+    # sequences would not need to be loaded from memory, but could
+    # be computed on the fly. Z = sum(exp(-E)), and S = -sum(p*log(p))
+
 
 
 ################################################################################
