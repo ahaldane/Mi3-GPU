@@ -1,6 +1,0 @@
-[submodule "common"]
-	path = common
-	url = owlsnest:~/git/common
-[submodule "Random123"]
-	path = Random123
-	url = ../Random123/

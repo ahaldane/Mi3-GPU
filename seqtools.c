@@ -1,3 +1,20 @@
+//Copyright 2016 Allan Haldane.
+//
+//This file is part of IvoGPU.
+//
+//IvoGPU is free software: you can redistribute it and/or modify
+//it under the terms of the GNU General Public License as published by
+//the Free Software Foundation, version 3 of the License.
+//
+//IvoGPU is distributed in the hope that it will be useful,
+//but WITHOUT ANY WARRANTY; without even the implied warranty of
+//MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//GNU General Public License for more details.
+//
+//You should have received a copy of the GNU General Public License
+//along with IvoGPU.  If not, see <http://www.gnu.org/licenses/>.
+//
+//Contact: allan.haldane _AT_ gmail.com
 #include "Python.h"
 #include <stdlib.h>
 #include <stdio.h>
