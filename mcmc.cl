@@ -311,12 +311,12 @@ inline float logZE_prefetch2(__global float *J, int offset){
     return energy;
 }
 
-inline float logZpart(__global float *J){
+inline float enumerate_logZ(__global float *J){
     float F = logZE(0);  // free energy
-    float E = F;  // average energy
+    float E = F;         // average energy
     int i;
     for(i = 1; i < nloops; i++){
-        float energy = logZE_prefetch(i*get_global_size(0));
+        float energy = logZE_prefetch(i*get_global_size(0), scratch);
         float dF = F - energy;
         if(dF > 0){
             dF = -dF;
@@ -328,41 +328,12 @@ inline float logZpart(__global float *J){
         E = (E + energy*expdF)/(1+expdF);
     }
 
-    // sum up F in workgroup
-    local_F[li] = F;
-    local_E[li] = E;
-    barrier(CLK_LOCAL_MEM_FENCE);
+    // sum up E/F in workgroup
     for(n = vsize/2; n > 0; n >>= 1){
-        if(li < n){
-            float F1 = local_F[li];
-            float F2 = local_F[li+n];
-            float E1 = local_E[li];
-            float E2 = local_E[li+n];
-            float dF = F1 - F2;
-            if(dF > 0){
-                dF = -dF;
-                F1 = F2;
-                SWAPF(E1, E2);
-            }
-            float expdF = exp(dF);
-            local_F[li] = F1 - log1p(expdF);
-            local_E[li] = (E1 + E2*expdF)/(1+expdF);
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    if(li == 0){
-        outF[gi] = local_F[0];
-        outE[gi] = local_E[0];
-    }
-
-    // (note: might get a way with a single scratch
-    //  array if we alternate loading E/F into it)
-    // or maybe we only need half of scratch for each of E/F.
-    for(n = vsize/2; n > 0; n >>= 1){
-        float F2;
         if(li > n && li < 2*n){
-            scratch[li] = F;
-            scratch[li+n] = E;
+            // use half of scratch for E, half for F
+            scratch[li-n] = F;
+            scratch[li] = E;
         }
         barrier(CLK_LOCAL_MEM_FENCE);
 
@@ -413,6 +384,7 @@ inline float UpdateEnergy(__local float *lcouplings, __global float *J,
         }
 
         //this line is the bottleneck of the entire MCMC analysis
+        // XXX could consider using prefetch here
         uint sbm = seqmem[(m/4)*nseqs + get_global_id(0)];
 
         barrier(CLK_LOCAL_MEM_FENCE); // for lcouplings and sbm
