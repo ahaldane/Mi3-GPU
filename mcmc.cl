@@ -9,8 +9,8 @@
 
 #pragma OPENCL EXTENSION cl_khr_fp64: enable
 
-typedef unsigned char uchar;
-typedef unsigned int uint;
+//typedef unsigned char uchar;
+//typedef unsigned int uint;
 
 float uniformMap(uint i){
     return (i>>8)*0x1.0p-24f; //converts a 32 bit integer to a float [0,1)
@@ -187,7 +187,7 @@ void getEnergies(__global float *J,
     energies[get_global_id(0)] = getEnergiesf(J, seqmem, buflen, lcouplings);
 }
 
-//****************************** Metropolis sampler **************************
+// ****************************** Metropolis sampler **************************
 
 __kernel
 void initRNG2(__global mwc64xvec2_state_t *rngstates,
@@ -249,7 +249,7 @@ void metropolis(__global float *J,
     __local uint shared_position;
 
     // The rest of this function is complicated by optimizations for the GPU.
-    // For clarity, here is equivalent but clearer (pseudo)code:
+    // For clarity, here is equivalent but clearer pseudocode.
     //
     //energy = energies[get_global_id(0)];
     //uint pos = 0; //position to mutate
@@ -267,6 +267,7 @@ void metropolis(__global float *J,
     //        energy = newenergy;
     //    }
     //}
+    //
 
     //initialize energy
     float energy = getEnergiesf(J, seqmem, nseqs, lcouplings);
@@ -299,7 +300,7 @@ void metropolis(__global float *J,
 #endif
 }
 
-//****************************** Gibbs sampler **************************
+// ****************************** Gibbs sampler **************************
 
 __kernel
 void initRNG(__global mwc64x_state_t *rngstates,
@@ -392,7 +393,7 @@ void gibbs(__global float *J,
     rngstates[get_global_id(0)] = rstate;
 }
 
-//****************************** Histogram Code **************************
+// ****************************** Histogram Code **************************
 
 __kernel //call with group size = NHIST, for nPair groups
 void countBivariate(__global uint *bicount,
@@ -424,7 +425,7 @@ void countBivariate(__global uint *bicount,
     barrier(CLK_LOCAL_MEM_FENCE);
 
     uint tmp;
-    //loop through all sequences
+    // loop through all sequences
     for(n = li; n < nseq; n += nhist){
         tmp = seqmem[(i/4)*buflen + n];
         uchar seqi = ((uchar*)&tmp)[i%4];
@@ -519,28 +520,30 @@ void perturbedWeights(__global float *J,
 }
 
 __kernel //simply sums a vector. Call with single group of size VSIZE
-void sumWeights(__global float *weights,
-                __global float *sumweights,
-                          uint  nseq,
-                __local   float *sums){
+void sumFloats(__global float *data,
+               __global float *output,
+                        uint  len,
+               __local  float *sums){
     uint li = get_local_id(0);
     uint vsize = get_local_size(0);
     uint n;
 
+    // accumulate through array
     sums[li] = 0;
-    for(n = li; n < nseq; n += vsize){
-        sums[li] += weights[n];
+    for(n = li; n < len; n += vsize){
+        sums[li] += data[n];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
-    //reduce
+    //reduce accumulated sums
     for(n = vsize/2; n > 0; n >>= 1){
         if(li < n){
             sums[li] = sums[li] + sums[li + n];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
+    // assumes li is even. Need to add last element if odd
     if(li == 0){
-        *sumweights = sums[0];
+        *output = sums[0];
     }
 }
 
@@ -679,13 +682,29 @@ float fbnorm(float J, uint li, __local float *sums){
     return sqrt(sums[0]);
 }
 
+float sumqq(float v, uint li, __local float *scratch){
+    uint m;
+
+    scratch[li] = v;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = nB*nB/2; m > 0; m >>= 1){
+        if(li < m){
+            scratch[li] = scratch[li] + scratch[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    // XXX assumes nB is even. Need to add last element if odd
+
+    return scratch[0];
+}
+
 __kernel
 void updatedJ_weightfn(__global float *bimarg_target,
               __global float *bimarg,
+              __global float *Creg,
                        float gamma,
                        float pc,
                        float fn_lmbda,
-                       float fn_s,
               __global float *Ji,
               __global float *Jo){
     uint li = get_local_id(0);
@@ -693,13 +712,10 @@ void updatedJ_weightfn(__global float *bimarg_target,
     uint n = gi*nB*nB + li;
 
     __local float l_nBnB[nB*nB];
-    __local float l_nB1[nB];
-    __local float l_nB2[nB];
+    float X = sumqq(Ji[n]*Creg[n], li, l_nBnB);
+    float lN = sumqq(Creg[n]*Creg[n]/(bimarg[n]+pc), li, l_nBnB);
+    float lmbda = fmin(fn_lmbda, fabs(X)/(gamma*lN));
+    float bias = lmbda*Creg[n]*sign(X);
 
-    float J = Ji[n];
-    float Jz = zeroGauge(J, li, l_nBnB, l_nB1, l_nB2);
-    float fn = fbnorm(Jz, li, l_nBnB);
-    float bias = fn_lmbda*exp(-fn_s*fn)*Jz;
-
-    Jo[n] = J - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
+    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
 }

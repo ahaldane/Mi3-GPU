@@ -2,6 +2,7 @@
 from __future__ import print_function
 from scipy import *
 import scipy
+import scipy.stats.distributions as dists
 import numpy as np
 from numpy.random import randint, shuffle
 import numpy.random
@@ -13,6 +14,24 @@ import seqload
 from scipy.optimize import leastsq
 from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
 from mcmcGPU import readGPUbufs
+
+def unimarg(bimarg):
+    L, nB = seqsize_from_param_shape(bimarg.shape)
+    ff = bimarg.reshape((L*(L-1)/2,nB,nB))
+    marg = (array([sum(ff[0],axis=1)] + 
+            [sum(ff[n],axis=0) for n in range(L-1)]))
+    return marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
+
+def indep_bimarg(bimarg):
+    f = unimarg(bimarg)
+    L = f.shape[0]
+    return array([outer(f[i], f[j]).flatten() for i in range(L-1) 
+                                    for j in range(i+1,L)])
+
+def seqsize_from_param_shape(shape):
+    L = int(((1+sqrt(1+8*shape[0]))/2) + 0.5) 
+    nB = int(sqrt(shape[1]) + 0.5) 
+    return L, nB
 
 ################################################################################
 # Set up enviroment and some helper functions
@@ -38,11 +57,15 @@ printsome = lambda a: " ".join(map(str,a.flatten()[-5:]))
 
 def writeStatus(name, ferr, ssr, wdf, bicount, bimarg_model, couplings, 
                 seqs, startseq, energies, alpha, ptrate, outdir, log):
+    
+    C = bimarg_model - indep_bimarg(bimarg_model)
+    X = sum(couplings*C, axis=1)
 
     #print some details 
     disp = ["Start Seq: " + "".join([alpha[c] for c in startseq]),
-            "{} Ferr: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(
-                                                     name, ferr,ssr,wdf),
+            "{} Ferr: {: 9.7f}  SSR: {: 9.5f}  dX: {: 9.5f}".format(
+                                                     name, ferr,ssr,sum(X)),
+            "{} wdf: {: 9.7f}".format(name, wdf),
             "Bicounts: " + printsome(bicount) + '...',
             "Marginals: " + printsome(bimarg_model) + '...',
             "Couplings: " + printsome(couplings) + "...",
@@ -87,7 +110,7 @@ def newtonStep(n, bimarg_target, gamma, pc, reg_param, gpus, log):
         # note: updateJ should give same result on all GPUs
         # overwrites J front using bi back and J back
         if reg_param is not None:
-            gpu.updateJ_weightfn(gamma, pc, reg_param.fn_lmbda, reg_param.fn_s)
+            gpu.updateJ_weightfn(gamma, pc, reg_param)
         else:
             gpu.updateJ(gamma, pc)
 
@@ -124,15 +147,42 @@ def newtonStep(n, bimarg_target, gamma, pc, reg_param, gpus, log):
 
     return SSR, bimarg_model
 
-def iterNewton(param, bimarg_model, gpus, log):
+import pseudocount
+def resample_target(unicounts, gpus):
+    L, nB = unicounts.shape
+    N = sum(unicounts[0,:])
+
+    unimarg = unicounts/float(N)
+    bins = cumsum(unimarg, axis=1)
+    unicountss = [bincount(searchsorted(cp, rand(N)), minlength=8)
+                  for cp in bins]
+    unimargss = array(unicountss)/float(N)
+    pairs = [(i,j) for i in range(L-1) for j in range(i+1,L)]
+    bimarg_indep_ss = array([outer(unimargss[i], unimargss[j]).flatten()
+                             for i,j in pairs], dtype='<f4')
+    bimarg_indep_ss = pseudocount.prior(bimarg_indep_ss, 0.001)
+
+    for gpu in gpus:
+        gpu.setBuf('bi target', bimarg_indep_ss)
+
+def resampled_target(ff, N, gpus):
+    ct = N*ff
+    sample = dists.binom.rvs(N, dists.beta.rvs(1+ct, 1+N-ct))
+    ff = sample/sum(sample, axis=1).astype('<f4')[:,newaxis]
+    return pseudocount.prior(ff, 0.001).astype('<f4')
+
+def iterNewton(param, gpus, log):
     gamma = gamma0 = param.gamma0
     newtonSteps = param.newtonSteps
     pc = param.pcdamping
     gammasteps = 16
     bimarg_target = param.bimarg
+
+    #unicounts = load('unicount5000.npy')
+
     
     if param.regularize:
-        reg_param = attrdict({'fn_lmbda': param.fn_lmbda, 'fn_s': param.fn_s})
+        reg_param = param.fn_lmbda
     else:
         reg_param = None
 
@@ -153,6 +203,10 @@ def iterNewton(param, bimarg_model, gpus, log):
     lastSSR = inf
     nrejects = 0
     for i in range(newtonSteps): 
+        #resample_target(unicounts, gpus)
+        bimarg_target_noise = resampled_target(bimarg_target, 1304, gpus)
+        for gpu in gpus:
+            gpu.setBuf('bi target', bimarg_target_noise)
 
         # increase gamma every gammasteps steps
         if 0 and i != 0 and i % gammasteps == 0:
@@ -433,6 +487,12 @@ def newtonMCMC(param, gpus, log):
     # copy target bimarg to gpus
     for gpu in gpus:
         gpu.setBuf('bi target', param.bimarg)
+    
+    # setup up regularization if needed
+    if param.regularize:
+        for gpu in gpus:
+            gpu.setBuf('Creg', param.Creg)
+        
     
     # solve using newton-MCMC
     for i in range(param.mcmcsteps):

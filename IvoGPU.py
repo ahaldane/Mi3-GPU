@@ -21,7 +21,7 @@ progname = 'IvoGPU.py'
 def mkdir_p(path):
     try:
         os.makedirs(path)
-    except OSError as exc: 
+    except OSError as exc:
         if not (exc.errno == errno.EEXIST and os.path.isdir(path)):
             raise
 scriptPath = os.path.dirname(os.path.realpath(__file__))
@@ -35,18 +35,12 @@ class attrdict(dict):
             return None
 
 def seqsize_from_param_shape(shape):
-    L = int(((1+sqrt(1+8*shape[0]))/2) + 0.5) 
-    nB = int(sqrt(shape[1]) + 0.5) 
+    L = int(((1+sqrt(1+8*shape[0]))/2) + 0.5)
+    nB = int(sqrt(shape[1]) + 0.5)
     return L, nB
 
-def getUnimarg(bimarg):
-    L, nB = seqsize_from_param_shape(bimarg.shape)
-    ff = bimarg.reshape((L*(L-1)/2,nB,nB))
-    f = array([sum(ff[0],axis=1)] + [sum(ff[n],axis=0) for n in range(L-1)])
-    return f/(sum(f,axis=1)[:,newaxis]) # correct any fp errors
-
 #identical calculation as CL kernel, but with high precision (to check fp error)
-def getEnergiesMultiPrec(s, couplings): 
+def getEnergiesMultiPrec(s, couplings):
     from mpmath import mpf, mp
     mp.dps = 32
     couplings = [[mpf(float(x)) for x in r] for r in couplings]
@@ -56,6 +50,18 @@ def getEnergiesMultiPrec(s, couplings):
         cpl = (r[b] for b in (nB*s[:,i] + s[:,j]))
         pairenergy = [x+n for x,n in zip(pairenergy, cpl)]
     return pairenergy
+
+def unimarg(bimarg):
+    L, nB = seqsize_from_param_shape(bimarg.shape)
+    ff = bimarg.reshape((L*(L-1)/2,nB,nB))
+    f = (array([sum(ff[0],axis=1)] + [sum(ff[n],axis=0) for n in range(L-1)]))
+    return f/(sum(f,axis=1)[:,newaxis]) # correct any fp errors
+
+def indep_bimarg(bimarg):
+    f = unimarg(bimarg)
+    L = f.shape[0]
+    return array([outer(f[i], f[j]).flatten() for i in range(L-1)
+                                    for j in range(i+1,L)])
 
 ################################################################################
 
@@ -76,56 +82,58 @@ def optionRegistry():
         help="Number of MC walkers")
     add('nsteps', type=uint32, default=2048,
         help="number of MC steps per kernel call")
-    add('wgsize', type=int, default=256, 
+    add('wgsize', type=int, default=256,
         help="GPU workgroup size")
-    add('gpus', 
+    add('gpus',
         help="GPUs to use (comma-sep list of platforms #s, eg '0,0')")
-    add('profile', action='store_true', 
+    add('profile', action='store_true',
         help="enable OpenCL profiling")
     add('nlargebuf', type=uint32, default=1,
         help='size of large seq buffer, in multiples of nwalkers')
-    add('measurefperror', action='store_true', 
+    add('measurefperror', action='store_true',
         help="enable fp error calculation")
     add('gibbs', action='store_true',
         help='Use gibbs sampling instead of metropoils-hastings')
-    
+
     # Newton options
     add('bimarg', required=True,
         help="Target bivariate marginals (npy file)")
-    add('mcsteps', type=uint32, required=True, 
-        help="Number of rounds of MCMC generation") 
-    add('newtonsteps', default='128', type=uint32, 
+    add('mcsteps', type=uint32, required=True,
+        help="Number of rounds of MCMC generation")
+    add('newtonsteps', default='128', type=uint32,
         help="Number of newton steps per round.")
-    add('gamma', type=float32, required=True, 
+    add('gamma', type=float32, required=True,
         help="Initial step size")
-    add('damping', default=0.001, type=float32, 
+    add('damping', default=0.001, type=float32,
         help="Damping parameter")
-    add('regularize', default=None, 
-        help="Specify as a 'lambda,s' pair to turn on regularization") 
-    add('preopt', action='store_true', 
-        help="Perform a round of newton steps before first MCMC run") 
-    add('resetseqs', action='store_false', 
-        help="Reset sequence to S0 at start of every MCMC round") 
-    
+    add('regularize', default=None,
+        help="specify lambda do use with l1 regularization")
+    add('Creg', default=None,
+        help="C matrix to use in l1 regularization")
+    add('preopt', action='store_true',
+        help="Perform a round of newton steps before first MCMC run")
+    add('resetseqs', action='store_false',
+        help="Reset sequence to S0 at start of every MCMC round")
+
     # Potts options
     add('alpha', required=True,
         help="Alphabet, a sequence of letters")
-    add('couplings', 
+    add('couplings',
         help="One of 'zero', 'logscore', or a filename")
-    add('L', help="sequence length") 
-    
+    add('L', help="sequence length")
+
     # Sequence options
-    add('startseq', help="Starting sequence. May be 'rand'") 
-    add('seqs', help="File containing sequences to pre-load to GPU") 
+    add('startseq', help="Starting sequence. May be 'rand'")
+    add('seqs', help="File containing sequences to pre-load to GPU")
 
     # Sampling Param
-    add('preequiltime', type=uint32, default=0, 
+    add('preequiltime', type=uint32, default=0,
         help="Number of MC kernel calls to run before newton steps")
-    add('equiltime', type=uint32, required=True, 
+    add('equiltime', type=uint32, required=True,
         help="Number of MC kernel calls to equilibrate")
-    add('sampletime', type=uint32, required=True, 
+    add('sampletime', type=uint32, required=True,
         help="Number of MC kernel calls between samples")
-    add('nsamples', type=uint32, required=True, 
+    add('nsamples', type=uint32, required=True,
         help="Number of sequence samples")
     add('trackequil', type=uint32, default=0,
         help='Save bimarg every TRACKEQUIL steps during equilibration')
@@ -166,7 +174,8 @@ def inverseIsing(args, log):
                                           'gibbs gpus profile')
     addopt(parser, 'Sequence Options',    'startseq seqs')
     addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps gamma '
-                                          'damping regularize preopt resetseqs')
+                                          'damping regularize Creg '
+                                          'preopt resetseqs')
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
                                           'trackequil tempering nswaps_temp '
                                           'preequiltime')
@@ -180,7 +189,7 @@ def inverseIsing(args, log):
     log("Initialization")
     log("===============")
     log("")
-    
+
     p = attrdict({'outdir': args.outdir})
     mkdir_p(args.outdir)
 
@@ -200,17 +209,17 @@ def inverseIsing(args, log):
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
     log("")
     #log(("Running {} MCMC walkers in parallel over {} GPUs, with {} MC "
-    #    "steps per kernel call").format(p.nwalkers, len(gpus), 
+    #    "steps per kernel call").format(p.nwalkers, len(gpus),
     #    p.nsteps))
 
     preopt_seqs = sum([g.nseq['large'] for g in gpus])
-    p.update(process_sequence_args(args, L, alpha, p.bimarg, log, 
+    p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
                                    nseqs=preopt_seqs))
     if p.preopt:
         if p.seqs is None:
             raise Exception("Need to provide seqs if using pre-optimization")
         transferSeqsToGPU(gpus, 'large', p.seqs, log)
-    
+
     #if we're not initializing seqs to single sequence, need to load
     # a set of initial sequences into small buffer
     if not p.resetseqs:
@@ -231,7 +240,7 @@ def inverseIsing(args, log):
     log(("In each round, running {} MC walkers for {} equilibration loops then "
          "sampling every {} loops to get {} samples ({} total seqs) with {} MC "
          "steps per loop (Each walker equilibrated a total of {} MC steps)."
-         ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples, 
+         ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples,
                 p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime))
     if p.tempering is not None:
         log("Parallel tempering: The walkers are divided into {} temperature "
@@ -258,7 +267,7 @@ def getEnergies(args, log):
 
     #genenergies uses a subset of the full inverse ising parameters,
     #so use custom set of params here
-    
+
     args = parser.parse_args(args)
     args.measurefperror = False
 
@@ -268,9 +277,10 @@ def getEnergies(args, log):
     log("===============")
     log("")
 
-    param = attrdict({'outdir': args.outdir})
-    param.update(process_potts_args(args, None, None, None, log))
-    L, nB, alpha = param.L, param.nB, param.alpha
+    p = attrdict({'outdir': args.outdir})
+    mkdir_p(args.outdir)
+    p.update(process_potts_args(args, None, None, None, log))
+    L, nB, alpha = p.L, p.nB, p.alpha
     log("Sequence Setup")
     log("--------------")
     seqs = loadSequenceFile(args.seqs, alpha, log)
@@ -283,9 +293,9 @@ def getEnergies(args, log):
     args.nsteps = 1
     args.nlargebuf = 1
     gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, 1, log)
+    p.update(gpup)
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
-    param.update(gpup)
-    gpus = [initGPU(n, cldat, dev, nwalk, 1, param, log)
+    gpus = [initGPU(n, cldat, dev, nwalk, 1, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
     transferSeqsToGPU(gpus, 'small', [seqs], log)
     log("")
@@ -293,14 +303,40 @@ def getEnergies(args, log):
 
     log("Computing Energies")
     log("==================")
-    
+
     for gpu in gpus:
-        gpu.setBuf('J main', param.couplings)
-    
+        gpu.setBuf('J main', p.couplings)
+
+    #XXX
+    for gpu in gpus:
+        gpu.calcBimarg('small')
+    res = readGPUbufs(['bi main'], gpus)
+    def sumarr(arrlist):
+        #low memory usage (rather than sum(arrlist, axis=0))
+        tot = arrlist[0].copy()
+        for a in arrlist[1:]:
+            np.add(tot, a, tot)
+        return tot
+    def meanarr(arrlist):
+        return sumarr(arrlist)/len(arrlist)
+    bimarg = meanarr(res[0])
+    for gpu in gpus:
+        gpu.setBuf('bi back', bimarg)
+        gpu.setBuf('bi target', bimarg)
+        gpu.copyBuf('J main', 'J front')
+        gpu.copyBuf('J main', 'J back')
+
+    for gpu in gpus:
+        gpu.updateJ_weightfn(0.004, 0.001, 0.001)
+    res = readGPUbufs(['J front'], gpus)[0][0]
+    save('testdat', res)
+    save('testbimarg', bimarg)
+    return
+
     for gpu in gpus:
         gpu.calcEnergies('small', 'main')
     es = concatenate(readGPUbufs(['E small'], gpus)[0])
-    
+
     log("Saving results to file '{}'".format(args.out))
     save(args.out, es)
 
@@ -310,7 +346,7 @@ def MCMCbenchmark(args, log):
     parser = argparse.ArgumentParser(prog=progname + ' benchmark',
                                      description=descr)
     add = parser.add_argument
-    add('--nloop', type=uint32, required=True, 
+    add('--nloop', type=uint32, required=True,
         help="Number of kernel calls to benchmark")
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gibbs gpus profile')
@@ -339,7 +375,7 @@ def MCMCbenchmark(args, log):
     log("")
     preopt_seqs = sum([g.nseq['small'] for g in gpus])
     p.update(process_sequence_args(args, L, alpha, None, log,nseqs=preopt_seqs))
-    
+
     if p.seqs is not None:
         transferSeqsToGPU(gpus, 'small', p.seqs, log)
     elif p.startseq is not None:
@@ -365,16 +401,16 @@ def MCMCbenchmark(args, log):
                 gpu.runMCMC()
         for gpu in gpus:
             gpu.wait()
-    
+
     #initialize
     for gpu in gpus:
         gpu.setBuf('J main', p.couplings)
         gpu.setBuf('J back', p.couplings)
-    
+
     #warmup
     log("Warmup run...")
     runMCMC()
-    
+
     #timed run
     log("Timed run...")
     start = time.clock()
@@ -419,9 +455,9 @@ def equilibrate(args, log):
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
     gpus = [initGPU(n, cldat, dev, nwalk, nwalk*p.nsamples, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
-    nseqs = sum([g.nseq['large'] for g in gpus])
-    p.update(process_sequence_args(args, L, alpha, None, log, 
-                                   nseqs=nseqs))
+    preopt_seqs = sum([g.nseq['large'] for g in gpus])
+    p.update(process_sequence_args(args, L, alpha, None, log,
+                                   nseqs=preopt_seqs))
     log("")
 
     log("Equilibrating ...")
@@ -454,7 +490,7 @@ def equilibrate(args, log):
     save(os.path.join(outdir, 'bimarg'), bimarg_model)
     save(os.path.join(outdir, 'energies'), energies)
     for n,seqbuf in enumerate(seqs):
-        seqload.writeSeqs(os.path.join(outdir, 'seqs-{}'.format(n)), 
+        seqload.writeSeqs(os.path.join(outdir, 'seqs-{}'.format(n)),
                           seqbuf, alpha)
     for gpu in gpus:
         gpu.calcEnergies('small', 'main')
@@ -483,17 +519,16 @@ def subseqFreq(args, log):
     add = group.add_argument
     add('backgroundseqs')
     add('subseqs')
-    
+
     args = parser.parse_args(args)
     args.measurefperror = False
 
     log("Initialization")
     log("===============")
     log("")
-    
+
     p = attrdict({'outdir': args.outdir})
     args.trackequil = 0
-    args.seqmodel
     mkdir_p(args.outdir)
     p.update(process_potts_args(args, p.L, p.nB, None, log))
     L, nB, alpha = p.L, p.nB, p.alpha
@@ -501,7 +536,7 @@ def subseqFreq(args, log):
     # try to load sequence files
     bseqs = loadSequenceFile(args.backgroundseqs, alpha, log)
     sseqs = loadSequenceFile(args.subseqs, alpha, log)
-    
+
     args.nwalkers = 1
     gpup, cldat, gdevs = process_GPU_args(args, L, nB, p.outdir, 1, log)
     p.update(gpup)
@@ -514,13 +549,13 @@ def subseqFreq(args, log):
     fixedpos = array([int(x) for x in args.fixpos.split(',')])
     fixedmarks = zeros(L, dtype='u1')
     fixedmarks[fixedpos] = 1
-    
+
     #load buffers
     gpubseqs = split(bseqs, cumsum(gpuwalkers)[:-1])
     for gpu,bs in zip(gpus, gpubseqs):
         gpu.setBuf('seq small', sseqs)
         gpu.setBuf('seq large', bs)
-        gpu.setBuf('fixpos', fixedmarks)
+        gpu.markPos(fixedmarks)
         gpu.setBuf('J main', p.couplings)
         
     log("")
@@ -547,7 +582,17 @@ def subseqFreq(args, log):
     #save result
     log("Saving result (log frequency) to file {}".format(args.out))
     save(args.out, logf)
-    
+
+def nestedZ(args, log):
+    raise Exception("Not implemented yet")
+    # Plan is to implement nested sampling algorithm to compute Z.
+    # Use parallel method described in
+    #    Exploring the energy landscapes of protein folding simulations with
+    #    Bayesian computation
+    #    Nikolas S. Burkoff, Csilla Varnai, Stephen A. Wells and David L. Wild
+    # we can probably do K = 1024, P = 256 or even better
+
+
 
 ################################################################################
 
@@ -562,15 +607,15 @@ def process_GPU_args(args, L, nB, outdir, rngPeriod, log):
                       'gibbs': args.gibbs,
                       'profile': args.profile,
                       'fperror': args.measurefperror})
-    
+
     p = attrdict(param.copy())
     p.update({'L': L, 'nB': nB, 'outdir': outdir, 'rngPeriod': rngPeriod})
-    
+
     scriptfile = os.path.join(scriptPath, "mcmc.cl")
 
     log("Work Group Size: {}".format(p.wgsize))
     log("{} MC steps per MCMC kernel call".format(p.nsteps))
-    log("Using {} MC sampler".format('Gibbs' if args.gibbs 
+    log("Using {} MC sampler".format('Gibbs' if args.gibbs
                                    else 'Metropolis-hastings'))
     log("GPU Initialization:")
     if p.profile:
@@ -583,7 +628,7 @@ def process_GPU_args(args, L, nB, outdir, rngPeriod, log):
 def process_newton_args(args, log):
     log("Newton Solver Setup")
     log("-------------------")
-    mcmcsteps = args.mcsteps  
+    mcmcsteps = args.mcsteps
     log("Running {} Newton-MCMC rounds".format(mcmcsteps))
 
     param = {'mcmcsteps': args.mcsteps,
@@ -595,16 +640,12 @@ def process_newton_args(args, log):
 
     if args.regularize is not None:
         param['regularize'] = True
-        fn_lmbda, fn_s = args.regularize.split(',')
-        param['fn_lmbda'] = float(fn_lmbda)
-        param['fn_s'] = float(fn_s)
+        param['fn_lmbda'] = float(args.regularize)
 
     p = attrdict(param)
 
     log("Updating J locally with gamma={}, and pc-damping {}".format(
         p.gamma0, p.pcdamping))
-    if p.regularize:
-        log("Regularizing J with lambda={}, s={}".format(p.fn_lmbda, p.fn_s))
     log("Running {} Newton update steps per round.".format(p.newtonSteps))
 
     log("Reading target marginals from file {}".format(args.bimarg))
@@ -615,9 +656,22 @@ def process_newton_args(args, log):
     if any(~((bimarg.flatten() >= 0) & (bimarg.flatten() <= 1))):
         raise Exception("Bimarg must be nonzero and 0 < f < 1")
     log("Target Marginals: " + printsome(bimarg) + "...")
+    p['bimarg'] = bimarg
+
+    if p.regularize:
+        log("Regularizing J with lambda={}".format(p.fn_lmbda))
+        if args.Creg is not None:
+            log("Using Creg from file {}".format(args.Creg))
+            p['Creg'] = scipy.load(args.Creg)
+            if p['Creg'].shape != bimarg.shape:
+                raise Exception("Creg in wrong format")
+        else:
+            C = bimarg - indep_bimarg(bimarg)
+            C = C/(0.0001 + sqrt(sum(C*C, axis=1))[:,newaxis])
+            p['Creg'] = C
+            log("Using default Creg =  C/(0.0001 + sqrt(sum(C*C)))")
 
     log("")
-    p['bimarg'] = bimarg
     return p
 
 def updateLnB(L, nB, newL, newnB, name):
@@ -643,11 +697,11 @@ def process_potts_args(args, L, nB, bimarg, log):
     # * command line options -L and -nB
     # * from bivariate_target dimensions
     # * from coupling dimensions
-    
+
     alpha = args.alpha
     argL = args.L if 'L' in args else None
     L, nB = updateLnB(argL, len(alpha), L, nB, 'bimarg')
-    
+
     # next try to get couplings (may determine L, nB)
     couplings, L, nB = getCouplings(args, L, nB, bimarg, log)
     # we should have L and nB by this point
@@ -657,7 +711,7 @@ def process_potts_args(args, L, nB, bimarg, log):
     log("Couplings: " + printsome(couplings) + "...")
 
     log("")
-    return attrdict({'L': L, 'nB': nB, 'alpha': alpha, 
+    return attrdict({'L': L, 'nB': nB, 'alpha': alpha,
                      'couplings': couplings})
 
 def getCouplings(args, L, nB, bimarg, log):
@@ -666,7 +720,7 @@ def getCouplings(args, L, nB, bimarg, log):
     if args.seqmodel and args.seqmodel in ['zero', 'logscore']:
         args.couplings = args.seqmodel
 
-    if args.couplings is not None:
+    if args.couplings:
         #first try to generate couplings (requires L, nB)
         if args.couplings in ['zero', 'logscore']:
             if L is None: # we are sure to have nB
@@ -679,7 +733,7 @@ def getCouplings(args, L, nB, bimarg, log):
             if bimarg is None:
                 raise Exception("Need bivariate marginals to generate "
                                 "logscore couplings")
-            h = -np.log(getUnimarg(bimarg))
+            h = -np.log(unimarg(bimarg))
             J = zeros((L*(L-1)/2,nB*nB), dtype='<f4')
             couplings = fieldlessGaugeEven(h, J)[1]
         else: #otherwise load them from file
@@ -752,7 +806,7 @@ def process_sequence_args(args, L, alpha, bimarg, log, nseqs=None):
         log("No sequence dataset loaded")
 
     if startseq is not None:
-        log("Start seq ({}): {}".format(startseq_origin, 
+        log("Start seq ({}): {}".format(startseq_origin,
                                        "".join(alpha[x] for x in startseq)))
     else:
         log("No start seq supplied")
@@ -761,20 +815,16 @@ def process_sequence_args(args, L, alpha, bimarg, log, nseqs=None):
     return attrdict({'startseq': startseq, 'seqs': seqs})
 
 def generateSequences(gentype, L, nB, nseqs, bimarg, log):
-    if gentype == 'zero': 
+    if gentype == 'zero':
         log("Generating {} random sequences...".format(nseqs))
         return randint(0,nB,size=(nseqs, L)).astype('<u1')
-    elif gentype == 'logscore': 
+    elif gentype == 'logscore':
         log("Generating {} logscore-independent sequences...".format(nseqs))
         if bimarg is None:
             raise Exception("Bimarg must be provided to generate sequences")
-        ff = bimarg.reshape((L*(L-1)/2,nB,nB))
-        marg = (array([sum(ff[0],axis=1)] + 
-                [sum(ff[n],axis=0) for n in range(L-1)]))
-        marg = marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
-        cumprob = cumsum(marg, axis=1)
+        cumprob = cumsum(unimarg(bimarg), axis=1)
         cumprob = cumprob/(cumprob[:,-1][:,newaxis]) #correct fp errors?
-        return array([searchsorted(cp, rand(nseqs)) for cp in cumprob], 
+        return array([searchsorted(cp, rand(nseqs)) for cp in cumprob],
                      dtype='<u1').T
 
 def loadSequenceFile(sfile, alpha, log):
@@ -793,7 +843,7 @@ def loadSequenceDir(sdir, alpha, log):
     return seqs
 
 def transferSeqsToGPU(gpus, bufname, seqs, log):
-    log("Transferring {} seqs to gpu's {} seq buffer...".format(str([len(s) for s in seqs]), bufname))
+    #log("Transferring {} seqs to gpu's {} seq buffer...".format(str([len(s) for s in seqs]), bufname))
     if len(seqs) == 1:
         # split up seqs into parts for each gpu
         seqs = seqs[0]
@@ -829,7 +879,7 @@ def process_sample_args(args, log):
     log("MCMC Sampling Setup")
     log("-------------------")
     log(("In each MCMC round, running {} GPU MCMC kernel calls then sampling "
-         "every {} kernel calls to get {} samples").format(p.equiltime, 
+         "every {} kernel calls to get {} samples").format(p.equiltime,
                                              p.sampletime, p.nsamples))
     if 'tempering' in p:
         log("Parallel tempering with temperatures {}".format(args.tempering))
@@ -848,7 +898,7 @@ def process_sample_args(args, log):
 ################################################################################
 
 class CLInfoAction(argparse.Action):
-    def __init__(self, option_strings, dest=argparse.SUPPRESS, 
+    def __init__(self, option_strings, dest=argparse.SUPPRESS,
                  default=argparse.SUPPRESS, help=None):
         super(CLInfoAction, self).__init__(option_strings=option_strings,
             dest=dest, default=default, nargs=0, help=help)
@@ -872,16 +922,17 @@ def main(args):
       'benchmark':      MCMCbenchmark,
       #'measureFPerror': measureFPerror,
       'subseqFreq':     subseqFreq,
-      'mcmc':           equilibrate
+      'mcmc':           equilibrate,
+      'nestedZ':        nestedZ,
      }
-    
+
     descr = 'Perform biophysical Potts Model calculations on the GPU'
     parser = argparse.ArgumentParser(description=descr, add_help=False)
     add = parser.add_argument
     add('action', choices=actions.keys(), nargs='?', default=None,
         help="Computation to run")
     add('--clinfo', action=CLInfoAction, help="Display detected GPUs")
-    add('-h', '--help', action='store_true', 
+    add('-h', '--help', action='store_true',
         help="show this help message and exit")
 
 
@@ -896,7 +947,7 @@ def main(args):
 
     if known_args.help:
         remaining_args.append('-h')
-    
+
     #if not sys.stdin.isatty(): #config file supplied in stdin
     #    config = readConfig(sys.stdin, known_args.action)
     #    configargs = [arg for opt,val in config for arg in ('--'+opt, val)]
