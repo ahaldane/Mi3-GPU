@@ -1070,4 +1070,5 @@ def main(args):
 
     actions[known_args.action](remaining_args, print)
 
-main(sys.argv[1:])
+if __name__ == '__main__':
+    main(sys.argv[1:])
