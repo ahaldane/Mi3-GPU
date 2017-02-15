@@ -51,7 +51,7 @@ nsim(PyObject *self, PyObject *args){
 		return NULL;
 	}
 
-    if(!PyArray_ISCARRAY(seqs)){
+    if(!PyArray_IS_C_CONTIGUOUS(seqs)){
 		PyErr_SetString( PyExc_ValueError, "seq must be C-contiguous");
 		return NULL;
     }
@@ -186,7 +186,7 @@ histsim(PyObject *self, PyObject *args){
 		return NULL;
 	}
 
-    if(!PyArray_ISCARRAY(seqs)){
+    if(!PyArray_IS_C_CONTIGUOUS(seqs)){
 		PyErr_SetString( PyExc_ValueError, "seq must be C-contiguous");
 		return NULL;
     }
@@ -294,7 +294,7 @@ translateascii(PyObject *self, PyObject *args){
 		return NULL;
 	}
 
-    if(!PyArray_ISCARRAY(seqs)){
+    if(!PyArray_IS_C_CONTIGUOUS(seqs)){
 		PyErr_SetString( PyExc_ValueError, "seq must be C-contiguous");
 		return NULL;
     }

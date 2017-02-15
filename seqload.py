@@ -22,18 +22,36 @@ from scipy import *
 import sys
 import json
 import seqtools
+import bz2, io
 
 class Opener:
-    def __init__(self, fileobj, rw="rt"):
+    def __init__(self, fileobj, rw="r", zipf=None):
         self.fileobj = fileobj
+        if rw not in "rwa":
+            raise Exception("File mode must be r,w, or a")
         self.rw = rw
         self.f = None
+        self.zipf = zipf
     
-    #XXX see if we can easily add gzip detection
     def __enter__(self):
         if isinstance(self.fileobj, basestring):
-            self.f = open(self.fileobj, self.rw)
+            if self.rw in 'ra' and self.zipf is not False:
+                magic = "\x42\x5a\x68"  # for bz2
+                f = open(self.fileobj, self.rw + 'b')
+                start = f.read(len(magic))
+                f.close()
+                if start == magic:
+                    self.f = bz2.BZ2File(self.fileobj, self.rw+'b')
+                elif self.zipf is True:
+                    raise Exception("bz2 file expected")
+            elif self.rw == 'w' and self.zipf:
+                self.f = bz2.BZ2File(self.fileobj, self.rw+'b')
+
+            if self.f is None:
+                self.f = open(self.fileobj, self.rw + 'b')
+
             return self.f
+
         elif hasattr(self.fileobj, 'read') or hasattr(self.fileobj, 'write'):
             if self.rw != self.fileobj.mode: #error? XXX
                 raise Exception(("File is already open ({}), but in wrong mode "
@@ -45,8 +63,8 @@ class Opener:
             self.f.close()
         return False
 
-def loadSeqs(fn, names=None): 
-    with Opener(fn) as f:
+def loadSeqs(fn, names=None, zipf=None): 
+    with Opener(fn, zipf=zipf) as f:
         gen = loadSeqsChunked(f, names)
         param, headers = gen.next()
         seqs = concatenate([s for s in gen])
@@ -120,7 +138,7 @@ def loadSeqsChunked(f, names=None, chunksize=None):
 
     pos = 0
     while True:
-        dat = fromfile(f, dtype=uint8, count=chunksize*(L+1))
+        dat = frombuffer(f.read(chunksize*(L+1)), dtype=uint8)
         if dat.size != chunksize*(L+1):
             break
         seqmat = dat.reshape(dat.size/(L+1), L+1)
@@ -144,8 +162,8 @@ def loadSeqsChunked(f, names=None, chunksize=None):
     seqtools.translateascii(seqmat, names, pos)
     yield seqmat[:,:-1]
 
-def writeSeqs(fn, seqs, names, param=None, headers=None, noheader=False):
-    with Opener(fn, 'w') as f:
+def writeSeqs(fn, seqs, names, param=None, headers=None, noheader=False, zipf=None):
+    with Opener(fn, 'w', zipf) as f:
         writeSeqsF(f, seqs, names, param, headers, noheader)
 
 def writeSeqsF(f, seqs, names, param=None, headers=None, noheader=False):
@@ -166,9 +184,9 @@ def writeSeqsF(f, seqs, names, param=None, headers=None, noheader=False):
     for i in range(0,seqs.shape[0]-chunksize, chunksize):
         s[:,:-1] = seqs[i:i+chunksize,:]
         # could be sped up: s is uneccesarily cast to int32/64
-        alphabet[s].tofile(f)
+        f.write(alphabet[s])
     s[:seqs.shape[0]-i-chunksize,:-1] = seqs[i+chunksize:,:]
-    alphabet[s[:seqs.shape[0]-i-chunksize,:]].tofile(f)
+    f.write(alphabet[s[:seqs.shape[0]-i-chunksize,:]])
 
 def getCounts(seqs, nBases):
     nSeq, seqLen = seqs.shape
