@@ -120,7 +120,7 @@ class MCMCGPU:
         self.Ebufs = {}
         self.largebufs = []
 
-        # setup generally needed buffers
+        # setup essential buffers
         nPairs, SWORDS = self.nPairs, self.SWORDS
         self._setupBuffer( 'Jpacked', '<f4', (L*L, nB*nB))
         self._setupBuffer(  'J main', '<f4', (nPairs, nB*nB))
@@ -161,7 +161,7 @@ class MCMCGPU:
 
     def _setupBuffer(self, bufname, buftype, bufshape, 
                           flags=cf.READ_WRITE | cf.ALLOC_HOST_PTR):
-        size = dtype(buftype).itemsize*product(bufshape)
+        size = dtype(buftype).itemsize*int(product(bufshape))
         buf = cl.Buffer(self.ctx, flags, size=size)
 
         self.bufs[bufname] = buf
@@ -200,10 +200,11 @@ class MCMCGPU:
         self._initcomponent('Large')
 
         self.nseq['large'] = nseq_large
-        self._setupBuffer('seq large', '<u4', (self.SWORDS, self.nseq['large']))
+        self._setupBuffer('seq large', '<u4', (self.SWORDS,self.nseq['large']))
         self._setupBuffer(  'E large', '<f4', (self.nseq['large'],))
 
         self.largebufs.extend(['seq large', 'E large'])
+        self.nstoredseqs = 0
 
         # it is important to zero out the large seq buffer, because
         # if it is partially full we may need to compute energy
@@ -229,7 +230,7 @@ class MCMCGPU:
         self.require('Large')
         self._initcomponent('Jstep')
 
-        nPairs, nB = sef.nPairs, self.nB
+        nPairs, nB = self.nPairs, self.nB
         self._setupBuffer('bi target', '<f4',  (nPairs, nB*nB))
         self._setupBuffer(     'Creg', '<f4',  (nPairs, nB*nB))
         self._setupBuffer(  'weights', '<f4',  (self.nseq['large'],))
@@ -239,8 +240,9 @@ class MCMCGPU:
         self.initBackBufs()
 
     def initBackBufs(self):
-        self._initcomponent('Back')
+        self._initcomponent('backBufs')
 
+        nPairs, nB = self.nPairs, self.nB
         self._setupBuffer(  'J front', '<f4',  (nPairs, nB*nB))
         self._setupBuffer(   'J back', '<f4',  (nPairs, nB*nB))
         self._setupBuffer( 'bi front', '<f4',  (nPairs, nB*nB))
@@ -356,7 +358,7 @@ class MCMCGPU:
         evt = self.prg.countBivariate(self.queue, (nPairs*nhist,), (nhist,), 
                      self.bufs['bicount'], 
                      uint32(nseq), seq_dev, uint32(buflen), localhist)
-        self.events.append((evt, 'calcBicounts'))
+        self.saveEvt(evt, 'calcBicounts')
 
     def calcMarkedBicounts(self):
         self.require('Markseq')
@@ -371,7 +373,7 @@ class MCMCGPU:
                      self.queue, (nPairs*nhist,), (nhist,),
                      self.bufs['bicount'], uint32(nseq),
                      self.bufs['markseqs'], seq_dev, localhist)
-        self.events.append((evt, 'calcMarkedBicounts'))
+        self.saveEvt(evt, 'calcMarkedBicounts')
 
     def calcEnergies(self, seqbufname, Jbufname):
         self.log("calcEnergies " + seqbufname + " " + Jbufname)
@@ -385,14 +387,13 @@ class MCMCGPU:
         else:
             nseq = self.nstoredseqs
             # pad to be a multiple of wgsize (uses dummy seqs at end)
-            nseq = nseq + self.wgsize - (nseq % self.wgsize)
+            nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
 
         self.packJ(Jbufname)
-
         evt = self.prg.getEnergies(self.queue, (nseq,), (self.wgsize,),
                              self.bufs['Jpacked'], seq_dev, uint32(buflen),
                              energies_dev)
-        self.events.append((evt, 'getEnergies'))
+        self.saveEvt(evt, 'getEnergies')
 
     # update front bimarg buffer using back J buffer and large seq buffer
     def perturbMarg(self):
@@ -412,7 +413,7 @@ class MCMCGPU:
         buflen = self.nseq['large']
 
         # pad to be a multiple of wgsize (uses dummy seqs at end)
-        ns_pad = nseq + self.wgsize - (nseq % self.wgsize)
+        ns_pad = nseq + ((self.wgsize - nseq) % self.wgsize)
 
         evt = self.prg.perturbedWeights(self.queue, (ns_pad,), (self.wgsize,),
                        self.bufs['Jpacked'],
@@ -792,6 +793,6 @@ def initGPU(devnum, (cl_ctx, cl_prg), device, nwalkers, param, log):
 
     log("Starting GPU {}".format(devnum))
     gpu = MCMCGPU((device, devnum, cl_ctx, cl_prg), (L, nB), 
-                  nwalkers, wgsize, outdir, vsize, nhist, profile=profile)
+                  nwalkers, wgsize, outdir, nhist, vsize, profile=profile)
     return gpu
 

@@ -205,6 +205,7 @@ void getEnergies(__global float *J,
 
 #define SWAPF(a,b) {float tmp = a; a = b; b = tmp;}
 
+/*
 inline float logZE(__global float *J, int offset){
     uint seqm, seqn;
     uint n,m,k;
@@ -374,6 +375,7 @@ inline float enumerate_logZ(__global float *J){
         outE[gi] = E;
     }
 }
+*/
 
 // ****************************** Metropolis sampler **************************
 
@@ -565,10 +567,10 @@ void gibbs(__global float *J,
 
 __kernel //call with group size = NHIST, for nPair groups
 void countBivariate(__global uint *bicount,
-                          uint nseq,
-                 __global uint *seqmem,
-                          uint  buflen,
-                 __local  uint *hist) {
+                             uint  nseq,
+                    __global uint *seqmem,
+                             uint  buflen,
+                    __local  uint *hist) {
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
     uint nhist = get_local_size(0);

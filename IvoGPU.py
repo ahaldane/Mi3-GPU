@@ -138,7 +138,7 @@ def optionRegistry():
         help="Alphabet, a sequence of letters")
     add('couplings',
         help="One of 'zero', 'logscore', or a filename")
-    add('L', help="sequence length")
+    add('L', help="sequence length", type=int)
 
     # Sequence options
     add('startseq', help="Starting sequence. May be 'rand'")
@@ -230,7 +230,6 @@ def inverseIsing(args, log):
         gpu.initMCMC(p.nsteps, rngPeriod)
         gpu.initLargeBufs(gpu.nseq['main']*p.nsamples)
         gpu.initJstep()
-        gpu.initBackBufs()
         if p.tempering:
             gpu.initMarkSeq()
     log("")
@@ -808,8 +807,7 @@ def process_potts_args(args, L, nB, bimarg, log):
     # * from coupling dimensions
 
     alpha = args.alpha
-    argL = int(args.L) if 'L' in args else None
-    L, nB = updateLnB(argL, len(alpha), L, nB, 'bimarg')
+    L, nB = updateLnB(args.L, len(alpha), L, nB, 'bimarg')
 
     # next try to get couplings (may determine L, nB)
     couplings, L, nB = getCouplings(args, L, nB, bimarg, log)
