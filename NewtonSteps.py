@@ -105,7 +105,7 @@ def writeStatus(name, ferr, ssr, wdf, bicount, bimarg_model, couplings,
     save(os.path.join(outdir, name, 'energies'), energies)
     for n,seqbuf in enumerate(seqs):
         seqload.writeSeqs(os.path.join(outdir, name, 'seqs-{}'.format(n)), 
-                          seqbuf, alpha)
+                          seqbuf, alpha, zipf=True)
 
     log(dispstr)
 
@@ -286,7 +286,7 @@ def preOpt(param, gpus, log):
     save(os.path.join(outdir, 'preopt', 'initBicont'), bicount)
     for n,s in enumerate(seqs):
         seqload.writeSeqs(os.path.join(outdir, 'preopt', 'seqs-'+str(n)), 
-                          s, alpha)
+                          s, alpha, zipf=True)
     
     topbi = bimarg_target > 0.01
     ferr = mean((abs(bimarg_target - bimarg)/bimarg_target)[topbi])
