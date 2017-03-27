@@ -33,13 +33,13 @@ float uniformMap(uint i){
     return (i>>8)*0x1.0p-24f; //converts a 32 bit integer to a float [0,1)
 }
 
-#define NCOUPLE ((L*(L-1)*nB*nB)/2)
+#define NCOUPLE ((L*(L-1)*q*q)/2)
 
 #define getbyte(mem, n) (((uchar*)(mem))[n])
 #define setbyte(mem, n, val) {(((uchar*)(mem))[n]) = val;}
 
-//expands couplings stored in a (nPair x nB*nB) form to an (L*L x nB*nB) form
-__kernel //to be called with group size nB*nB, with nPair groups
+//expands couplings stored in a (nPair x q*q) form to an (L*L x q*q) form
+__kernel //to be called with group size q*q, with nPair groups
 void packfV(__global float *v,
             __global float *vp){
     uint li = get_local_id(0);
@@ -56,11 +56,11 @@ void packfV(__global float *v,
 
     //note: Does not fill in diagonal terms (i == j)!
 
-    __local float lv[nB*nB];
-    lv[li] = v[gi*nB*nB + li];
+    __local float lv[q*q];
+    lv[li] = v[gi*q*q + li];
     barrier(CLK_LOCAL_MEM_FENCE);
-    vp[nB*nB*(L*i+j) + li] = lv[li];
-    vp[nB*nB*(i+L*j) + li] = lv[nB*(li%nB) + li/nB];
+    vp[q*q*(L*i+j) + li] = lv[li];
+    vp[q*q*(i+L*j) + li] = lv[q*(li%q) + li/q];
 }
 
 __kernel
@@ -179,13 +179,13 @@ inline float getEnergiesf(__global float *J,
                 #pragma unroll
                 for(cm = m%4; cm < 4 && m < L; cm++, m++){
                     // could add skip for fixpos here...
-                    for(k = li; k < nB*nB; k += get_local_size(0)){
-                        lcouplings[k] = J[(n*L + m)*nB*nB + k];
+                    for(k = li; k < q*q; k += get_local_size(0)){
+                        lcouplings[k] = J[(n*L + m)*q*q + k];
                     }
                     barrier(CLK_LOCAL_MEM_FENCE);
 
                     seqm = getbyte(&sbm, cm);
-                    energy = energy + lcouplings[nB*seqn + seqm];
+                    energy = energy + lcouplings[q*seqn + seqm];
                     barrier(CLK_LOCAL_MEM_FENCE);
                 }
             }
@@ -199,7 +199,7 @@ void getEnergies(__global float *J,
                  __global uint *seqmem,
                           uint  buflen,
                  __global float *energies){
-    __local float lcouplings[4*nB*nB];
+    __local float lcouplings[4*q*q];
     energies[get_global_id(0)] = getEnergiesf(J, seqmem, buflen, lcouplings);
 }
 
@@ -213,27 +213,27 @@ inline float logZE(__global float *J, int offset){
     seqn = get_global_id(0) + offset;
     k = 0;
     for(n = 0; n < L-1; n++){
-        seqm = seqn/nB;
+        seqm = seqn/q;
         for(m = n+1; m < L; m++){
-            // this loads nB*nB floats at a time. Might be sped up by loading
+            // this loads q*q floats at a time. Might be sped up by loading
             // multiple rows at once to shared like in getEnergies?
             // Does this cause each warp to load the same block?
             // XXX also, should the J matrix rows be aligned by padding?
             // or can we overcome this with dummy padding in the local mem
             // on the other hand we have no memory barriers and caching may help
-            energy += J[k*nB*nB + nB*(seqn%nB) + (seqm%nB)];
-            seqm = seqm/nB;
+            energy += J[k*q*q + q*(seqn%q) + (seqm%q)];
+            seqm = seqm/q;
             k++;
         }
-        seqn = seqn/nB;
+        seqn = seqn/q;
     }
     return energy;
 }
 
 inline float logZE_prefetch(__global float *J, int offset){
-    __local float localJ[WGSIZE + nB*nB];
-    int rowsLoaded = WGSIZE/(nB*nB);
-    int leftover = WGSIZE - rowsLoaded*nB*nB;
+    __local float localJ[WGSIZE + q*q];
+    int rowsLoaded = WGSIZE/(q*q);
+    int leftover = WGSIZE - rowsLoaded*q*q;
     int fetchind;
     float prefetch = J[li];
 
@@ -242,14 +242,14 @@ inline float logZE_prefetch(__global float *J, int offset){
 
     float energy = 0;
     seqn = get_global_id(0) + offset;
-    seqm = seqn/nB;
+    seqm = seqn/q;
     n = 0;
     for(fetchind = li + WGSIZE; ; fetchind += WGSIZE){
         // put prefetchd data in local mem
         barrier(CLK_LOCAL_MEM_FENCE);
-        if(WGSIZE%(nB*nB) != 0){
+        if(WGSIZE%(q*q) != 0){
             if(li < leftover){ //move leftover to front
-                localJ[li] = localJ[rowsLoaded*nB*nB + li];
+                localJ[li] = localJ[rowsLoaded*q*q + li];
             }
             barrier(CLK_LOCAL_MEM_FENCE);
         }
@@ -262,23 +262,23 @@ inline float logZE_prefetch(__global float *J, int offset){
         }
         // rest of this block should execute while prefetch is loading
 
-        rowsLoaded = (leftover + WGSIZE)/(nB*nB);
-        leftover = (leftover + WGSIZE) - rowsLoaded*nB*nB;
+        rowsLoaded = (leftover + WGSIZE)/(q*q);
+        leftover = (leftover + WGSIZE) - rowsLoaded*q*q;
         
         uint k;
         for(k = 0; k < rowsLoaded; k++){
-            energy += localJ[k*nB*nB + nB*(seqn%nB) + (seqm%nB)];
+            energy += localJ[k*q*q + q*(seqn%q) + (seqm%q)];
 
             m++;
-            seqm = seqm/nB;
+            seqm = seqm/q;
             if(m == L){
                 n++;
-                seqn = seqn/nB;
+                seqn = seqn/q;
                 if(n == L-1){
                     return energy;
                 }
                 m = n+1;
-                seqm = seqn/nB;
+                seqm = seqn/q;
             }
         }
     }
@@ -288,7 +288,7 @@ inline float logZE_prefetch(__global float *J, int offset){
 inline float logZE_prefetch2(__global float *J, int offset){
     uint seqm, seqn;
     uint n,m,k=0;
-    __local float localJ[WGSIZE + nB*nB];
+    __local float localJ[WGSIZE + q*q];
     int lenLoaded = 0;
     int leftover = 0;
     int fetch = 0;
@@ -298,20 +298,20 @@ inline float logZE_prefetch2(__global float *J, int offset){
     seqn = get_global_id(0) + offset;
     k = 0;
     for(n = 0; n < L-1; n++){
-        seqm = seqn/nB;
+        seqm = seqn/q;
         for(m = n+1; m < L; m++){
             if(k == rowsLoaded){
                 // put prefetchd data in local mem
                 barrier(CLK_LOCAL_MEM_FENCE);
-                int leftover = lenLoaded - rowsLoaded*nB*nB;
+                int leftover = lenLoaded - rowsLoaded*q*q;
                 if(li < leftover){
-                    localJ[li] = localJ[li + rowsLoaded*nB*nB];
+                    localJ[li] = localJ[li + rowsLoaded*q*q];
                 }
                 barrier(CLK_LOCAL_MEM_FENCE);
                 localJ[li+leftover] = prefetch; 
                 barrier(CLK_LOCAL_MEM_FENCE);
                 lenLoaded = leftover + WGSIZE;
-                rowsLoaded = lenLoaded/(nB*nB);
+                rowsLoaded = lenLoaded/(q*q);
 
                 // prefetch
                 prefetch = J[li + fetch*WGSIZE]; // needs padding to WGSIZE
@@ -319,12 +319,12 @@ inline float logZE_prefetch2(__global float *J, int offset){
                 k = 0;
             }
 
-            energy += localJ[k*nB*nB + nB*(seqn%nB) + (seqm%nB)];
-            seqm = seqm/nB;
+            energy += localJ[k*q*q + q*(seqn%q) + (seqm%q)];
+            seqm = seqm/q;
             k++;
             rowsleft--;
         }
-        seqn = seqn/nB;
+        seqn = seqn/q;
     }
     return energy;
 }
@@ -397,9 +397,9 @@ inline float UpdateEnergy(__local float *lcouplings, __global float *J,
 
         //load the next 4 rows of couplings to local mem
         uint n;
-        for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB;
+        for(n = get_local_id(0); n < min((uint)4, L-m)*q*q;
                                                       n += get_local_size(0)){
-            lcouplings[n] = J[(pos*L + m)*nB*nB + n];
+            lcouplings[n] = J[(pos*L + m)*q*q + n];
         }
 
         //this line is the bottleneck of the entire MCMC analysis
@@ -414,8 +414,8 @@ inline float UpdateEnergy(__local float *lcouplings, __global float *J,
                 continue;
             }
             uchar seqm = getbyte(&sbm, n);
-            energy += lcouplings[nB*nB*n + nB*mutres + seqm];
-            energy -= lcouplings[nB*nB*n + nB*seqp   + seqm];
+            energy += lcouplings[q*q*n + q*mutres + seqm];
+            energy -= lcouplings[q*q*n + q*seqp   + seqm];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
@@ -436,7 +436,7 @@ void metropolis(__global float *J,
     mwc64xvec2_state_t rstate = rngstates[get_global_id(0)];
 
     //set up local mem
-    __local float lcouplings[nB*nB*4];
+    __local float lcouplings[q*q*4];
     __local uint shared_position;
 
     //initialize energy
@@ -447,8 +447,8 @@ void metropolis(__global float *J,
     for(i = 0; i < nsteps; i++){
         uint pos = position_list[i];
         uint2 rng = MWC64XVEC2_NextUint2(&rstate);
-        uchar mutres = rng.x%nB;  // small error here if MAX_INT%nB != 0
-                                  // of order nB/MAX_INT in marginals
+        uchar mutres = rng.x%q;  // small error here if MAX_INT%q != 0
+                                  // of order q/MAX_INT in marginals
         uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)];
         uchar seqp = getbyte(&sbn, pos%4);
 
@@ -485,7 +485,7 @@ inline void GibbsProb(__local float *lcouplings, __global float *J,
                       __global uint *seqmem, uint nseqs, uint pos,
                       float *prob){
     uint o;
-    for(o = 0; o < nB; o++){
+    for(o = 0; o < q; o++){
         prob[o] = 0;
     }
 
@@ -495,9 +495,9 @@ inline void GibbsProb(__local float *lcouplings, __global float *J,
 
         //load the next 4 rows of couplings to local mem
         uint n;
-        for(n = get_local_id(0); n < min((uint)4, L-m)*nB*nB;
+        for(n = get_local_id(0); n < min((uint)4, L-m)*q*q;
                                                       n += get_local_size(0)){
-            lcouplings[n] = J[(pos*L + m)*nB*nB + n];
+            lcouplings[n] = J[(pos*L + m)*q*q + n];
         }
 
         //this line is the bottleneck of the entire MCMC analysis
@@ -511,19 +511,19 @@ inline void GibbsProb(__local float *lcouplings, __global float *J,
                 continue;
             }
             uchar seqm = getbyte(&sbm, n);
-            for(o = 0; o < nB; o++){
-                prob[o] += lcouplings[nB*nB*n + nB*o + seqm]; //bank conflict?
+            for(o = 0; o < q; o++){
+                prob[o] += lcouplings[q*q*n + q*o + seqm]; //bank conflict?
             }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
     float Z = 0;
-    for(o = 0; o < nB; o++){
+    for(o = 0; o < q; o++){
         Z += exp(-prob[o]);
         prob[o] = Z;
     }
-    for(o = 0; o < nB; o++){
+    for(o = 0; o < q; o++){
         prob[o] = prob[o]/Z;
     }
 }
@@ -540,8 +540,8 @@ void gibbs(__global float *J,
     mwc64x_state_t rstate = rngstates[get_global_id(0)];
 
     //set up local mem
-    __local float lcouplings[nB*nB*4];
-    float gibbsprob[nB];
+    __local float lcouplings[q*q*4];
+    float gibbsprob[q];
 
     uint i;
     for(i = 0; i < nsteps; i++){
@@ -550,7 +550,7 @@ void gibbs(__global float *J,
         GibbsProb(lcouplings, J, seqmem, nseqs, pos, gibbsprob);
         float p = uniformMap(MWC64X_NextUint(&rstate));
         uint o = 0;
-        while(o < nB-1 && gibbsprob[o] < p){
+        while(o < q-1 && gibbsprob[o] < p){
             o++;
         }
 
@@ -589,7 +589,7 @@ void countBivariate(__global uint *bicount,
     }
     j = gi + L - j; //careful with underflow!
 
-    for(n = 0; n < nB*nB; n++){
+    for(n = 0; n < q*q; n++){
         hist[nhist*n + li] = 0;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -601,12 +601,12 @@ void countBivariate(__global uint *bicount,
         uchar seqi = ((uchar*)&tmp)[i%4];
         tmp = seqmem[(j/4)*buflen + n];
         uchar seqj = ((uchar*)&tmp)[j%4];
-        hist[nhist*(nB*seqi + seqj) + li]++;
+        hist[nhist*(q*seqi + seqj) + li]++;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 
     //merge histograms
-    for(n = 0; n < nB*nB; n++){
+    for(n = 0; n < q*q; n++){
         for(m = nhist/2; m > 0; m >>= 1){
             if(li < m){
                 hist[nhist*n + li] = hist[nhist*n + li] + hist[nhist*n + li +m];
@@ -615,8 +615,8 @@ void countBivariate(__global uint *bicount,
         }
     }
 
-    for(n = li; n < nB*nB; n += nhist){ //only loops once if nhist > nB*nB
-        bicount[gi*nB*nB + n] = hist[nhist*n];
+    for(n = li; n < q*q; n += nhist){ //only loops once if nhist > q*q
+        bicount[gi*q*q + n] = hist[nhist*n];
     }
 }
 
@@ -646,7 +646,7 @@ void countMarkedBivariate(__global uint *bicount,
     }
     j = gi + L - j; //careful with underflow!
 
-    for(n = 0; n < nB*nB; n++){
+    for(n = 0; n < q*q; n++){
         hist[nhist*n + li] = 0;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -659,12 +659,12 @@ void countMarkedBivariate(__global uint *bicount,
             uchar seqi = ((uchar*)&tmp)[i%4];
             tmp = seqmem[(j/4)*nseq+n];
             uchar seqj = ((uchar*)&tmp)[j%4];
-            hist[nhist*(nB*seqi + seqj) + li]++;
+            hist[nhist*(q*seqi + seqj) + li]++;
         }
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     //merge histograms
-    for(n = 0; n < nB*nB; n++){
+    for(n = 0; n < q*q; n++){
         for(m = nhist/2; m > 0; m >>= 1){
             if(li < m){
                 hist[nhist*n + li] = hist[nhist*n + li] + hist[nhist*n + li +m];
@@ -673,8 +673,8 @@ void countMarkedBivariate(__global uint *bicount,
         }
     }
 
-    for(n = li; n < nB*nB; n += nhist){ //only loops once if nhist > nB*nB
-        bicount[gi*nB*nB + n] = hist[nhist*n];
+    for(n = li; n < q*q; n += nhist){ //only loops once if nhist > q*q
+        bicount[gi*q*q + n] = hist[nhist*n];
     }
 }
 
@@ -684,7 +684,7 @@ void perturbedWeights(__global float *J,
                                uint  buflen,
                       __global float *weights,
                       __global float *energies){
-    __local float lcouplings[4*nB*nB];
+    __local float lcouplings[4*q*q];
     float energy = getEnergiesf(J, seqmem, buflen, lcouplings);
     weights[get_global_id(0)] = exp(-(energy - energies[get_global_id(0)]));
 }
@@ -739,7 +739,7 @@ void weightedMarg(__global float *bimarg_new,
     }
     j = gi + L - j; //careful with underflow!
 
-    for(n = 0; n < nB*nB; n++){
+    for(n = 0; n < q*q; n++){
         hist[nhist*n + li] = 0;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -751,12 +751,12 @@ void weightedMarg(__global float *bimarg_new,
         uchar seqi = ((uchar*)&tmp)[i%4];
         tmp = seqmem[(j/4)*buflen + n];
         uchar seqj = ((uchar*)&tmp)[j%4];
-        hist[nhist*(nB*seqi + seqj) + li] += weights[n];
+        hist[nhist*(q*seqi + seqj) + li] += weights[n];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 
     //merge histograms
-    for(n = 0; n < nB*nB; n++){
+    for(n = 0; n < q*q; n++){
         for(m = nhist/2; m > 0; m >>= 1){
             if(li < m){
                 hist[nhist*n + li] = hist[nhist*n + li] + hist[nhist*n + li +m];
@@ -765,8 +765,8 @@ void weightedMarg(__global float *bimarg_new,
         }
     }
 
-    for(n = li; n < nB*nB; n += nhist){ //only loops once if nhist >= nB*nB
-        bimarg_new[gi*nB*nB + n] = hist[nhist*n]/(*sumweights);
+    for(n = li; n < q*q; n += nhist){ //only loops once if nhist >= q*q
+        bimarg_new[gi*q*q + n] = hist[nhist*n]/(*sumweights);
     }
 }
 
@@ -787,9 +787,9 @@ void updatedJ(__global float *bimarg_target,
     Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc);
 }
 
-// expects to be called with work-group size of nB*nB
+// expects to be called with work-group size of q*q
 // Local scratch memory must be provided:
-// zeroj is nB*nB elements, rsums and csums are nB elements.
+// zeroj is q*q elements, rsums and csums are q elements.
 float zeroGauge(float J, uint li, __local float *zeroj,
                 __local float *rsums, __local float *csums){
     uint m;
@@ -799,51 +799,51 @@ float zeroGauge(float J, uint li, __local float *zeroj,
     //add up rows
     zeroj[li] = J;
     barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = nB/2; m > 0; m >>= 1){
-        if(li%nB < m){
+    for(m = q/2; m > 0; m >>= 1){
+        if(li%q < m){
             zeroj[li] = zeroj[li] + zeroj[li + m];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-    if(li < nB){
-        rsums[li] = zeroj[nB*li];
+    if(li < q){
+        rsums[li] = zeroj[q*li];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     //add up columns
-    zeroj[nB*(li%nB) + li/nB] = J;
+    zeroj[q*(li%q) + li/q] = J;
     barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = nB/2; m > 0; m >>= 1){
-        if(li%nB < m){
+    for(m = q/2; m > 0; m >>= 1){
+        if(li%q < m){
             zeroj[li] = zeroj[li] + zeroj[li + m];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-    if(li < nB){
-        csums[li] = zeroj[nB*li];
+    if(li < q){
+        csums[li] = zeroj[q*li];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     //get total sum
-    for(m = nB/2; m > 0; m >>= 1){
+    for(m = q/2; m > 0; m >>= 1){
         if(li < m){
-            zeroj[nB*li] = zeroj[nB*li] + zeroj[nB*(li + m)];
+            zeroj[q*li] = zeroj[q*li] + zeroj[q*(li + m)];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
     float total = zeroj[0];
     barrier(CLK_LOCAL_MEM_FENCE);
     //compute zero gauge J
-    return J - (rsums[li/nB] + csums[li%nB])/nB + total/(nB*nB);
+    return J - (rsums[li/q] + csums[li%q])/q + total/(q*q);
 }
 
-// expects to be called with work-group size of nB*nB
+// expects to be called with work-group size of q*q
 // Local scratch memory must be provided:
-// sums is nB*nB elements
+// sums is q*q elements
 float fbnorm(float J, uint li, __local float *sums){
     uint m;
 
     sums[li] = J*J;
     barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = nB*nB/2; m > 0; m >>= 1){
+    for(m = q*q/2; m > 0; m >>= 1){
         if(li < m){
             sums[li] = sums[li] + sums[li + m];
         }
@@ -857,13 +857,13 @@ float sumqq(float v, uint li, __local float *scratch){
 
     scratch[li] = v;
     barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = nB*nB/2; m > 0; m >>= 1){
+    for(m = q*q/2; m > 0; m >>= 1){
         if(li < m){
             scratch[li] = scratch[li] + scratch[li + m];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-    // XXX assumes nB is even. Need to add last element if odd
+    // XXX assumes q is even. Need to add last element if odd
 
     return scratch[0];
 }
@@ -874,18 +874,92 @@ void updatedJ_weightfn(__global float *bimarg_target,
               __global float *Creg,
                        float gamma,
                        float pc,
-                       float fn_lmbda,
               __global float *Ji,
               __global float *Jo){
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
-    uint n = gi*nB*nB + li;
+    uint n = gi*q*q + li;
 
-    __local float l_nBnB[nB*nB];
-    float X = sumqq(Ji[n]*Creg[n], li, l_nBnB);
-    float lN = sumqq(Creg[n]*Creg[n]/(bimarg[n]+pc), li, l_nBnB);
-    float lmbda = fmin(fn_lmbda, fabs(X)/(gamma*lN));
-    float bias = lmbda*Creg[n]*sign(X);
+    __local float l_qq[q*q];
+    float X = sumqq(Ji[n]*Creg[n], li, l_qq);
+    float bias = Creg[n]*sign(X);
 
     Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
+}
+
+// expects to be called with work-group size of q*q
+// Local scratch memory must be provided:
+// zeroj is q*q elements, rsums and csums are q elements.
+float get_unimarg(float ff, uint li,
+                  __local float *fi,
+                  __local float *fj, 
+                  __local float *scratch){
+    uint m;
+
+    //add up rows
+    barrier(CLK_LOCAL_MEM_FENCE);
+    scratch[li] = ff;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = q/2; m > 0; m >>= 1){
+        if(li%q < m){
+            scratch[li] = scratch[li] + scratch[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if(li < q){
+        fi[li] = scratch[q*li];
+    }
+    //add up columns
+    barrier(CLK_LOCAL_MEM_FENCE);
+    scratch[q*(li%q) + li/q] = ff;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = q/2; m > 0; m >>= 1){
+        if(li%q < m){
+            scratch[li] = scratch[li] + scratch[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if(li < q){
+        fj[li] = scratch[q*li];
+    }
+}
+
+//this kernel is quite inefficient, but it's not a bottleneck...
+__kernel
+void updatedJ_Lstep(__global float *bimarg_target,
+              __global float *bimarg,
+                       float gamma,
+                       float pc,
+              __global float *Ji,
+              __global float *Jo){
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float fi[q], fj[q], fi_t[q], fj_t[q];
+    __local float scratch[q*q];
+
+    int i = li%q;
+    int j = li/q;
+
+    float ff = (bimarg[n] + pc)/(1.0 + q*q*pc);
+    get_unimarg(ff, li, fi, fj, scratch);
+    ////apply pseudocount to model
+    //ff = (1-u)*(1-u)*ff + ((1-u)*u/q)*(fi[i] + fj[j]) + u*u/(q*q);
+    //fi[i] = (1-u)*fi[i] + u/q;
+    //fj[j] = (1-u)*fj[j] + u/q;
+
+    float ff_t = (bimarg_target[n] + pc)/(1.0 + q*q*pc);
+    get_unimarg(ff_t, li, fi_t, fj_t, scratch);
+    ////apply pseudocount to target
+    //ff_t = (1-u)*(1-u)*ff_t + ((1-u)*u/q)*(fi_t[i] + fj_t[j]) + u*u/(q*q);
+    //fi_t[i] = (1-u)*fi_t[i] + u/q;
+    //fj_t[j] = (1-u)*fj_t[j] + u/q;
+
+    float step = -(ff_t - ff)/ff + (((float)L-2)/(L-1))*( 
+                           (fi_t[i] - fi[i])/fi[i] + (fj_t[j] - fj[j])/fj[j]  );
+    //float step = -(ff_t - ff)/ff;
+    //float step = -(bimarg_target[n] - bimarg[n])/(bimarg[n] + u);
+
+    Jo[n] = Ji[n] + gamma*step;
 }

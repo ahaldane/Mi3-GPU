@@ -34,8 +34,8 @@ from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
 from mcmcGPU import readGPUbufs
 
 def unimarg(bimarg):
-    L, nB = seqsize_from_param_shape(bimarg.shape)
-    ff = bimarg.reshape((L*(L-1)/2,nB,nB))
+    L, q = seqsize_from_param_shape(bimarg.shape)
+    ff = bimarg.reshape((L*(L-1)/2,q,q))
     marg = (array([sum(ff[0],axis=1)] + 
             [sum(ff[n],axis=0) for n in range(L-1)]))
     return marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
@@ -48,8 +48,8 @@ def indep_bimarg(bimarg):
 
 def seqsize_from_param_shape(shape):
     L = int(((1+sqrt(1+8*shape[0]))/2) + 0.5) 
-    nB = int(sqrt(shape[1]) + 0.5) 
-    return L, nB
+    q = int(sqrt(shape[1]) + 0.5) 
+    return L, q
 
 ################################################################################
 # Set up enviroment and some helper functions
@@ -92,7 +92,7 @@ def writeStatus(name, ferr, ssr, wdf, bicount, bimarg_model, couplings,
             "Couplings: " + printsome(couplings) + "...",
             "Energies: Lowest =  {}, Mean = {}".format(min(energies), 
                                                        mean(energies))]
-    if ptrate != 0:
+    if ptrate != None:
         disp.append("PT swap rate: {:.2f}%".format(ptrate*100))
 
     dispstr = "\n".join(disp)
@@ -131,9 +131,13 @@ def newtonStep(n, bimarg_target, gamma, pc, reg_param, gpus, log):
         # note: updateJ should give same result on all GPUs
         # overwrites J front using bi back and J back
         if reg_param is not None:
-            gpu.updateJ_weightfn(gamma, pc, reg_param)
+            gpu.updateJ_weightfn(gamma, pc)
         else:
             gpu.updateJ(gamma, pc)
+    #bbb = ['bi back', 'bi target', 'J back', 'J front']
+    #res = readGPUbufs(bbb, gpus)
+    #for dat, b in zip(res, bbb):
+    #    save(b.replace(" ","")+str(n), dat[0])
 
     for gpu in gpus:
         gpu.swapBuf('J') #temporarily put trial J in back buffer
@@ -157,6 +161,7 @@ def newtonStep(n, bimarg_target, gamma, pc, reg_param, gpus, log):
     log("    trialJ:", printsome(trialJ))
     log("    bimarg:", printsome(bimarg_model))
     log("   weights:", printsome(weights))
+    save('bimodel'+str(n), bimarg_model)
 
     if isinf(Neff) or Neff == 0:
         raise Exception("Error: Divergence. Decrease gamma or increase "
@@ -170,7 +175,7 @@ def newtonStep(n, bimarg_target, gamma, pc, reg_param, gpus, log):
 
 import pseudocount
 def resample_target(unicounts, gpus):
-    L, nB = unicounts.shape
+    L, q = unicounts.shape
     N = sum(unicounts[0,:])
 
     unimarg = unicounts/float(N)
@@ -199,8 +204,8 @@ def iterNewton(param, bimarg_model, gpus, log):
     gammasteps = 16
     bimarg_target = param.bimarg
 
-    if param.regularize:
-        reg_param = param.fn_lmbda
+    if param.Creg is not None:
+        reg_param = True
     else:
         reg_param = None
 
@@ -221,10 +226,11 @@ def iterNewton(param, bimarg_model, gpus, log):
     lastSSR = inf
     nrejects = 0
     for i in range(newtonSteps): 
-        ##resample_target(unicounts, gpus)
-        #bimarg_target_noise = resampled_target(bimarg_target, 1304, gpus)
-        #for gpu in gpus:
-        #    gpu.setBuf('bi target', bimarg_target_noise)
+        #resample_target(unicounts, gpus)
+        if param.noiseN is not None:
+            bimarg_target_noise = resampled_target(bimarg_target, param.noiseN, gpus)
+            for gpu in gpus:
+                gpu.setBuf('bi target', bimarg_target_noise)
 
         # increase gamma every gammasteps steps
         if 0 and i != 0 and i % gammasteps == 0:
@@ -275,7 +281,7 @@ def preOpt(param, gpus, log):
         gpu.calcEnergies('large', 'main')
         gpu.calcBicounts('large')
     res = readGPUbufs(['bicount', 'seq large'], gpus)
-    bicount, seqs = sumarr(res[1]), res[2]
+    bicount, seqs = sumarr(res[0]), res[1]
     bimarg = bicount.astype(float32)/float32(sum(bicount[0,:]))
     
     #store initial setup
@@ -283,9 +289,9 @@ def preOpt(param, gpus, log):
     log("Unweighted Marginals: ", printsome(bimarg))
     save(os.path.join(outdir, 'preopt', 'initbimarg'), bimarg)
     save(os.path.join(outdir, 'preopt', 'initJ'), couplings)
-    save(os.path.join(outdir, 'preopt', 'initBicont'), bicount)
+    save(os.path.join(outdir, 'preopt', 'initBicount'), bicount)
     for n,s in enumerate(seqs):
-        seqload.writeSeqs(os.path.join(outdir, 'preopt', 'seqs-'+str(n)), 
+        seqload.writeSeqs(os.path.join(outdir, 'preopt', 'seqs-'+str(n)+'.bz2'), 
                           s, alpha, zipf=True)
     
     topbi = bimarg_target > 0.01
@@ -456,7 +462,7 @@ def runMCMC_tempered(gpus, startseq, couplings, runName, param):
 
 def MCMCstep(runName, startseq, couplings, param, gpus, log):
     outdir = param.outdir
-    alpha, L, nB = param.alpha, param.L, param.nB
+    alpha, L, q = param.alpha, param.L, param.q
     bimarg_target = param.bimarg
 
     log("")
@@ -466,7 +472,7 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
     #(not really needed, but makes nicer output and might prevent
     # numerical inaccuracy, but also shifts all seq energies)
     log("(Re-centering gauge of couplings)")
-    couplings = fieldlessGaugeEven(zeros((L,nB)), couplings)[1]
+    couplings = fieldlessGaugeEven(zeros((L,q)), couplings)[1]
 
     mkdir_p(os.path.join(outdir, runName))
     save(os.path.join(outdir, runName, 'J'), couplings)
@@ -490,7 +496,7 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
     wdf = sum(bimarg_target*abs(bimarg_target - bimarg_model))
     writeStatus(runName, ferr, ssr, wdf, bicount, bimarg_model, 
                 couplings, sampledseqs, startseq, sampledenergies, 
-                alpha, 666, outdir, log)
+                alpha, None, outdir, log)
     
     #compute new J using local newton updates (in-place on GPU)
     couplings, bimarg_p = iterNewton(param, bimarg_model, gpus, log)
@@ -509,6 +515,10 @@ def MCMCstep(runName, startseq, couplings, param, gpus, log):
 def newtonMCMC(param, gpus, log):
     startseq = param.startseq
     couplings = param.couplings
+    
+    # copy target bimarg to gpus
+    for gpu in gpus:
+        gpu.setBuf('bi target', param.bimarg)
 
     if param.resetseqs and startseq is None:
         raise Exception("Error: resetseq option requires a starting sequence")
@@ -536,8 +546,8 @@ def newtonMCMC(param, gpus, log):
     elif param.preequiltime:
         log("Pre-equilibration for {} steps...".format(param.preequiltime))
         log("(Re-centering gauge of couplings)")
-        L, nB = param.L, param.nB
-        couplings = fieldlessGaugeEven(zeros((L,nB)), couplings)[1]
+        L, q = param.L, param.q
+        couplings = fieldlessGaugeEven(zeros((L,q)), couplings)[1]
         if param.resetseqs:
             for gpu in gpus:
                 gpu.fillSeqs(startseq)
@@ -553,15 +563,10 @@ def newtonMCMC(param, gpus, log):
         log("No Pre-optimization")
 
     
-    # copy target bimarg to gpus
-    for gpu in gpus:
-        gpu.setBuf('bi target', param.bimarg)
-    
     # setup up regularization if needed
-    if param.regularize:
+    if param.Creg is not None:
         for gpu in gpus:
             gpu.setBuf('Creg', param.Creg)
-        
     
     # solve using newton-MCMC
     for i in range(param.mcmcsteps):
