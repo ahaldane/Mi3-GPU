@@ -835,6 +835,30 @@ float zeroGauge(float J, uint li, __local float *zeroj,
     return J - (rsums[li/q] + csums[li%q])/q + total/(q*q);
 }
 
+__kernel
+void updatedJ_L2(__global float *bimarg_target,
+              __global float *bimarg,
+                       float gamma,
+                       float pc,
+              __global float *J_orig,
+              __global float *Ji,
+              __global float *Jo){
+    uint n = get_global_id(0);
+    int i = li%q;
+    int j = li/q;
+
+    __local float hi[q], hj[q];
+    __local float scratch[q*q];
+
+    float J = zeroGauge(Ji[n], li, scratch, fi, fj);
+
+    if(n > NCOUPLE){
+        return;
+    }
+
+    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc);
+}
+
 // expects to be called with work-group size of q*q
 // Local scratch memory must be provided:
 // sums is q*q elements
