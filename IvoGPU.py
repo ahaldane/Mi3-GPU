@@ -700,7 +700,54 @@ def ExactZS(args, log):
     # sequences would not need to be loaded from memory, but could
     # be computed on the fly. Z = sum(exp(-E)), and S = -sum(p*log(p))
 
+def testing(args, log):
+    parser = argparse.ArgumentParser(prog=progname + ' test',
+                                     description="for testing")
+    addopt(parser, 'GPU options',         'nwalkers wgsize gpus')
+    addopt(parser, 'Newton Step Options', 'bimarg gamma damping')
+    addopt(parser,  None,                 'outdir')
 
+    args = parser.parse_args(args)
+    args.measurefperror = False
+
+    p = attrdict({'outdir': args.outdir})
+    mkdir_p(args.outdir)
+    outdir = p.outdir
+
+    p['bimarg'] = scipy.load(args.bimarg)
+    p['L'], p['q'] = seqsize_from_param_shape(p.bimarg.shape)
+    L, q = p.L, p.q
+    args.nsteps = 1
+    args.gibbs = None
+    args.profile = None
+    args.fperror = None
+    
+
+    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
+    p.update(gpup)
+    gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
+    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
+            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
+
+    for gpu in gpus:
+        gpu.initLargeBufs(nwalk)
+        gpu.initJstep()
+
+    rbim = p.bimarg + 0.1*rand(*(p.bimarg.shape))
+    rbim = (rbim/sum(rbim, axis=1)[:,newaxis]).astype('f4')
+    for g in gpus:
+        g.setBuf('bi target', p.bimarg)
+        g.setBuf('bi back', rbim)
+
+    for g in gpus:
+        g.updateJ_Lstep(p.gamma, 0)
+
+    res = readGPUbufs(['J front', 'J back'], gpus)
+    dJ1, dJ2 = res[0][0], res[1][0]
+    save(os.path.join(outdir, 'dJ1'), dJ1)
+    save(os.path.join(outdir, 'dJ2'), dJ2)
+    save(os.path.join(outdir, 'bitarget'), p.bimarg)
+    save(os.path.join(outdir, 'binew'), rbim)
 
 ################################################################################
 
@@ -1030,6 +1077,7 @@ def main(args):
       'mcmc':           equilibrate,
       'equil_pt':       equil_PT,
       'nestedZ':        nestedZ,
+      'test':           testing,
      }
 
     descr = 'Perform biophysical Potts Model calculations on the GPU'

@@ -233,8 +233,8 @@ class MCMCGPU:
         nPairs, q = self.nPairs, self.q
         self._setupBuffer('bi target', '<f4',  (nPairs, q*q))
         self._setupBuffer(     'Creg', '<f4',  (nPairs, q*q))
-        self._setupBuffer(  'weights', '<f4',  (self.nseq['large'],))
         self._setupBuffer(     'neff', '<f4',  (1,))
+        self._setupBuffer(  'weights', '<f4',  (self.nseq['large'],))
 
         self.largebufs.append('weights')
         self.initBackBufs()
@@ -443,25 +443,25 @@ class MCMCGPU:
                         localhist)
         self.events.append((evt, 'weightedMarg'))
 
-    ## updates front J buffer using back J and bimarg buffers
-    #def updateJ(self, gamma, pc):
-    #    self.require('Jstep')
-    #    self.log("updateJPerturb")
-    #    q, nPairs = self.q, self.nPairs
-    #    #find next highest multiple of wgsize, for num work units
-    #    nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
-    #    evt = self.prg.updatedJ_(self.queue, (nworkunits,), (self.wgsize,),
-    #                            self.bibufs['target'], self.bibufs['back'],
-    #                            float32(gamma), float32(pc), self.Jbufs['main'],
-    #                            self.Jbufs['back'], self.Jbufs['front'])
-    #    self.saveEvt(evt, 'updateJPerturb')
-    #    if self.packedJ == 'front':
-    #        self.packedJ = None
-
     # updates front J buffer using back J and bimarg buffers
     def updateJ(self, gamma, pc):
         self.require('Jstep')
-        self.log("updateJPerturb")
+        self.log("updateJ")
+        q, nPairs = self.q, self.nPairs
+        #find next highest multiple of wgsize, for num work units
+        nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
+        evt = self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,),
+                                self.bibufs['target'], self.bibufs['back'],
+                                float32(gamma), float32(pc),
+                                self.Jbufs['back'], self.Jbufs['front'])
+        self.saveEvt(evt, 'updateJ')
+        if self.packedJ == 'front':
+            self.packedJ = None
+
+    # updates front J buffer using back J and bimarg buffers
+    def updateJ_Lstep(self, gamma, pc):
+        self.require('Jstep')
+        self.log("updateJ_Lstep")
         q, nPairs = self.q, self.nPairs
         #find next highest multiple of wgsize, for num work units
         nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
@@ -469,7 +469,7 @@ class MCMCGPU:
                                 self.bibufs['target'], self.bibufs['back'],
                                 float32(gamma), float32(pc), 
                                 self.Jbufs['back'], self.Jbufs['front'])
-        self.saveEvt(evt, 'updateJPerturb')
+        self.saveEvt(evt, 'updateJ_Lstep')
         if self.packedJ == 'front':
             self.packedJ = None
     

@@ -775,7 +775,6 @@ void updatedJ(__global float *bimarg_target,
               __global float *bimarg,
                        float gamma,
                        float pc,
-              __global float *J_orig,
               __global float *Ji,
               __global float *Jo){
     uint n = get_global_id(0);
@@ -843,6 +842,7 @@ void updatedJ_L2(__global float *bimarg_target,
               __global float *J_orig,
               __global float *Ji,
               __global float *Jo){
+    uint li = get_local_id(0);
     uint n = get_global_id(0);
     int i = li%q;
     int j = li/q;
@@ -850,7 +850,7 @@ void updatedJ_L2(__global float *bimarg_target,
     __local float hi[q], hj[q];
     __local float scratch[q*q];
 
-    float J = zeroGauge(Ji[n], li, scratch, fi, fj);
+    float J = zeroGauge(Ji[n], li, scratch, hi, hj);
 
     if(n > NCOUPLE){
         return;
@@ -935,7 +935,7 @@ float get_unimarg(float ff, uint li,
     }
     //add up columns
     barrier(CLK_LOCAL_MEM_FENCE);
-    scratch[q*(li%q) + li/q] = ff;
+    scratch[q*(li%q) + (li/q)] = ff;
     barrier(CLK_LOCAL_MEM_FENCE);
     for(m = q/2; m > 0; m >>= 1){
         if(li%q < m){
@@ -946,6 +946,7 @@ float get_unimarg(float ff, uint li,
     if(li < q){
         fj[li] = scratch[q*li];
     }
+    barrier(CLK_LOCAL_MEM_FENCE);
 }
 
 //this kernel is quite inefficient, but it's not a bottleneck...
@@ -963,17 +964,19 @@ void updatedJ_Lstep(__global float *bimarg_target,
     __local float fi[q], fj[q], fi_t[q], fj_t[q];
     __local float scratch[q*q];
 
-    int i = li%q;
-    int j = li/q;
+    int i = li/q;
+    int j = li%q;
 
-    float ff = (bimarg[n] + pc)/(1.0 + q*q*pc);
+    //float ff = (bimarg[n] + pc)/(1.0 + q*q*pc);
+    float ff = bimarg[n];
     get_unimarg(ff, li, fi, fj, scratch);
     ////apply pseudocount to model
     //ff = (1-u)*(1-u)*ff + ((1-u)*u/q)*(fi[i] + fj[j]) + u*u/(q*q);
     //fi[i] = (1-u)*fi[i] + u/q;
     //fj[j] = (1-u)*fj[j] + u/q;
 
-    float ff_t = (bimarg_target[n] + pc)/(1.0 + q*q*pc);
+    //float ff_t = (bimarg_target[n] + pc)/(1.0 + q*q*pc);
+    float ff_t = bimarg_target[n];
     get_unimarg(ff_t, li, fi_t, fj_t, scratch);
     ////apply pseudocount to target
     //ff_t = (1-u)*(1-u)*ff_t + ((1-u)*u/q)*(fi_t[i] + fj_t[j]) + u*u/(q*q);
@@ -986,4 +989,10 @@ void updatedJ_Lstep(__global float *bimarg_target,
     //float step = -(bimarg_target[n] - bimarg[n])/(bimarg[n] + u);
 
     Jo[n] = Ji[n] + gamma*step;
+    //Ji[n] = (fi_t[i] - fi[i])/fi[i];
+    //Ji[n] = step;
+    //Jo[n] = (fj_t[j] - fj[j])/fj[j];
+    //Ji[n] = fi[i];
+    //Jo[n] = -(ff_t - ff)/ff;
+    //Jo[n] = step;
 }
