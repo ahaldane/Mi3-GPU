@@ -459,13 +459,27 @@ class MCMCGPU:
             self.packedJ = None
 
     # updates front J buffer using back J and bimarg buffers
+    def updateJ_l2z(self, gamma, pc, lh, lJ):
+        self.require('Jstep')
+        self.log("updateJ l2z")
+        q, nPairs = self.q, self.nPairs
+        #find next highest multiple of wgsize, for num work units
+        evt = self.prg.updatedJ_l2z(self.queue, (nPairs*q*q,), (q*q,),
+                                self.bibufs['target'], self.bibufs['back'],
+                                float32(gamma), float32(pc),
+                                float32(2*lh), float32(2*lJ),
+                                self.Jbufs['back'], self.Jbufs['front'])
+        self.saveEvt(evt, 'updateJ l2z')
+        if self.packedJ == 'front':
+            self.packedJ = None
+
+    # updates front J buffer using back J and bimarg buffers
     def updateJ_Lstep(self, gamma, pc):
         self.require('Jstep')
         self.log("updateJ_Lstep")
         q, nPairs = self.q, self.nPairs
         #find next highest multiple of wgsize, for num work units
-        nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
-        evt = self.prg.updatedJ_Lstep(self.queue, (nPairs*q*q,), (q*q,),
+        evt = self.prg.updatedJ_Lstep2(self.queue, (nPairs*q*q,), (q*q,),
                                 self.bibufs['target'], self.bibufs['back'],
                                 float32(gamma), float32(pc), 
                                 self.Jbufs['back'], self.Jbufs['front'])

@@ -770,93 +770,57 @@ void weightedMarg(__global float *bimarg_new,
     }
 }
 
-__kernel
-void updatedJ(__global float *bimarg_target,
-              __global float *bimarg,
-                       float gamma,
-                       float pc,
-              __global float *Ji,
-              __global float *Jo){
-    uint n = get_global_id(0);
-
-    if(n > NCOUPLE){
-        return;
-    }
-
-    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc);
-}
-
 // expects to be called with work-group size of q*q
 // Local scratch memory must be provided:
 // zeroj is q*q elements, rsums and csums are q elements.
-float zeroGauge(float J, uint li, __local float *zeroj,
-                __local float *rsums, __local float *csums){
+float zeroGauge(float J, uint li, __local float *scratch,
+                __local float *hi, __local float *hj){
     uint m;
 
     // next couple lines are essentially a transform to the "zero" gauge
 
     //add up rows
-    zeroj[li] = J;
+    scratch[li] = J;
     barrier(CLK_LOCAL_MEM_FENCE);
     for(m = q/2; m > 0; m >>= 1){
         if(li%q < m){
-            zeroj[li] = zeroj[li] + zeroj[li + m];
+            scratch[li] = scratch[li] + scratch[li + m];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
     if(li < q){
-        rsums[li] = zeroj[q*li];
+        hi[li] = scratch[q*li]/q;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     //add up columns
-    zeroj[q*(li%q) + li/q] = J;
+    scratch[q*(li%q) + li/q] = J;
     barrier(CLK_LOCAL_MEM_FENCE);
     for(m = q/2; m > 0; m >>= 1){
         if(li%q < m){
-            zeroj[li] = zeroj[li] + zeroj[li + m];
+            scratch[li] = scratch[li] + scratch[li + m];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
     if(li < q){
-        csums[li] = zeroj[q*li];
+        hj[li] = scratch[q*li]/q;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     //get total sum
     for(m = q/2; m > 0; m >>= 1){
         if(li < m){
-            zeroj[q*li] = zeroj[q*li] + zeroj[q*(li + m)];
+            scratch[q*li] = scratch[q*li] + scratch[q*(li + m)];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-    float total = zeroj[0];
+    float mean = scratch[0]/q;
     barrier(CLK_LOCAL_MEM_FENCE);
-    //compute zero gauge J
-    return J - (rsums[li/q] + csums[li%q])/q + total/(q*q);
-}
 
-__kernel
-void updatedJ_L2(__global float *bimarg_target,
-              __global float *bimarg,
-                       float gamma,
-                       float pc,
-              __global float *J_orig,
-              __global float *Ji,
-              __global float *Jo){
-    uint li = get_local_id(0);
-    uint n = get_global_id(0);
-    int i = li%q;
-    int j = li/q;
-
-    __local float hi[q], hj[q];
-    __local float scratch[q*q];
-
-    float J = zeroGauge(Ji[n], li, scratch, hi, hj);
-
-    if(n > NCOUPLE){
-        return;
+    if(li < q){
+        hi[li] = hi[li] - mean;
+        hj[li] = hj[li] - mean;
     }
-
-    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    return J - (hi[li/q] + hj[li%q]) - mean;
 }
 
 // expects to be called with work-group size of q*q
@@ -890,6 +854,22 @@ float sumqq(float v, uint li, __local float *scratch){
     // XXX assumes q is even. Need to add last element if odd
 
     return scratch[0];
+}
+
+__kernel
+void updatedJ(__global float *bimarg_target,
+              __global float *bimarg,
+                       float gamma,
+                       float pc,
+              __global float *Ji,
+              __global float *Jo){
+    uint n = get_global_id(0);
+
+    if(n > NCOUPLE){
+        return;
+    }
+
+    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc);
 }
 
 __kernel
@@ -949,12 +929,32 @@ float get_unimarg(float ff, uint li,
     barrier(CLK_LOCAL_MEM_FENCE);
 }
 
+__kernel
+void updatedJ_l2z(__global float *bimarg_target,
+              __global float *bimarg,
+                       float gamma,
+                       float pc,
+                       float lh, float lJ,
+              __global float *Ji,
+              __global float *Jo){
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float hi[q], hj[q];
+    __local float scratch[q*q];
+
+    float J0 = zeroGauge(Ji[n], li, scratch, hi, hj);
+    float R = lJ*J0 + lh*(hi[li/q] + hj[li%q]);
+    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + R)/(bimarg[n] + pc);
+}
+
 //this kernel is quite inefficient, but it's not a bottleneck...
 __kernel
 void updatedJ_Lstep(__global float *bimarg_target,
               __global float *bimarg,
                        float gamma,
-                       float pc,
+                       float u,
               __global float *Ji,
               __global float *Jo){
     uint li = get_local_id(0);
@@ -970,29 +970,103 @@ void updatedJ_Lstep(__global float *bimarg_target,
     //float ff = (bimarg[n] + pc)/(1.0 + q*q*pc);
     float ff = bimarg[n];
     get_unimarg(ff, li, fi, fj, scratch);
-    ////apply pseudocount to model
-    //ff = (1-u)*(1-u)*ff + ((1-u)*u/q)*(fi[i] + fj[j]) + u*u/(q*q);
-    //fi[i] = (1-u)*fi[i] + u/q;
-    //fj[j] = (1-u)*fj[j] + u/q;
+    //apply pseudocount to model
+    ff = (1-u)*(1-u)*ff + ((1-u)*u/q)*(fi[i] + fj[j]) + u*u/(q*q);
+    if(li < q){
+        fi[li] = (1-u)*fi[li] + u/q;
+        fj[li] = (1-u)*fj[li] + u/q;
+    }
 
     //float ff_t = (bimarg_target[n] + pc)/(1.0 + q*q*pc);
     float ff_t = bimarg_target[n];
     get_unimarg(ff_t, li, fi_t, fj_t, scratch);
-    ////apply pseudocount to target
-    //ff_t = (1-u)*(1-u)*ff_t + ((1-u)*u/q)*(fi_t[i] + fj_t[j]) + u*u/(q*q);
-    //fi_t[i] = (1-u)*fi_t[i] + u/q;
-    //fj_t[j] = (1-u)*fj_t[j] + u/q;
+    //apply pseudocount to target
+    ff_t = (1-u)*(1-u)*ff_t + ((1-u)*u/q)*(fi_t[i] + fj_t[j]) + u*u/(q*q);
+    if(li < q){
+        fi_t[li] = (1-u)*fi_t[li] + u/q;
+        fj_t[li] = (1-u)*fj_t[li] + u/q;
+    }
 
     float step = -(ff_t - ff)/ff + (((float)L-2)/(L-1))*( 
                            (fi_t[i] - fi[i])/fi[i] + (fj_t[j] - fj[j])/fj[j]  );
-    //float step = -(ff_t - ff)/ff;
-    //float step = -(bimarg_target[n] - bimarg[n])/(bimarg[n] + u);
 
     Jo[n] = Ji[n] + gamma*step;
-    //Ji[n] = (fi_t[i] - fi[i])/fi[i];
-    //Ji[n] = step;
-    //Jo[n] = (fj_t[j] - fj[j])/fj[j];
-    //Ji[n] = fi[i];
-    //Jo[n] = -(ff_t - ff)/ff;
     //Jo[n] = step;
+}
+
+//this kernel is quite inefficient, but it's not a bottleneck...
+__kernel
+void updatedJ_Lstep2(__global float *bimarg_target,
+              __global float *bimarg,
+                       float gamma,
+                       float u,
+              __global float *Ji,
+              __global float *Jo){
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float fi[q], fj[q], fi_t[q], fj_t[q];
+    __local float scratch[q*q];
+
+    int i = li/q;
+    int j = li%q;
+
+    //float ff = (bimarg[n] + pc)/(1.0 + q*q*pc);
+    float ff = bimarg[n];
+    get_unimarg(ff, li, fi, fj, scratch);
+    //apply pseudocount to model
+    ff = (1-u)*(1-u)*ff + ((1-u)*u/q)*(fi[i] + fj[j]) + u*u/(q*q);
+    if(li < q){
+        fi[li] = (1-u)*fi[li] + u/q;
+        fj[li] = (1-u)*fj[li] + u/q;
+    }
+
+    //float ff_t = (bimarg_target[n] + pc)/(1.0 + q*q*pc);
+    float ff_t = ff + gamma*(bimarg_target[n] - ff);
+    get_unimarg(ff_t, li, fi_t, fj_t, scratch);
+    //apply pseudocount to target
+    ff_t = (1-u)*(1-u)*ff_t + ((1-u)*u/q)*(fi_t[i] + fj_t[j]) + u*u/(q*q);
+    if(li < q){
+        fi_t[li] = (1-u)*fi_t[li] + u/q;
+        fj_t[li] = (1-u)*fj_t[li] + u/q;
+    }
+
+    float step = -(ff_t - ff)/ff + (((float)L-2.0)/(L-1.0))*( 
+                           (fi_t[i] - fi[i])/fi[i] + (fj_t[j] - fj[j])/fj[j]  );
+
+    Jo[n] = Ji[n] + step;
+    //Jo[n] = step;
+}
+
+//this kernel is quite inefficient, but it's not a bottleneck...
+__kernel
+void updatedJ_Lstep2_raw(__global float *bimarg_target,
+              __global float *bimarg,
+                       float gamma,
+                       float u,
+              __global float *Ji,
+              __global float *Jo){
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float fi[q], fj[q], fi_t[q], fj_t[q];
+    __local float scratch[q*q];
+
+    int i = li/q;
+    int j = li%q;
+
+    //float ff = (bimarg[n] + pc)/(1.0 + q*q*pc);
+    float ff = bimarg[n];
+    get_unimarg(ff, li, fi, fj, scratch);
+
+    //float ff_t = (bimarg_target[n] + pc)/(1.0 + q*q*pc);
+    float ff_t = bimarg_target[n];
+    get_unimarg(ff_t, li, fi_t, fj_t, scratch);
+
+    float step = -(ff_t - ff)/ff + (((float)L-2.0)/(L-1.0))*( 
+                           (fi_t[i] - fi[i])/fi[i] + (fj_t[j] - fj[j])/fj[j]  );
+
+    Jo[n] = Ji[n] + gamma*step;
 }

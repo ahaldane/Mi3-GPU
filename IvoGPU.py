@@ -29,7 +29,7 @@ import sys, os, errno, argparse, time, ConfigParser
 import seqload
 from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
 from mcmcGPU import setupGPUs, initGPU, divideWalkers, printGPUs, readGPUbufs
-from NewtonSteps import newtonMCMC, runMCMC, swapTemps
+from NewtonSteps import newtonMCMC, runMCMC, runMCMC_tempered, swapTemps
 
 ################################################################################
 # Set up enviroment and some helper functions
@@ -90,8 +90,8 @@ def optionRegistry():
     # option used by both potts and sequence loaders, designed
     # to load in the output of a previous run
     add('seqmodel', default=None,
-        help=("One of 'zero', 'logscore', or a directory name. Generates or "
-              "loads 'alpha', 'couplings', 'startseq' and 'seqs', if not "
+        help=("One of 'zero', 'independent', or a directory name. Generates or "
+              "loads 'alpha', 'couplings', 'seedseq' and 'seqs', if not "
               "otherwise supplied.") )
     add('outdir', default='output', help='Output Directory')
 
@@ -126,23 +126,24 @@ def optionRegistry():
         help="Damping parameter")
     add('noiseN', default=None,
         help="effective MSA size for anti-overfitting noise")
-    add('Creg', default=None,
-        help="C matrix to use in l1 regularization")
+    add('reg', default=None,
+        help="regularization format")
     add('preopt', action='store_true',
         help="Perform a round of newton steps before first MCMC run")
-    add('resetseqs', action='store_false',
-        help="Reset sequence to S0 at start of every MCMC round")
+    add('reseed', action='store_true',
+        help="Reset walkers to best sequence in last round at start of every MCMC round")
 
     # Potts options
     add('alpha', required=True,
         help="Alphabet, a sequence of letters")
     add('couplings',
-        help="One of 'zero', 'logscore', or a filename")
+        help="One of 'zero', 'independent', or a filename")
     add('L', help="sequence length", type=int)
 
     # Sequence options
-    add('startseq', help="Starting sequence. May be 'rand'")
+    add('seedseq', help="Starting sequence. May be 'rand'")
     add('seqs', help="File containing sequences to pre-load to GPU")
+    add('seqs_large', help="File containing sequences to pre-load to GPU")
 
     # Sampling Param
     add('preequiltime', type=uint32, default=0,
@@ -190,10 +191,10 @@ def inverseIsing(args, log):
                                      description=descr)
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gibbs gpus profile')
-    addopt(parser, 'Sequence Options',    'startseq seqs')
+    addopt(parser, 'Sequence Options',    'seedseq seqs seqs_large')
     addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps gamma '
-                                          'damping Creg noiseN '
-                                          'preopt resetseqs')
+                                          'damping reg noiseN '
+                                          'preopt reseed')
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
                                           'trackequil tempering nswaps_temp '
                                           'preequiltime')
@@ -230,32 +231,37 @@ def inverseIsing(args, log):
         gpu.initMCMC(p.nsteps, rngPeriod)
         gpu.initLargeBufs(gpu.nseq['main']*p.nsamples)
         gpu.initJstep()
-        if p.tempering:
+        if p.tempering is not None:
             gpu.initMarkSeq()
     log("")
     #log(("Running {} MCMC walkers in parallel over {} GPUs, with {} MC "
     #    "steps per kernel call").format(p.nwalkers, len(gpus),
     #    p.nsteps))
 
-    preopt_seqs = sum([g.nseq['large'] for g in gpus])
-    p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
-                                   nseqs=preopt_seqs))
+    nseqs, npreopt_seqs = None, None
+    if not p.reseed:
+        nseqs = sum([g.nseq['main'] for g in gpus])
     if p.preopt:
-        if p.seqs is None:
-            raise Exception("Need to provide seqs if using pre-optimization")
-        transferSeqsToGPU(gpus, 'large', p.seqs, log)
+        npreopt_seqs = sum([g.nseq['large'] for g in gpus])
+    print("RESEED", p.reseed)
+    p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
+                                   nseqs=nseqs, nlargeseqs=npreopt_seqs,
+                                   needseed=p.reseed))
+    if p.preopt:
+        if p.seqs_large is None:
+            raise Exception("Need to provide seqs_large if using preopt")
+        transferSeqsToGPU(gpus, 'large', p.seqs_large, log)
 
     #if we're not initializing seqs to single sequence, need to load
     # a set of initial sequences into main buffer
-    if not p.resetseqs:
+    if not p.reseed:
         if p.seqs is None:
-            raise Exception("Need to provide seqs if not using startseq")
-        #get required seqs from end of detected seqs
-        if len(p.seqs) == 1:
-            mainseq = [p.seqs[-sum([g.nseq['main'] for f in gpus]):]]
-        else:
-            mainseq = [s[-g.nseq['main']:] for s,g in zip(p.seqs, gpus)]
-        transferSeqsToGPU(gpus, 'main', mainseq, log)
+            raise Exception("Need to provide seqs if not using seedseq")
+        transferSeqsToGPU(gpus, 'main', p.seqs, log)
+    else:
+        if p.seedseq is None:
+            raise Exception("Need to provide seedseq if using reseed")
+
     log("")
 
     log("Computation Overview")
@@ -349,7 +355,7 @@ def MCMCbenchmark(args, log):
         help="Number of kernel calls to benchmark")
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gibbs gpus profile')
-    addopt(parser, 'Sequence Options',    'startseq seqs')
+    addopt(parser, 'Sequence Options',    'seedseq seqs')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'seqmodel outdir')
 
@@ -374,18 +380,23 @@ def MCMCbenchmark(args, log):
     for gpu in gpus:
         gpu.initMCMC(p.nsteps, 2*nloop)
     log("")
-    preopt_seqs = sum([g.nseq['main'] for g in gpus])
-    p.update(process_sequence_args(args, L, alpha, None, log,nseqs=preopt_seqs))
 
-    if p.seqs is not None:
+    nseqs = None
+    needseed = False
+    if args.seqs is not None:
+        nseqs = sum([g.nseq['main'] for g in gpus])
+    if args.seedseq is not None:
+        if nseqs is not None:
+            raise Exception("can't supply both seqs and seedseq")
+        needseed = True
+    p.update(process_sequence_args(args, L, alpha, None, log, 
+                                   nseqs=nseqs, needseed=needseed))
+
+    if not needseed:
         transferSeqsToGPU(gpus, 'main', p.seqs, log)
-    elif p.startseq is not None:
-        log("Loading main seq buffer with startseq")
-        for gpu in gpus:
-            gpu.fillSeqs(p.startseq)
     else:
-        raise Exception("Error: To benchmark, must either supply startseq or "
-                        "load seqs into main seq buffer")
+        for gpu in gpus:
+            gpu.fillSeqs(p.seedseq)
     log("")
 
 
@@ -430,7 +441,7 @@ def equilibrate(args, log):
     add = parser.add_argument
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gibbs gpus profile')
-    addopt(parser, 'Sequence Options',    'startseq seqs')
+    addopt(parser, 'Sequence Options',    'seedseq seqs')
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
                                           'trackequil tempering nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
@@ -458,19 +469,33 @@ def equilibrate(args, log):
     for gpu in gpus:
         gpu.initMCMC(p.nsteps, rngPeriod)
         gpu.initLargeBufs(gpu.nseq['main']*p.nsamples)
-        if p.tempering:
+        if p.tempering is not None:
             gpu.initMarkSeq()
-    preopt_seqs = sum([g.nseq['large'] for g in gpus])
-    p.update(process_sequence_args(args, L, alpha, None, log,
-                                   nseqs=preopt_seqs))
+
+    nseqs = None
+    needseed = False
+    if args.seqs is not None:
+        nseqs = sum([g.nseq['main'] for g in gpus])
+    if args.seedseq is not None:
+        if nseqs is not None:
+            raise Exception("can't supply both seqs and seedseq")
+        needseed = True
+    p.update(process_sequence_args(args, L, alpha, None, log, nseqs=nseqs,
+                                   needseed=needseed))
     log("")
 
-    log("Equilibrating ...")
-    for gpu in gpus:
-        gpu.fillSeqs(p.startseq)
+    # set up gpu buffers
+    if needseed:
+        for gpu in gpus:
+            gpu.fillSeqs(p.seedseq)
+    else:
+        transferSeqsToGPU(gpus, 'main', p.seqs, log)
 
+    log("Equilibrating ...")
     # set up tempering if needed
+    MCMC_func = runMCMC
     if p.tempering is not None:
+        MCMC_func = runMCMC_tempered
         B0 = p.tempering[0]
 
         if p.nwalkers % len(p.tempering) != 0:
@@ -483,11 +508,10 @@ def equilibrate(args, log):
             gpu.setBuf('Bs', B)
             gpu.markSeqs(B == B0)
     
-    # actually run the mcmc
     (bimarg_model, 
      bicount, 
      energies, 
-     seqs) = runMCMC(gpus, p.startseq, p.couplings, '.', p)
+     seqs, ptinfo) = MCMC_func(gpus, p.couplings, '.', p)
     
     outdir = p.outdir
     savetxt(os.path.join(outdir, 'bicounts'), bicount, fmt='%d')
@@ -496,18 +520,15 @@ def equilibrate(args, log):
     for n,seqbuf in enumerate(seqs):
         seqload.writeSeqs(os.path.join(outdir, 'seqs-{}'.format(n)),
                           seqbuf, alpha)
-    for gpu in gpus:
-        gpu.calcEnergies('main', 'main')
-    se, ss, sB = readGPUbufs(['E main', 'seq main', 'Bs'], gpus)
-    seqload.writeSeqs(os.path.join(outdir, 'mainseqs'), concatenate(ss), alpha)
-    save(os.path.join(outdir, 'mainE'), concatenate(se))
-    save(os.path.join(outdir, 'mainB'), concatenate(sB))
 
-    #slarge = gpus[-1].getBuf('seq large', False).read()
-    #seqload.writeSeqs('gpu3seqbuf', slarge, alpha)
+    if p.tempering is not None:
+        sB = readGPUbufs(['Bs'], gpus)[0]
+        save(os.path.join(outdir, 'Bs'), concatenate(sB))
+        log("Final PT swap rate: {}".format(ptinfo[1]))
 
     log("Done!")
 
+# not sure if this is still needed
 def equil_PT(args, log):
     descr = ('Run MCMC equilibration on the GPU with parallel tempering')
     parser = argparse.ArgumentParser(prog=progname + ' equil_pt',
@@ -515,7 +536,7 @@ def equil_PT(args, log):
     add = parser.add_argument
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gibbs gpus profile')
-    addopt(parser, 'Sequence Options',    'startseq seqs')
+    addopt(parser, 'Sequence Options',    'seedseq seqs')
     addopt(parser, 'Sampling Options',    'equiltime trackequil tempering '
                                           'nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
@@ -552,12 +573,12 @@ def equil_PT(args, log):
     # set up gpu buffers
     if p.seqs is not None:
         transferSeqsToGPU(gpus, 'main', p.seqs, log)
-    elif p.startseq is not None:
-        log("Loading main seq buffer with startseq")
+    elif p.seedseq is not None:
+        log("Loading main seq buffer with seedseq")
         for gpu in gpus:
-            gpu.fillSeqs(p.startseq)
+            gpu.fillSeqs(p.seedseq)
     else:
-        raise Exception("Error: Must either supply startseq or seqs")
+        raise Exception("Error: Must either supply seedseq or seqs")
 
     for gpu in gpus:
         gpu.setBuf('J main', p.couplings)
@@ -617,8 +638,8 @@ def subseqFreq(args, log):
     addopt(parser,  None,                 'outdir')
     group = parser.add_argument_group('Sequence Options')
     add = group.add_argument
-    add('backgroundseqs')
-    add('subseqs')
+    add('backgroundseqs', help="large sample of equilibrated sequences")
+    add('subseqs', help="sequences from which to compute subseq freqs")
 
     args = parser.parse_args(args)
     args.measurefperror = False
@@ -721,6 +742,8 @@ def testing(args, log):
     args.gibbs = None
     args.profile = None
     args.fperror = None
+    p['damping'] = args.damping
+    p['gamma'] = args.gamma
     
 
     gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
@@ -736,18 +759,24 @@ def testing(args, log):
     rbim = p.bimarg + 0.1*rand(*(p.bimarg.shape))
     rbim = (rbim/sum(rbim, axis=1)[:,newaxis]).astype('f4')
     for g in gpus:
-        g.setBuf('bi target', p.bimarg)
-        g.setBuf('bi back', rbim)
+        g.setBuf('bi target', rbim)
+        g.setBuf('bi back', p.bimarg)
+
+    save(os.path.join(outdir, 'bitarget'), rbim)
+    save(os.path.join(outdir, 'binew'), p.bimarg)
 
     for g in gpus:
-        g.updateJ_Lstep(p.gamma, 0)
+        g.updateJ_Lstep(p.gamma, p.damping)
+    save(os.path.join(outdir, 'dJ0001'), readGPUbufs(['J front'], gpus)[0][0])
 
-    res = readGPUbufs(['J front', 'J back'], gpus)
-    dJ1, dJ2 = res[0][0], res[1][0]
-    save(os.path.join(outdir, 'dJ1'), dJ1)
-    save(os.path.join(outdir, 'dJ2'), dJ2)
-    save(os.path.join(outdir, 'bitarget'), p.bimarg)
-    save(os.path.join(outdir, 'binew'), rbim)
+    #res = readGPUbufs(['J front', 'J back'], gpus)
+    #dJ1, dJ2 = res[0][0], res[1][0]
+    #save(os.path.join(outdir, 'dJ1'), dJ1)
+    #save(os.path.join(outdir, 'dJ2'), dJ2)
+
+    for g in gpus:
+        g.updateJ_Lstep(p.gamma, 0.01)
+    save(os.path.join(outdir, 'dJ01'), readGPUbufs(['J front'], gpus)[0][0])
 
 ################################################################################
 
@@ -790,7 +819,7 @@ def process_newton_args(args, log):
              'newtonSteps': args.newtonsteps,
              'gamma0': args.gamma,
              'pcdamping': args.damping,
-             'resetseqs': args.resetseqs,
+             'reseed': args.reseed,
              'preopt': args.preopt,
              'noiseN': args.noiseN if not args.noiseN else int(args.noiseN)}
 
@@ -806,15 +835,29 @@ def process_newton_args(args, log):
         raise Exception("Bimarg must be in 'f4' format")
         #could convert, but this helps warn that something may be wrong
     if any(~((bimarg.flatten() >= 0) & (bimarg.flatten() <= 1))):
-        raise Exception("Bimarg must be nonzero and 0 < f < 1")
+        raise Exception("Bimarg must be 0 <= f <= 1")
     log("Target Marginals: " + printsome(bimarg) + "...")
     p['bimarg'] = bimarg
 
-    if args.Creg is not None:
-        log("Regularizing with Creg from file {}".format(args.Creg))
-        p['Creg'] = scipy.load(args.Creg)
-        if p['Creg'].shape != bimarg.shape:
-            raise Exception("Creg in wrong format")
+    if args.reg is not None:
+        rtype, dummy, rarg = args.reg.partition(':')
+        rtypes = ['Creg', 'l2z', 'L']
+        if rtype not in rtypes:
+            raise Exception("reg must be one of {}".format(str(rtypes)))
+        p['reg'] = rtype
+        rargs = rarg.split(',')
+        if rtype == 'Creg':
+            log("Regularizing with Creg from file {}".format(rarg[0]))
+            p['regarg'] = scipy.load(rarg[0])
+            if p['regarg'].shape != bimarg.shape:
+                raise Exception("Creg in wrong format")
+        if rtype == 'l2z':
+            try:
+                lh, lJ = float(rargs[0]), float(rargs[1])
+            except:
+                raise Exception("l2z specifier must be of form 'l2z:lh,lJ', eg "
+                                "'l2z:0.01,0.01'. Got '{}'".format(args.reg))
+            p['regarg'] = (lh, lJ)
 
     if p.noiseN:
         log("Adding MSA noise of size {} to step direction".format(p.noiseN))
@@ -864,22 +907,24 @@ def process_potts_args(args, L, q, bimarg, log):
 def getCouplings(args, L, q, bimarg, log):
     couplings = None
 
-    if args.seqmodel and args.seqmodel in ['zero', 'logscore']:
+    if args.seqmodel and args.seqmodel in ['uniform', 'independent']:
         args.couplings = args.seqmodel
 
     if args.couplings:
         #first try to generate couplings (requires L, q)
-        if args.couplings in ['zero', 'logscore']:
+        if args.couplings in ['uniform', 'independent']:
             if L is None: # we are sure to have q
                 raise Exception("Need L to generate couplings")
-        if args.couplings == 'zero':
-            log("Setting Initial couplings to 0")
-            couplings = zeros((L*(L-1)/2, q*q), dtype='<f4')
-        elif args.couplings == 'logscore':
-            log("Setting Initial couplings to Independent Log Scores")
+        if args.couplings == 'uniform':
+            log("Setting Initial couplings to uniform frequencies")
+            h = -log(1.0/q)
+            J = zeros((L*(L-1)/2,q*q), dtype='<f4')
+            couplings = fieldlessGaugeEven(h, J)[1]
+        elif args.couplings == 'independent':
+            log("Setting Initial couplings to independent model")
             if bimarg is None:
                 raise Exception("Need bivariate marginals to generate "
-                                "logscore couplings")
+                                "independent model couplings")
             h = -np.log(unimarg(bimarg))
             J = zeros((L*(L-1)/2,q*q), dtype='<f4')
             couplings = fieldlessGaugeEven(h, J)[1]
@@ -888,7 +933,7 @@ def getCouplings(args, L, q, bimarg, log):
             couplings = scipy.load(args.couplings)
             if couplings.dtype != dtype('<f4'):
                 raise Exception("Couplings must be in 'f4' format")
-    elif args.seqmodel and args.seqmodel not in ['zero', 'logscore']:
+    elif args.seqmodel and args.seqmodel not in ['uniform', 'independent']:
         # and otherwise try to load them from model directory
         fn = os.path.join(args.seqmodel, 'J.npy')
         if os.path.isfile(fn):
@@ -896,6 +941,8 @@ def getCouplings(args, L, q, bimarg, log):
             couplings = scipy.load(fn)
             if couplings.dtype != dtype('<f4'):
                 raise Exception("Couplings must be in 'f4' format")
+    else:
+        raise Exception("didn't get couplings or seqmodel")
     L2, q2 = seqsize_from_param_shape(couplings.shape)
     L, q = updateLq(L, q, L2, q2, 'couplings')
 
@@ -905,68 +952,73 @@ def getCouplings(args, L, q, bimarg, log):
 
     return couplings, L, q
 
-def process_sequence_args(args, L, alpha, bimarg, log, nseqs=None):
+def process_sequence_args(args, L, alpha, bimarg, log, 
+                          nseqs=None, nlargeseqs=None, needseed=False):
     log("Sequence Setup")
     log("--------------")
 
     q = len(alpha)
-    startseq, seqs = None, None
-
-    # check if we were asked to generate sequences
-    if any([arg in ['zero', 'logscore'] for arg in [args.seqmodel, args.seqs]]):
-        if args.seqs is not None and args.seqmodel is not None:
-            raise Exception("Cannot specify both seqs and "
-                            "seqmodel=[rand, logscore]")
-        if nseqs is None:
-            raise Exception("Cannot generate sequences without known nseq")
-        seqs = [generateSequences(args.seqmodel, L, q, nseqs, bimarg, log)]
-        startseq = seqs[0][0]
-        startseq_origin = 'generated ' + args.seqmodel
-        seqmodeldir = None
-    else:
-        seqmodeldir = args.seqmodel
+    seedseq, seqs, seqs_large = None, None, None
 
     # try to load sequence files
-    if args.seqs not in [None, 'zero', 'logscore']:
-        seqs = [loadSequenceFile(args.seqs, alpha, log)]
-    elif seqmodeldir is not None:
-        seqs = loadSequenceDir(seqmodeldir, alpha, log)
+    if nseqs is not None:
+        if args.seqs in ['uniform', 'independent']: 
+            seqs = [generateSequences(args.seqs, L, q, nseqs, bimarg, log)]
+        elif args.seqs is not None:
+            seqs = [loadSequenceFile(args.seqs, alpha, log)]
+        elif args.seqmodel in ['uniform', 'independent']: 
+            seqs = [generateSequences(args.seqmodel, L, q, nseqs, bimarg, log)]
+        elif args.seqmodel is not None:
+            seqs = loadSequenceDir(args.seqmodel, '', alpha, log)
+        if nseqs is not None and seqs is None:
+            raise Exception("Did not find requested {} sequences".format(nseqs))
 
-    # try to get start seq
-    if args.startseq:
-        if args.startseq == 'rand':
-            startseq = randint(0, q, size=L).astype('<u1')
-            startseq_origin = 'random'
-        else: # given string
-            startseq = array(map(alpha.index, args.startseq), dtype='<u1')
-            startseq_origin = 'supplied'
-    elif seqmodeldir is not None:
-        fn = os.path.join(seqmodeldir, 'startseq')
-        if os.path.isfile(fn):
-            log("Reading startseq from file {}".format(fn))
-            with open(fn) as f:
-                startseq = f.readline().strip()
-                startseq = array(map(alpha.index, startseq), dtype='<u1')
-            startseq_origin = 'from file'
+    # try to load large buffer sequence files
+    if nlargeseqs is not None:
+        if args.seqs_large in ['uniform', 'independent']: 
+            seqs = [generateSequences(args.seqs_large, L, q,nseqs, bimarg, log)]
+        elif args.seqs_large is not None:
+            seqs_large = [loadSequenceFile(args.seqs_large, alpha, log)]
+        elif args.seqmodel in ['uniform', 'independent']: 
+            seqs_large = [generateSequences(args.seqmodel, L, q, 
+                                            nlargeseqs, bimarg, log)]
+        elif args.seqmodel is not None:
+            seqs_large = loadSequenceDir(args.seqmodel, '_large', alpha, log)
+        if nlargeseqs is not None and seqs_large is None:
+            raise Exception("Did not find requested {} sequences".format(
+                                                            nlargeseqs))
 
-    if seqs is None:
-        log("No sequence dataset loaded")
+    # try to get seed seq
+    if needseed:
+        if args.seedseq in ['uniform', 'independent']: 
+            seedseq = generateSequences(args.seedseq, L, q, 1, bimarg, log)[0]
+            seedseq_origin = args.seedseq
+        elif args.seedseq is not None: # given string
+            try:
+                seedseq = array(map(alpha.index, args.seedseq), dtype='<u1')
+                seedseq_origin = 'supplied'
+            except:
+                seedseq = loadseedseq(args.seedseq)
+                seedseq_origin = 'from file'
+        elif args.seqmodel in ['uniform', 'independent']: 
+            seedseq = generateSequences(args.seqmodel, L, q, 1, bimarg, log)[0]
+            seedseq_origin = args.seqmodel
+        elif args.seqmodel is not None:
+            seedseq = loadseedseq(os.path.join(seqmodeldir, 'seedseq'))
+            seedseq_origin = 'from file'
 
-    if startseq is not None:
-        log("Start seq ({}): {}".format(startseq_origin,
-                                       "".join(alpha[x] for x in startseq)))
-    else:
-        log("No start seq supplied")
+        log("Seed seq ({}): {}".format(seedseq_origin,
+                                       "".join(alpha[x] for x in seedseq)))
 
     log("")
-    return attrdict({'startseq': startseq, 'seqs': seqs})
+    return attrdict({'seedseq': seedseq, 'seqs': seqs, 'seqs_large': seqs_large})
 
 def generateSequences(gentype, L, q, nseqs, bimarg, log):
-    if gentype == 'zero':
+    if gentype == 'zero' or gentype == 'rand':
         log("Generating {} random sequences...".format(nseqs))
         return randint(0,q,size=(nseqs, L)).astype('<u1')
-    elif gentype == 'logscore':
-        log("Generating {} logscore-independent sequences...".format(nseqs))
+    elif gentype == 'independent':
+        log("Generating {} independent-independent sequences...".format(nseqs))
         if bimarg is None:
             raise Exception("Bimarg must be provided to generate sequences")
         cumprob = cumsum(unimarg(bimarg), axis=1)
@@ -974,23 +1026,35 @@ def generateSequences(gentype, L, q, nseqs, bimarg, log):
         return array([searchsorted(cp, rand(nseqs)) for cp in cumprob],
                      dtype='<u1').T
 
+def loadseedseq(fn):
+    log("Reading seedseq from file {}".format(fn))
+    with open(fn) as f:
+        seedseq = f.readline().strip()
+        seedseq = array(map(alpha.index, seedseq), dtype='<u1')
+    return seedseq, seedseq_origin
+
 def loadSequenceFile(sfile, alpha, log):
     log("Loading sequences from file {}".format(sfile))
     seqs = seqload.loadSeqs(sfile, names=alpha)[0].astype('<u1')
     return seqs
 
-def loadSequenceDir(sdir, alpha, log):
+def loadSequenceDir(sdir, bufname, alpha, log):
     log("Loading sequences from dir {}".format(sdir))
     seqs = []
     while True:
-        sfile = os.path.join(sdir, 'seqs-{}'.format(len(seqs)))
+        sfile = os.path.join(sdir, 'seqs{}-{}'.format(bufname, len(seqs)))
         if not os.path.exists(sfile):
             break
         seqs.append(seqload.loadSeqs(sfile, names=alpha)[0].astype('<u1'))
+
+    if seqs == []:
+        return None
+
     return seqs
 
 def transferSeqsToGPU(gpus, bufname, seqs, log):
-    log("Transferring {} seqs to gpu's {} seq buffer...".format(str([len(s) for s in seqs]), bufname))
+    log("Transferring {} seqs to gpu's {} seq buffer...".format(
+                                     str([len(s) for s in seqs]), bufname))
     if len(seqs) == 1:
         # split up seqs into parts for each gpu
         seqs = seqs[0]
@@ -1075,7 +1139,7 @@ def main(args):
       #'measureFPerror': measureFPerror,
       'subseqFreq':     subseqFreq,
       'mcmc':           equilibrate,
-      'equil_pt':       equil_PT,
+      'mcmc_pt':        equil_PT,
       'nestedZ':        nestedZ,
       'test':           testing,
      }
