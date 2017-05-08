@@ -311,6 +311,7 @@ def preOpt(param, gpus, log):
 
 def swapTemps(gpus, N):
     # CPU implementation of PT swap
+    t1 = time.time()
 
     for gpu in gpus:
         gpu.calcEnergies('main', 'main')
@@ -318,6 +319,7 @@ def swapTemps(gpus, N):
     ns = len(es)
 
     Bs_orig = Bs.copy()
+    #r1 = logaddexp.reduce(-Bs*es)/len(Bs)
     
     # swap consecutive replicas, where consecutive is in E order
     order = argsort(es)
@@ -327,26 +329,36 @@ def swapTemps(gpus, N):
     deEvn = es[ :-1:2] - es[1::2]
     deOdd = es[1:-1:2] - es[2::2]
     
-    for n in range(N):
-        # swap even
-        delta = deEvn*(Bs[:-1:2] - Bs[1::2])
-        swap = 2*where(exp(delta) > rand(len(delta)))[0]
-        Bs[swap], Bs[swap+1] = Bs[swap+1], Bs[swap]
+    # views of even and odd elements
+    eBs1, eBs2 = Bs[:-1:2], Bs[1::2]
+    oBs1, oBs2 = Bs[1:-1:2], Bs[2::2]
 
-        # swap odd
-        delta = deOdd*(Bs[1:-1:2] - Bs[2::2])
-        swap = 2*where(exp(delta) > rand(len(delta)))[0] + 1
-        Bs[swap], Bs[swap+1] = Bs[swap+1], Bs[swap]
+    def swap(a, b, dE):
+        ind_diff = where(a != b)[0]
+        delta = dE[ind_diff]*(a[ind_diff] - b[ind_diff])
+        ind_lz = where(delta < 0)[0]
+        sind = ones(len(delta), dtype='bool')
+        sind[ind_lz] = exp(delta[ind_lz]) > rand(len(ind_lz))
+        sind = ind_diff[sind]
+
+        a[sind], b[sind] = b[sind], a[sind]
+    
+    for n in range(N):
+        swap(eBs1, eBs2, deEvn)
+        swap(oBs1, oBs2, deOdd)
     
     # get back to original order
     Bs[order] = Bs.copy()
 
     r = sum(Bs != Bs_orig)/float(len(Bs))
+    #r2 = logaddexp.reduce(-Bs*es)/len(Bs)
 
     Bs = split(Bs, len(gpus)) 
     for B,gpu in zip(Bs, gpus):
         gpu.setBuf('Bs', B)
 
+    t2 = time.time()
+    #print(t2-t1)
     return Bs, r
 
 def runMCMC(gpus, couplings, runName, param):

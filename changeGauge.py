@@ -26,7 +26,8 @@ def getCouplingMatrix(couplings):
     nB = int(sqrt(couplings.shape[1]) + 0.5)
     coupleinds = [(a,b) for a in range(L-1) for b in range(a+1, L)]
 
-    C = empty((L,nB,L,nB))*nan
+    C = empty((L,nB,L,nB))
+    C.fill(nan)
     for n,(i,j) in enumerate(coupleinds): 
         block = couplings[n].reshape(nB,nB)
         C[i,:,j,:] = block

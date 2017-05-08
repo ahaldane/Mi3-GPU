@@ -158,7 +158,7 @@ def optionRegistry():
         help='Save bimarg every TRACKEQUIL steps during equilibration')
     add('tempering',
         help='optional inverse Temperature schedule')
-    add('nswaps_temp', type=uint32, default=10000,
+    add('nswaps_temp', type=uint32, default=100,
         help='optional number of pt swaps')
 
     return dict(options)
@@ -243,7 +243,6 @@ def inverseIsing(args, log):
         nseqs = sum([g.nseq['main'] for g in gpus])
     if p.preopt:
         npreopt_seqs = sum([g.nseq['large'] for g in gpus])
-    print("RESEED", p.reseed)
     p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
                                    nseqs=nseqs, nlargeseqs=npreopt_seqs,
                                    needseed=p.reseed))
@@ -275,8 +274,9 @@ def inverseIsing(args, log):
                 p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime))
     if p.tempering is not None:
         log("Parallel tempering: The walkers are divided into {} temperature "
-            "groups ({}), and temperatures are swapped {} times after every "
-            "MCMC loop".format(len(p.tempering), args.tempering, p.nswaps))
+            "groups ({}), and neighbor temperatures are swapped {} times "
+            "after every MCMC loop".format(len(p.tempering), args.tempering,
+            p.nswaps))
 
     log("")
     log("")
@@ -941,6 +941,8 @@ def getCouplings(args, L, q, bimarg, log):
             couplings = scipy.load(fn)
             if couplings.dtype != dtype('<f4'):
                 raise Exception("Couplings must be in 'f4' format")
+        else:
+            raise Exception("could not find file {}".format(fn))
     else:
         raise Exception("didn't get couplings or seqmodel")
     L2, q2 = seqsize_from_param_shape(couplings.shape)
@@ -1018,7 +1020,7 @@ def generateSequences(gentype, L, q, nseqs, bimarg, log):
         log("Generating {} random sequences...".format(nseqs))
         return randint(0,q,size=(nseqs, L)).astype('<u1')
     elif gentype == 'independent':
-        log("Generating {} independent-independent sequences...".format(nseqs))
+        log("Generating {} independent-model sequences...".format(nseqs))
         if bimarg is None:
             raise Exception("Bimarg must be provided to generate sequences")
         cumprob = cumsum(unimarg(bimarg), axis=1)
