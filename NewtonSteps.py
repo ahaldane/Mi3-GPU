@@ -323,6 +323,7 @@ def swapTemps(gpus, N):
     
     # swap consecutive replicas, where consecutive is in E order
     order = argsort(es)
+    #order = arange(len(es))
     es = es[order]
     Bs = Bs[order]
 

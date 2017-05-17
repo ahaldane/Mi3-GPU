@@ -389,7 +389,7 @@ def MCMCbenchmark(args, log):
         if nseqs is not None:
             raise Exception("can't supply both seqs and seedseq")
         needseed = True
-    p.update(process_sequence_args(args, L, alpha, None, log, 
+    p.update(process_sequence_args(args, L, alpha, None, log,
                                    nseqs=nseqs, needseed=needseed))
 
     if not needseed:
@@ -500,31 +500,41 @@ def equilibrate(args, log):
 
         if p.nwalkers % len(p.tempering) != 0:
             raise Exception("# of temperatures must evenly divide # walkers")
-        Bs = concatenate([ones(p.nwalkers/len(p.tempering), dtype='f4')*b 
+        Bs = concatenate([ones(p.nwalkers/len(p.tempering), dtype='f4')*b
                           for b in p.tempering])
         shuffle(Bs)
-        Bs = split(Bs, len(gpus)) 
+        Bs = split(Bs, len(gpus))
         for B,gpu in zip(Bs, gpus):
             gpu.setBuf('Bs', B)
             gpu.markSeqs(B == B0)
-    
-    (bimarg_model, 
-     bicount, 
-     energies, 
-     seqs, ptinfo) = MCMC_func(gpus, p.couplings, '.', p)
-    
+
+    (bimarg_model,
+     bicount,
+     energies,
+     ptinfo) = MCMC_func(gpus, p.couplings, '.', p)
+
+    seq_large, seqs = readGPUbufs(['seq large', 'seq main'], gpus)
+
     outdir = p.outdir
     savetxt(os.path.join(outdir, 'bicounts'), bicount, fmt='%d')
     save(os.path.join(outdir, 'bimarg'), bimarg_model)
     save(os.path.join(outdir, 'energies'), energies)
+    save(os.path.join(outdir, 'walker_energies'), energies)
     for n,seqbuf in enumerate(seqs):
         seqload.writeSeqs(os.path.join(outdir, 'seqs-{}'.format(n)),
                           seqbuf, alpha)
+    for n,seqbuf in enumerate(seq_large):
+        seqload.writeSeqs(os.path.join(outdir, 'seqs_large-{}'.format(n)),
+                          seqbuf, alpha)
 
     if p.tempering is not None:
-        sB = readGPUbufs(['Bs'], gpus)[0]
-        save(os.path.join(outdir, 'Bs'), concatenate(sB))
+        full_e = concatenate(readGPUbufs(['E main'], gpus)[0])
+        sB = concatenate(readGPUbufs(['Bs'], gpus)[0])
+        save(os.path.join(outdir, 'walker_Bs'), sB)
+        save(os.path.join(outdir, 'walker_Es'), full_e)
         log("Final PT swap rate: {}".format(ptinfo[1]))
+
+    log("Mean energy:", mean(energies))
 
     log("Done!")
 
@@ -553,7 +563,7 @@ def equil_PT(args, log):
 
     p.update(process_potts_args(args, None, None, None, log))
     L, q, alpha = p.L, p.q, p.alpha
-    
+
     args.sampletime = 1
     args.nsamples = 1
     p.update(process_sample_args(args, log))
@@ -569,7 +579,7 @@ def equil_PT(args, log):
     for gpu in gpus:
         gpu.initMCMC(p.nsteps, rngPeriod)
     log("")
-    
+
     # set up gpu buffers
     if p.seqs is not None:
         transferSeqsToGPU(gpus, 'main', p.seqs, log)
@@ -585,7 +595,7 @@ def equil_PT(args, log):
 
     if p.nwalkers % len(p.tempering) != 0:
         raise Exception("# of temperatures must evenly divide # walkers")
-    Bs = concatenate([ones(p.nwalkers/len(p.tempering), dtype='f4')*b 
+    Bs = concatenate([ones(p.nwalkers/len(p.tempering), dtype='f4')*b
                       for b in p.tempering])
     log("Using {} beta from {} to {}".format(
                len(p.tempering), max(Bs), min(Bs)))
@@ -596,7 +606,7 @@ def equil_PT(args, log):
     outdir = p.outdir
     trackequil = p.trackequil
     nloop = p.equiltime
-    
+
     # actually run the mcmc
     def getPTBufs(gpus):
         return map(concatenate, readGPUbufs(['E main', 'seq main', 'Bs'], gpus))
@@ -616,7 +626,7 @@ def equil_PT(args, log):
                 gpu.runMCMC()
             swapTemps(gpus, p.nswaps)
             log("Step {} done".format(i))
-        
+
         if j != (nloop/trackequil - 1): # don't write last one, written below
             dir = os.path.join(outdir, 'equilibration', str(j*trackequil))
             mkdir_p(dir)
@@ -678,7 +688,7 @@ def subseqFreq(args, log):
         gpu.setBuf('seq large', bs)
         gpu.markPos(fixedmarks)
         gpu.setBuf('J main', p.couplings)
-        
+
     log("")
 
     log("Subsequence Frequency Calculation")
@@ -744,7 +754,7 @@ def testing(args, log):
     args.fperror = None
     p['damping'] = args.damping
     p['gamma'] = args.gamma
-    
+
 
     gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
@@ -954,7 +964,10 @@ def getCouplings(args, L, q, bimarg, log):
 
     return couplings, L, q
 
-def process_sequence_args(args, L, alpha, bimarg, log, 
+def repeatseqs(seqs, n):
+    return repeat(seqs, (n-1)/seqs.shape[0] + 1, axis=0)[:n,:]
+
+def process_sequence_args(args, L, alpha, bimarg, log,
                           nseqs=None, nlargeseqs=None, needseed=False):
     log("Sequence Setup")
     log("--------------")
@@ -964,25 +977,31 @@ def process_sequence_args(args, L, alpha, bimarg, log,
 
     # try to load sequence files
     if nseqs is not None:
-        if args.seqs in ['uniform', 'independent']: 
+        if args.seqs in ['uniform', 'independent']:
             seqs = [generateSequences(args.seqs, L, q, nseqs, bimarg, log)]
         elif args.seqs is not None:
             seqs = [loadSequenceFile(args.seqs, alpha, log)]
-        elif args.seqmodel in ['uniform', 'independent']: 
+        elif args.seqmodel in ['uniform', 'independent']:
             seqs = [generateSequences(args.seqmodel, L, q, nseqs, bimarg, log)]
         elif args.seqmodel is not None:
             seqs = loadSequenceDir(args.seqmodel, '', alpha, log)
+
         if nseqs is not None and seqs is None:
             raise Exception("Did not find requested {} sequences".format(nseqs))
 
+        if sum(nseqs) != sum([s.shape[0] for s in seqs]):
+            n, s = sum(nseqs), concatenate(seqs)
+            log("Repeating {} sequences to make {}".format(s.shape[0], n))
+            seqs = [repeatseqs(s, n)]
+
     # try to load large buffer sequence files
     if nlargeseqs is not None:
-        if args.seqs_large in ['uniform', 'independent']: 
+        if args.seqs_large in ['uniform', 'independent']:
             seqs = [generateSequences(args.seqs_large, L, q,nseqs, bimarg, log)]
         elif args.seqs_large is not None:
             seqs_large = [loadSequenceFile(args.seqs_large, alpha, log)]
-        elif args.seqmodel in ['uniform', 'independent']: 
-            seqs_large = [generateSequences(args.seqmodel, L, q, 
+        elif args.seqmodel in ['uniform', 'independent']:
+            seqs_large = [generateSequences(args.seqmodel, L, q,
                                             nlargeseqs, bimarg, log)]
         elif args.seqmodel is not None:
             seqs_large = loadSequenceDir(args.seqmodel, '_large', alpha, log)
@@ -990,9 +1009,14 @@ def process_sequence_args(args, L, alpha, bimarg, log,
             raise Exception("Did not find requested {} sequences".format(
                                                             nlargeseqs))
 
+        if sum(nlargeseqs) != sum([s.shape[0] for s in seqs_large]):
+            n, s = sum(nlargeseqs), concatenate(seqs_large)
+            log("Repeating {} sequences to make {}".format(s.shape[0], n))
+            seqs_large = [repeatseqs(s, n)]
+
     # try to get seed seq
     if needseed:
-        if args.seedseq in ['uniform', 'independent']: 
+        if args.seedseq in ['uniform', 'independent']:
             seedseq = generateSequences(args.seedseq, L, q, 1, bimarg, log)[0]
             seedseq_origin = args.seedseq
         elif args.seedseq is not None: # given string
@@ -1002,7 +1026,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
             except:
                 seedseq = loadseedseq(args.seedseq)
                 seedseq_origin = 'from file'
-        elif args.seqmodel in ['uniform', 'independent']: 
+        elif args.seqmodel in ['uniform', 'independent']:
             seedseq = generateSequences(args.seqmodel, L, q, 1, bimarg, log)[0]
             seedseq_origin = args.seqmodel
         elif args.seqmodel is not None:
@@ -1038,6 +1062,7 @@ def loadseedseq(fn):
 def loadSequenceFile(sfile, alpha, log):
     log("Loading sequences from file {}".format(sfile))
     seqs = seqload.loadSeqs(sfile, names=alpha)[0].astype('<u1')
+    log("Found {} sequences".format(seqs.shape[0]))
     return seqs
 
 def loadSequenceDir(sdir, bufname, alpha, log):
@@ -1048,6 +1073,7 @@ def loadSequenceDir(sdir, bufname, alpha, log):
         if not os.path.exists(sfile):
             break
         seqs.append(seqload.loadSeqs(sfile, names=alpha)[0].astype('<u1'))
+    log("Found {} sequences".format(sum([s.shape[0] for s in seqs])))
 
     if seqs == []:
         return None
@@ -1100,7 +1126,8 @@ def process_sample_args(args, log):
          "every {} kernel calls to get {} samples").format(p.equiltime,
                                              p.sampletime, p.nsamples))
     if 'tempering' in p:
-        log("Parallel tempering with temperatures {}".format(args.tempering))
+        log("Parallel tempering with temperatures {}, "
+            "swapping {} times per loop".format(args.tempering, p.nswaps))
 
     if p.trackequil != 0:
         if p.equiltime%p.trackequil != 0:
