@@ -472,7 +472,7 @@ def equilibrate(args, log):
         if p.tempering is not None:
             gpu.initMarkSeq()
 
-    nseqs = None
+    nseqs = p.nwalkers
     needseed = False
     if args.seqs is not None:
         nseqs = sum([g.nseq['main'] for g in gpus])
@@ -1051,6 +1051,7 @@ def generateSequences(gentype, L, q, nseqs, bimarg, log):
         cumprob = cumprob/(cumprob[:,-1][:,newaxis]) #correct fp errors?
         return array([searchsorted(cp, rand(nseqs)) for cp in cumprob],
                      dtype='<u1').T
+    raise Exception("Unknown sequence generation mode '{}'".format(gentype))
 
 def loadseedseq(fn, log):
     log("Reading seedseq from file {}".format(fn))
