@@ -917,7 +917,7 @@ def process_potts_args(args, L, q, bimarg, log):
 def getCouplings(args, L, q, bimarg, log):
     couplings = None
 
-    if args.seqmodel and args.seqmodel in ['uniform', 'independent']:
+    if args.couplings is None and args.seqmodel in ['uniform', 'independent']:
         args.couplings = args.seqmodel
 
     if args.couplings:
