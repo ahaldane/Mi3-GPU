@@ -1024,13 +1024,13 @@ def process_sequence_args(args, L, alpha, bimarg, log,
                 seedseq = array(map(alpha.index, args.seedseq), dtype='<u1')
                 seedseq_origin = 'supplied'
             except:
-                seedseq = loadseedseq(args.seedseq)
+                seedseq = loadseedseq(args.seedseq, log)
                 seedseq_origin = 'from file'
         elif args.seqmodel in ['uniform', 'independent']:
             seedseq = generateSequences(args.seqmodel, L, q, 1, bimarg, log)[0]
             seedseq_origin = args.seqmodel
         elif args.seqmodel is not None:
-            seedseq = loadseedseq(os.path.join(seqmodeldir, 'seedseq'))
+            seedseq = loadseedseq(os.path.join(seqmodeldir, 'seedseq'), log)
             seedseq_origin = 'from file'
 
         log("Seed seq ({}): {}".format(seedseq_origin,
@@ -1052,7 +1052,7 @@ def generateSequences(gentype, L, q, nseqs, bimarg, log):
         return array([searchsorted(cp, rand(nseqs)) for cp in cumprob],
                      dtype='<u1').T
 
-def loadseedseq(fn):
+def loadseedseq(fn, log):
     log("Reading seedseq from file {}".format(fn))
     with open(fn) as f:
         seedseq = f.readline().strip()
