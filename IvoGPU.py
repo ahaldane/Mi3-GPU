@@ -1040,7 +1040,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
     return attrdict({'seedseq': seedseq, 'seqs': seqs, 'seqs_large': seqs_large})
 
 def generateSequences(gentype, L, q, nseqs, bimarg, log):
-    if gentype == 'zero' or gentype == 'rand':
+    if gentype == 'zero' or gentype == 'uniform':
         log("Generating {} random sequences...".format(nseqs))
         return randint(0,q,size=(nseqs, L)).astype('<u1')
     elif gentype == 'independent':
