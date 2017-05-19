@@ -144,6 +144,8 @@ def optionRegistry():
     add('seedseq', help="Starting sequence. May be 'rand'")
     add('seqs', help="File containing sequences to pre-load to GPU")
     add('seqs_large', help="File containing sequences to pre-load to GPU")
+    add('seqbimarg', 
+        help="bimarg used to generate independent model sequences")
 
     # Sampling Param
     add('preequiltime', type=uint32, default=0,
@@ -441,7 +443,7 @@ def equilibrate(args, log):
     add = parser.add_argument
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gibbs gpus profile')
-    addopt(parser, 'Sequence Options',    'seedseq seqs')
+    addopt(parser, 'Sequence Options',    'seedseq seqs seqbimarg')
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
                                           'trackequil tempering nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
@@ -471,15 +473,15 @@ def equilibrate(args, log):
         gpu.initLargeBufs(gpu.nseq['main']*p.nsamples)
         if p.tempering is not None:
             gpu.initMarkSeq()
-
-    nseqs = p.nwalkers
+    
+    nseqs = None
     needseed = False
     if args.seqs is not None:
         nseqs = sum([g.nseq['main'] for g in gpus])
     if args.seedseq is not None:
-        if nseqs is not None:
-            raise Exception("can't supply both seqs and seedseq")
         needseed = True
+    else:
+        nseqs = p.nwalkers
     p.update(process_sequence_args(args, L, alpha, None, log, nseqs=nseqs,
                                    needseed=needseed))
     log("")
@@ -971,6 +973,11 @@ def process_sequence_args(args, L, alpha, bimarg, log,
                           nseqs=None, nlargeseqs=None, needseed=False):
     log("Sequence Setup")
     log("--------------")
+
+    if bimarg is None and args.seqbimarg is not None:
+        log("loading bimarg from {} for independent model sequence "
+            "generation".format(args.seqbimarg))
+        bimarg = load(args.seqbimarg)
 
     q = len(alpha)
     seedseq, seqs, seqs_large = None, None, None
