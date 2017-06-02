@@ -864,6 +864,8 @@ def process_newton_args(args, log):
         if rtype == 'l2z':
             try:
                 lh, lJ = float(rargs[0]), float(rargs[1])
+                log(("Regularizing using l2 norm with lambda_J = {}"
+                     " and lambda_h = {}").format(lJ, lh))
             except:
                 raise Exception("l2z specifier must be of form 'l2z:lh,lJ', eg "
                                 "'l2z:0.01,0.01'. Got '{}'".format(args.reg))
