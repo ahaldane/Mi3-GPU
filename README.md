@@ -11,7 +11,7 @@ For more information see the supplementary text in the publication:
 > Structural propensities of kinase family proteins from a Potts model of residue co-variation. 
 > Protein Science, 25, 1378-1384. DOI: 10.1002/pro.2954.
 
-Licensed under GPLv3, see source for contact info.
+Licensed under GPLv3, see source for contact info. The branch `v1` represents the version used in the publication above. The branch `dev` is an updated version.
 
 Rough Usage Guide
 =================
