@@ -297,7 +297,7 @@ class MCMCGPU:
         # Num rng samples should be chosen such that 2**64/(rsize*nsamples) is
         # greater than # walkers. nsamples should be > #MC steps performed
         # per walker (which is nsteps*nMCMCcalls)
-        if not (self.nsteps*nMCMCcalls < nsamples< 2**64/(rsize*self.wgsize)):
+        if not (self.nsteps*nMCMCcalls < nsamples < 2**64/(rsize*self.wgsize)):
             raise Exception("RNG problem. RNGs may not be independent.")
         #if this is a problem rethink the value 2**40 above, or consider using
         #an rng with a greater period, eg the "Warp" generator.
