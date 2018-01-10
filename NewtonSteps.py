@@ -161,6 +161,12 @@ def newtonStep(n, bimarg_target, gamma, pc, reg, gpus, log):
     SSR = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
     trialJ = gpus[0].getBuf('J front').read()
     
+    # debugging: save intermediate results:
+    if 0:
+        import cPickle
+        with open('debug_ptc/newton{}.pkl'.format(n), 'wb') as f:
+            cPickle.dump([weightb, Neffs, bimargb, bimarg_model, trialJ], f, protocol=2)
+    
     #display result
     log("")
     log(("{}  ssr: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
@@ -309,7 +315,7 @@ def preOpt(param, gpus, log):
     save(os.path.join(outdir, 'preopt', 'perturbedbimarg'), bimarg_p)
     save(os.path.join(outdir, 'preopt', 'perturbedJ'), couplings)
 
-def swapTemps(gpus, N):
+def swapTemps(gpus, dummy, N):
     # CPU implementation of PT swap
     t1 = time.time()
 
@@ -360,6 +366,62 @@ def swapTemps(gpus, N):
 
     t2 = time.time()
     #print(t2-t1)
+    return Bs, r
+
+def swapTemps2(gpus, nbs, N):
+    # CPU implementation of PT swap.
+    # This implementation simply swaps neighboring temps only, it is likely
+    # possible to improve the performance here.
+
+    t1 = time.time()
+
+    for gpu in gpus:
+        gpu.calcEnergies('main', 'main')
+    es, Bs = map(concatenate, readGPUbufs(['E main', 'Bs'], gpus))
+    ns = len(es)
+    #r1 = logaddexp.reduce(-Bs*es)/len(Bs)
+    
+    bsize = Bs.shape[0]/nbs
+
+    idx = argsort(Bs).reshape((nbs, bsize))
+    origBs = Bs[idx]
+    es = es[idx]
+    
+    def swaparr(arr1, arr2, inds):
+        arr1, arr2 = arr1.flatten(), arr2.flatten()
+        tmp = arr1[swap]
+        arr1[swap] = arr2[swap]
+        arr2[swap] = tmp
+    
+    # assumes an even number of temperatures
+    r = 0
+    for n in range(N):
+        for x in [0,1]:  # even and odd swaps
+            # first permute all the first arrays if length is more than 1
+            # since in the infinite-swap limit they just get shuffled
+            if bsize > 1:
+                for r in range(0,nbs,2):
+                    permut = permutation(bsize)
+                    es[r,:] = es[r,permut]
+                    idx[r,:] = idx[r,permut]
+
+            # then we attempt swaps with the next temperature
+            w = exp((Bs[n] - Bs[n+1])*(es[x::2,:] - es[x+1::2,:]))
+            swap = where((w < rand(nbs/2, bsize)).flatten())[0]
+            swaparr(es[x::2,:], es[x+1::2,:], swap)
+            swaparr(idx[x::2,:], idx[x+1::2,:], swap)
+            r += mean(swap)
+    r = r/N
+    
+    # finally reassign the temperatures in the right order and write back to gpu
+    Bs[idx] = origBs
+    Bs = split(Bs, len(gpus)) 
+    for B,gpu in zip(Bs, gpus):
+        gpu.setBuf('Bs', B)
+
+    t2 = time.time()
+    #print(t2-t1)
+    #r2 = logaddexp.reduce(-Bs*es)/len(Bs)
     return Bs, r
 
 def runMCMC(gpus, couplings, runName, param):
@@ -437,7 +499,7 @@ def runMCMC_tempered(gpus, couplings, runName, param):
         for i in range(nloop):
             for gpu in gpus:
                 gpu.runMCMC()
-            Bs,r = swapTemps(gpus, param.nswaps)
+            Bs,r = swapTemps(gpus, param.tempering, param.nswaps)
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
         mkdir_p(os.path.join(outdir, runName, 'equilibration'))
@@ -445,14 +507,23 @@ def runMCMC_tempered(gpus, couplings, runName, param):
             for i in range(trackequil):
                 for gpu in gpus:
                     gpu.runMCMC()
-                Bs,r = swapTemps(gpus, param.nswaps)
-            for B,gpu in zip(Bs,gpus):
-                gpu.markSeqs(B == B0)
-                gpu.calcMarkedBicounts()
-            bicounts = sumarr(readGPUbufs(['bicount'], gpus)[0])
-            bimarg_model = bicounts.astype(float32)/float32(sum(bicounts[0,:]))
+                Bs,r = swapTemps(gpus, param.tempering, param.nswaps)
+            #for B,gpu in zip(Bs,gpus):
+            #    gpu.markSeqs(B == B0)
+            #    gpu.calcMarkedBicounts()
+            #bicounts = sumarr(readGPUbufs(['bicount'], gpus)[0])
+            #bimarg_model = bicounts.astype(float32)/float32(sum(bicounts[0,:]))
+            #save(os.path.join(outdir, runName, 
+            #     'equilibration', 'bimarg_{}'.format(j)), bimarg_model)
+
+            es = concatenate(readGPUbufs(['E main'], gpus)[0])
             save(os.path.join(outdir, runName, 
-                 'equilibration', 'bimarg_{}'.format(j)), bimarg_model)
+                 'equilibration', 'energies_{}'.format(j)), es)
+            save(os.path.join(outdir, runName, 
+                 'equilibration', 'Bs_{}'.format(j)), concatenate(Bs))
+
+    for B,gpu in zip(Bs,gpus):
+        gpu.markSeqs(B == B0)
 
     #post-equilibration samples
     for gpu in gpus:
@@ -463,7 +534,7 @@ def runMCMC_tempered(gpus, couplings, runName, param):
             for gpu in gpus:
                 gpu.runMCMC()
 
-            Bs,r = swapTemps(gpus, param.nswaps)
+            Bs,r = swapTemps(gpus, param.tempering, param.nswaps)
         for B,gpu in zip(Bs,gpus):
             gpu.markSeqs(B == B0)
             gpu.storeMarkedSeqs()
@@ -519,10 +590,16 @@ def MCMCstep(runName, couplings, param, gpus, log):
     writeStatus(runName, ferr, ssr, wdf, bicount, bimarg_model, 
                 couplings, seq_large, seqs, sampledenergies, 
                 alpha, ptinfo, outdir, log)
+
+    if param.tempering is not None:
+        e, b = readGPUbufs(['E main', 'Bs'], gpus)
+        save(os.path.join(outdir, runName, 'walker_Es'), concatenate(e))
+        save(os.path.join(outdir, runName, 'walker_Bs'), concatenate(b))
     
     #compute new J using local newton updates (in-place on GPU)
     newcouplings, bimarg_p = iterNewton(param, bimarg_model, gpus, log)
     save(os.path.join(outdir, runName, 'predictedBimarg'), bimarg_p)
+    save(os.path.join(outdir, runName, 'predictedJ'), newcouplings)
 
     return seqs, newcouplings
 
@@ -552,9 +629,8 @@ def newtonMCMC(param, gpus, log):
             raise Exception("# of temperatures must evenly divide # walkers")
         B0 = param.tempering[0]
         Bs = concatenate([
-             ones(param.nwalkers/len(param.tempering), dtype='f4')/t 
-                          for t in param.tempering])
-        shuffle(Bs)
+             full(param.nwalkers/len(param.tempering), b, dtype='f4') 
+                          for b in param.tempering])
         Bs = split(Bs, len(gpus)) 
         for B,gpu in zip(Bs, gpus):
             gpu.setBuf('Bs', B)
@@ -580,7 +656,7 @@ def newtonMCMC(param, gpus, log):
             for gpu in gpus:
                 gpu.runMCMC()
             if param.tempering is not None:
-                Bs, r = swapTemps(gpus, param.nswaps)
+                Bs, r = swapTemps(gpus, param.tempering, param.nswaps)
         log("Preequilibration done.")
         if param.tempering is not None:
             log("Final PT swap rate: {}".format(r))

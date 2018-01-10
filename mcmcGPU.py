@@ -612,11 +612,11 @@ class MCMCGPU:
         self.require('Markseq')
 
         marks = -ones(mask.shape, dtype='i4')
-        inds = argwhere(mask)
+        inds = where(mask)[0]
         marks[inds] = arange(len(inds), dtype='i4')
         self.setBuf('markseqs', marks)
-        self.nmarks = sum(mask)
-        self.log("marked {} seqs".format(self.nmarks))
+        self.nmarks = len(inds)
+        self.log("marked {} seqs".format(len(inds)))
 
     def storeMarkedSeqs(self):
         self.require('Markseq', 'Large')
@@ -747,10 +747,10 @@ def setupGPUs(scriptpath, scriptfile, param, log):
             raise Exception("Error: GPU specification must be comma separated "
                             " list of platforms, eg '0,0'")
 
-        for d in dev:
+        for p,d in dev:
             try:
                 plat, devices = platforms[p]
-                gpu = devices.popitem()[1]
+                gpu = devices.popitem()[d]
             except:
                 raise Exception("No GPU with specification {}".format(d))
             log("Using GPU {} on platform {} ({})".format(gpu.name,

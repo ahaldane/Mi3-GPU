@@ -502,9 +502,8 @@ def equilibrate(args, log):
 
         if p.nwalkers % len(p.tempering) != 0:
             raise Exception("# of temperatures must evenly divide # walkers")
-        Bs = concatenate([ones(p.nwalkers/len(p.tempering), dtype='f4')*b
+        Bs = concatenate([full(p.nwalkers/len(p.tempering), b, dtype='f4')
                           for b in p.tempering])
-        shuffle(Bs)
         Bs = split(Bs, len(gpus))
         for B,gpu in zip(Bs, gpus):
             gpu.setBuf('Bs', B)
@@ -521,7 +520,6 @@ def equilibrate(args, log):
     savetxt(os.path.join(outdir, 'bicounts'), bicount, fmt='%d')
     save(os.path.join(outdir, 'bimarg'), bimarg_model)
     save(os.path.join(outdir, 'energies'), energies)
-    save(os.path.join(outdir, 'walker_energies'), energies)
     for n,seqbuf in enumerate(seqs):
         seqload.writeSeqs(os.path.join(outdir, 'seqs-{}'.format(n)),
                           seqbuf, alpha)
@@ -530,10 +528,9 @@ def equilibrate(args, log):
                           seqbuf, alpha)
 
     if p.tempering is not None:
-        full_e = concatenate(readGPUbufs(['E main'], gpus)[0])
-        sB = concatenate(readGPUbufs(['Bs'], gpus)[0])
-        save(os.path.join(outdir, 'walker_Bs'), sB)
-        save(os.path.join(outdir, 'walker_Es'), full_e)
+        e, b = readGPUbufs(['E main', 'Bs'], gpus)
+        save(os.path.join(outdir, 'walker_Bs'), concatenate(b))
+        save(os.path.join(outdir, 'walker_Es'), concatenate(e))
         log("Final PT swap rate: {}".format(ptinfo[1]))
 
     log("Mean energy:", mean(energies))
@@ -597,7 +594,7 @@ def equil_PT(args, log):
 
     if p.nwalkers % len(p.tempering) != 0:
         raise Exception("# of temperatures must evenly divide # walkers")
-    Bs = concatenate([ones(p.nwalkers/len(p.tempering), dtype='f4')*b
+    Bs = concatenate([full(p.nwalkers/len(p.tempering), b, dtype='f4')
                       for b in p.tempering])
     log("Using {} beta from {} to {}".format(
                len(p.tempering), max(Bs), min(Bs)))
@@ -1120,8 +1117,7 @@ def process_sample_args(args, log):
         try:
             Bs = np.load(args.tempering)
         except:
-            fls = [float(x) for x in args.tempering.split(",")]
-            Bs = array(fls, dtype='f4')
+            Bs = array([x for x in args.tempering.split(",")], dtype='f4')
         p['tempering'] = Bs
         p['nswaps'] = args.nswaps_temp
     if 'preequiltime' in args:
@@ -1136,7 +1132,7 @@ def process_sample_args(args, log):
          "every {} kernel calls to get {} samples").format(p.equiltime,
                                              p.sampletime, p.nsamples))
     if 'tempering' in p:
-        log("Parallel tempering with temperatures {}, "
+        log("Parallel tempering with inverse temperatures {}, "
             "swapping {} times per loop".format(args.tempering, p.nswaps))
 
     if p.trackequil != 0:

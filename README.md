@@ -11,7 +11,7 @@ For more information see the supplementary text in the publication:
 > Structural propensities of kinase family proteins from a Potts model of residue co-variation. 
 > Protein Science, 25, 1378-1384. DOI: 10.1002/pro.2954.
 
-Licensed under GPLv3, see source for contact info. The branch `v1` represents the version used in the publication above. The branch `dev` is an updated version.
+Licensed under GPLv3, see source for contact info. The branch `v1` represents the version used in the publication above. The branch `dev` is an updated version which includes features such as parallel tempering.
 
 Rough Usage Guide
 =================
@@ -31,8 +31,12 @@ To check that the script is correctly detecting the system's GPUs, run:
 
 An example PBS script showing a typical set of arguments for inverse ising inference is in the file `example_pbs.sh`, which will fit the bivariate marginals from the file `example_bimarg_pc.npy`, computed from an HIV dataset for sequences of length length 93 with 4 residue types. The log file will contain many details about how the program is running. The script attempts to deduce some arguments from other supplied arguments (eg the sequence length L can be deduced from any supplied sequence file).
 
-The `seqmodel` argument deserves more detail: If set to the string 'logscore' it will initialize the coupling values accorging to the uncorrelated (logscore) model and generate corresponding initial sequences. It may also be set to a directory name corresponding to a directory containing the output of a previous run from which it will load the couplings and sequences. 
+The `seqmodel` argument needs more detail: If set to the string 'independent' it will initialize the coupling values accorging to the uncorrelated (logscore) model and generate corresponding initial sequences. It may also be set to a directory name corresponding to a directory containing the output of a previous run from which it will load the couplings and sequences. 
 
 Helper scripts are also included: `changeGauge.py` transforms the Potts parameters between different gauges, and `pseudocount.py` adds different forms of pseudocount to the bivariate marginals.
 
-
+Most testing has been done on Nvidia graphics cards. It is confirmed to run on systems with:
+ * 2x Nvidia Tesla K80
+ * 2x Nvidia Tesla P100
+ * 1x Nvidia GTX 580
+ * 4x Nvidia GTX Titan X (fastest tested)
