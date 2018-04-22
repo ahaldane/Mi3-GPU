@@ -21,8 +21,7 @@ from __future__ import print_function
 from scipy import *
 import scipy
 import numpy as np
-from numpy.random import randint
-import numpy.random
+from numpy.random import RandomState
 import pyopencl as cl
 import pyopencl.array as cl_array
 import os, time
@@ -72,7 +71,7 @@ def readGPUbufs(bufnames, gpus):
 
 class MCMCGPU:
     def __init__(self, gpuinfo, (L, q), nseq, wgsize, outdir, 
-                 nhist, vsize, profile=False):
+                 nhist, vsize, seed, profile=False):
         self.L = L
         self.q = q
         self.nPairs = L*(L-1)/2
@@ -95,6 +94,8 @@ class MCMCGPU:
             printDevice(f.write, gpu)
 
         self.mcmcprg = prg.metropolis
+
+        self.rngstate = RandomState(seed)
 
         #setup opencl for this device
         self.log("Getting CL Queue")
@@ -317,7 +318,12 @@ class MCMCGPU:
         nseq = self.nseq['main']
         nsteps = self.nsteps
         self.packJ('main')
-        self.setBuf('randpos', randint(0, self.L, size=nsteps).astype('u4'))
+
+        # all gpus use same rng series. This way there is no difference
+        # between running on one gpu vs splitting on multiple
+        rng = self.rngstate.randint(0, self.L, size=nsteps).astype('u4')
+        self.setBuf('randpos', rng)
+
         evt = self.mcmcprg(self.queue, (nseq,), (self.wgsize,), 
                           self.bufs['Jpacked'], self.bufs['rngstates'], 
                           self.bufs['randpos'], uint32(nsteps), 
@@ -593,18 +599,45 @@ class MCMCGPU:
         nseq = self.nseq[seqbufname]
         self.setBuf('seq '+seqbufname, tile(startseq, (nseq,1)))
 
-    def storeSeqs(self):
+    def storeSeqs(self, seqs=None):
+        """
+        If seqs is None, stores main to large seq buffer. Otherwise
+        stores seqs to large buffer
+        """
+
         self.require('Large')
 
         offset = self.nstoredseqs
         self.log("storeSeqs " + str(offset))
 
-        nseq = self.nseq['main']
-        if offset + nseq > self.nseq['large']:
-            raise Exception("cannot store seqs past end of large buffer")
-        evt = self.prg.storeSeqs(self.queue, (nseq,), (self.wgsize,),
-                           self.seqbufs['main'], self.seqbufs['large'],
-                           uint32(self.nseq['large']), uint32(offset))
+        if seqs is not None:
+            nseq, L = seqs.shape
+            if L != self.L:
+                raise Exception(
+                    "Sequences have wrong length: {} vs {}".format(L, self.L))
+            if offset + nseq > self.nseq['large']:
+                raise Exception("cannot store seqs past end of large buffer")
+            assert(seqs.dtype == np.dtype('u1'))
+            buf = self.packSeqs(seqs)
+
+            w, h = self.buf_spec['seq large'][1] # L/4, nseq
+            # for some reason, rectangular copies in pyOpencl use opposite axis
+            # order from numpy, and need indices in bytes not elements, so we
+            # have to switch all this around. buf is uint32, or 4 bytes.
+            evt = cl.enqueue_copy(self.queue, self.seqbufs['large'], buf,
+                                  is_blocking=False,
+                                  host_origin=(0,0), 
+                                  buffer_origin=(4*offset, 0),
+                                  buffer_pitches=(4*h, w),
+                                  region=(4*buf.shape[1], buf.shape[0]))
+        else:
+            nseq = self.nseq['main']
+            if offset + nseq > self.nseq['large']:
+                raise Exception("cannot store seqs past end of large buffer")
+            evt = self.prg.storeSeqs(self.queue, (nseq,), (self.wgsize,),
+                               self.seqbufs['main'], self.seqbufs['large'],
+                               uint32(self.nseq['large']), uint32(offset))
+
         self.nstoredseqs += nseq
         self.saveEvt(evt, 'storeSeqs')
 
@@ -804,6 +837,7 @@ def initGPU(devnum, (cl_ctx, cl_prg), device, nwalkers, param, log):
     L, q = param.L, param.q
     profile = param.profile
     wgsize = param.wgsize
+    seed = param.rngseed
 
     # wgsize = OpenCL work group size for MCMC kernel.
     # (also for other kernels, although would be nice to uncouple them)
@@ -824,6 +858,6 @@ def initGPU(devnum, (cl_ctx, cl_prg), device, nwalkers, param, log):
 
     log("Starting GPU {}".format(devnum))
     gpu = MCMCGPU((device, devnum, cl_ctx, cl_prg), (L, q), 
-                  nwalkers, wgsize, outdir, nhist, vsize, profile=profile)
+                  nwalkers, wgsize, outdir, nhist, vsize, seed, profile=profile)
     return gpu
 

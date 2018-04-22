@@ -73,15 +73,22 @@ printsome = lambda a: " ".join(map(str,a.flatten()[:5]))
 ################################################################################
 #Helper funcs
 
-def writeStatus(name, ferr, ssr, wdf, bicount, bimarg_model, couplings, 
-                seqs_large, seqs, energies, alpha, ptinfo, outdir, log):
-    
+def printstats(name, bicount, bimarg_target, bimarg_model, couplings,
+               energies, ptinfo):
+    topbi = bimarg_target > 0.01
+    ferr = mean((abs(bimarg_target - bimarg_model)/bimarg_target)[topbi])
+    ssr = sum((bimarg_target - bimarg_model)**2)
+    wdf = sum(bimarg_target*abs(bimarg_target - bimarg_model))
+
     C = bimarg_model - indep_bimarg(bimarg_model)
     X = sum(couplings*C, axis=1)
 
+    Co = bimarg_target - indep_bimarg(bimarg_target)
+    Xo = sum(couplings*Co, axis=1)
+
     #print some details 
-    disp = ["{} Ferr: {: 9.7f}  SSR: {: 9.5f}  dX: {: 9.5f}".format(
-                                                     name, ferr,ssr,sum(X)),
+    disp = [("{} Ferr: {: 7.5f}  SSR: {: 7.3f}  dX: {: 7.3f} : {: 7.3f}"
+            ).format(name, ferr, ssr, sum(X), sum(Xo)),
             "{} wdf: {: 9.7f}".format(name, wdf),
             "Bicounts: " + printsome(bicount) + '...',
             "Marginals: " + printsome(bimarg_model) + '...',
@@ -91,7 +98,13 @@ def writeStatus(name, ferr, ssr, wdf, bicount, bimarg_model, couplings,
     if ptinfo != None:
         disp.append("PT swap rate: {}".format(ptinfo[1]))
 
-    dispstr = "\n".join(disp)
+    return "\n".join(disp)
+
+def writeStatus(name, bimarg_target, bicount, bimarg_model, couplings, 
+                seqs_large, seqs, energies, alpha, ptinfo, outdir, log):
+
+    dispstr = printstats(name, bicount, bimarg_target, bimarg_model, couplings,
+                         energies, ptinfo)
     with open(os.path.join(outdir, name, 'info.txt'), 'wt') as f:
         f.write(dispstr)
 
@@ -141,10 +154,6 @@ def newtonStep(n, bimarg_target, gamma, pc, reg, gpus, log):
             gpu.updateJ_Lstep(gamma, pc)
         else:
             gpu.updateJ(gamma, pc)
-    #bbb = ['bi back', 'bi target', 'J back', 'J front']
-    #res = readGPUbufs(bbb, gpus)
-    #for dat, b in zip(res, bbb):
-    #    save(b.replace(" ","")+str(n), dat[0])
 
     for gpu in gpus:
         gpu.swapBuf('J') #temporarily put trial J in back buffer
@@ -160,12 +169,6 @@ def newtonStep(n, bimarg_target, gamma, pc, reg, gpus, log):
     weights = concatenate(weightb)
     SSR = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
     trialJ = gpus[0].getBuf('J front').read()
-    
-    # debugging: save intermediate results:
-    if 0:
-        import cPickle
-        with open('debug_ptc/newton{}.pkl'.format(n), 'wb') as f:
-            cPickle.dump([weightb, Neffs, bimargb, bimarg_model, trialJ], f, protocol=2)
     
     #display result
     log("")
@@ -237,7 +240,8 @@ def iterNewton(param, bimarg_model, gpus, log):
     for i in range(newtonSteps): 
         #resample_target(unicounts, gpus)
         if param.noiseN is not None:
-            bimarg_target_noise = resampled_target(bimarg_target, param.noiseN, gpus)
+            bimarg_target_noise = resampled_target(bimarg_target, 
+                                                   param.noiseN, gpus)
             for gpu in gpus:
                 gpu.setBuf('bi target', bimarg_target_noise)
 
@@ -290,8 +294,8 @@ def preOpt(param, gpus, log):
         gpu.setBuf('J main', couplings)
         gpu.calcEnergies('large', 'main')
         gpu.calcBicounts('large')
-    res = readGPUbufs(['bicount', 'seq large'], gpus)
-    bicount, seqs = sumarr(res[0]), res[1]
+    res = readGPUbufs(['bicount', 'seq large', 'E large'], gpus)
+    bicount, seqs, energies = sumarr(res[0]), res[1], concatenate(res[2])
     bimarg = bicount.astype(float32)/float32(sum(bicount[0,:]))
     
     #store initial setup
@@ -301,7 +305,7 @@ def preOpt(param, gpus, log):
     save(os.path.join(outdir, 'preopt', 'initJ'), couplings)
     save(os.path.join(outdir, 'preopt', 'initBicount'), bicount)
     for n,s in enumerate(seqs):
-        seqload.writeSeqs(os.path.join(outdir, 'preopt', 'seqs-'+str(n)+'.bz2'), 
+        seqload.writeSeqs(os.path.join(outdir, 'preopt', 'seqs-'+str(n)+'.bz2'),
                           s, alpha, zipf=True)
     
     topbi = bimarg_target > 0.01
@@ -314,6 +318,10 @@ def preOpt(param, gpus, log):
     couplings, bimarg_p = iterNewton(param, bimarg, gpus, log)
     save(os.path.join(outdir, 'preopt', 'perturbedbimarg'), bimarg_p)
     save(os.path.join(outdir, 'preopt', 'perturbedJ'), couplings)
+
+    log(printstats('preopt', bicount, bimarg_target, bimarg,
+                   couplings, energies, None))
+
 
 def swapTemps(gpus, dummy, N):
     # CPU implementation of PT swap
@@ -487,7 +495,7 @@ def runMCMC_tempered(gpus, couplings, runName, param):
     outdir = param.outdir
     # assumes small sequence buffer is already filled
 
-    B0 = param.tempering[0]
+    B0 = np.max(param.tempering)
 
     #get ready for MCMC
     for gpu in gpus:
@@ -549,7 +557,7 @@ def runMCMC_tempered(gpus, couplings, runName, param):
     bimarg_model = bicount.astype(float32)/float32(sum(bicount[0,:]))
     sampledenergies = concatenate(res[1])
     
-    return bimarg_model, bicount, sampledenergies, (Bs,r)
+    return bimarg_model, bicount, sampledenergies, (Bs, r)
 
 def MCMCstep(runName, couplings, param, gpus, log):
     outdir = param.outdir
@@ -569,10 +577,8 @@ def MCMCstep(runName, couplings, param, gpus, log):
     save(os.path.join(outdir, runName, 'J'), couplings)
     
     MCMC_func = runMCMC
-    ptrate = None
     if param.tempering is not None:
         MCMC_func = runMCMC_tempered
-        ptrate = param.nswaps
 
     log("Equilibrating MCMC chains...")
     (bimarg_model, 
@@ -583,11 +589,7 @@ def MCMCstep(runName, couplings, param, gpus, log):
     seq_large, seqs = readGPUbufs(['seq large', 'seq main'], gpus)
 
     #get summary statistics and output them
-    topbi = bimarg_target > 0.01
-    ferr = mean((abs(bimarg_target - bimarg_model)/bimarg_target)[topbi])
-    ssr = sum((bimarg_target - bimarg_model)**2)
-    wdf = sum(bimarg_target*abs(bimarg_target - bimarg_model))
-    writeStatus(runName, ferr, ssr, wdf, bicount, bimarg_model, 
+    writeStatus(runName, bimarg_target, bicount, bimarg_model, 
                 couplings, seq_large, seqs, sampledenergies, 
                 alpha, ptinfo, outdir, log)
 
@@ -627,7 +629,7 @@ def newtonMCMC(param, gpus, log):
     if param.tempering is not None:
         if param.nwalkers % len(param.tempering) != 0:
             raise Exception("# of temperatures must evenly divide # walkers")
-        B0 = param.tempering[0]
+        B0 = np.max(param.tempering)
         Bs = concatenate([
              full(param.nwalkers/len(param.tempering), b, dtype='f4') 
                           for b in param.tempering])

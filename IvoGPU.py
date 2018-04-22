@@ -25,7 +25,7 @@ import numpy as np
 from numpy.random import randint, shuffle
 import pyopencl as cl
 import pyopencl.array as cl_array
-import sys, os, errno, argparse, time, ConfigParser
+import sys, os, errno, argparse, time, ConfigParser, socket
 import seqload
 from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
 from mcmcGPU import setupGPUs, initGPU, divideWalkers, printGPUs, readGPUbufs
@@ -94,6 +94,7 @@ def optionRegistry():
               "loads 'alpha', 'couplings', 'seedseq' and 'seqs', if not "
               "otherwise supplied.") )
     add('outdir', default='output', help='Output Directory')
+    add('rngseed', type=np.uint32, help='random seed')
 
     # GPU options
     add('nwalkers', type=uint32,
@@ -184,6 +185,29 @@ def requireargs(args, required):
         if args[r] is None:
             raise Exception("error: argument --{} is required".format(r))
 
+def setup_seed(args, p, log):
+    if args.rngseed is not None:
+        seed = args.rngseed
+    else:
+        seed = np.frombuffer(os.urandom(4), dtype='u4')[0]
+    np.random.seed(seed)
+    p['rngseed'] = seed + 1  # +1 just so rng for seq gen is diff from mcmc
+    log("Using random seed {}".format(p.rngseed))
+    log("")
+
+def describe_tempering(args, p, log):
+    if p.tempering is not None:
+        if len(p.tempering) == p.nwalkers:
+            msg = ("The walkers are assigned temperatures from file {}"
+                  ).format(args.tempering)
+        else:
+            msg = ("The walkers are divided into {} temperature groups ({})"
+                  ).format(len(p.tempering), args.tempering)
+
+        log(("Parallel tempering: {}, and neighbor temperatures are "
+             "swapped {} times after every MCMC loop. The low-temperature "
+             "B is {}").format(msg, p.nswaps, np.max(p.tempering)))
+
 ################################################################################
 
 def inverseIsing(args, log):
@@ -201,18 +225,22 @@ def inverseIsing(args, log):
                                           'trackequil tempering nswaps_temp '
                                           'preequiltime')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'seqmodel outdir')
+    addopt(parser,  None,                 'seqmodel outdir rngseed')
 
     args = parser.parse_args(args)
     args.nlargebuf = args.nsamples
     args.measurefperror = False
 
+    log("IvoGPU running on {}".format(socket.gethostname()))
+    log("")
+
     log("Initialization")
     log("===============")
-    log("")
 
     p = attrdict({'outdir': args.outdir})
     mkdir_p(args.outdir)
+    
+    setup_seed(args, p, log)
 
     p.update(process_newton_args(args, log))
     if p.bimarg is not None:
@@ -244,14 +272,22 @@ def inverseIsing(args, log):
     if not p.reseed:
         nseqs = sum([g.nseq['main'] for g in gpus])
     if p.preopt:
-        npreopt_seqs = sum([g.nseq['large'] for g in gpus])
+        if p.tempering is not None:
+            B0 = np.max(p.tempering)
+            npreopt_seqs = sum(p.tempering == B0)
+        else:
+            npreopt_seqs = sum([g.nseq['large'] for g in gpus])
     p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
                                    nseqs=nseqs, nlargeseqs=npreopt_seqs,
                                    needseed=p.reseed))
     if p.preopt:
         if p.seqs_large is None:
             raise Exception("Need to provide seqs_large if using preopt")
-        transferSeqsToGPU(gpus, 'large', p.seqs_large, log)
+        log("Tranferring {} seqs to large buffers".format(
+            str([s.shape[0] for s in p.seqs_large])))
+        # XXX split up seqs in case we got one big buffer
+        for g,s in zip(gpus, p.seqs_large):
+            g.storeSeqs(s)
 
     #if we're not initializing seqs to single sequence, need to load
     # a set of initial sequences into main buffer
@@ -274,11 +310,8 @@ def inverseIsing(args, log):
          "steps per loop (Each walker equilibrated a total of {} MC steps)."
          ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples,
                 p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime))
-    if p.tempering is not None:
-        log("Parallel tempering: The walkers are divided into {} temperature "
-            "groups ({}), and neighbor temperatures are swapped {} times "
-            "after every MCMC loop".format(len(p.tempering), args.tempering,
-            p.nswaps))
+
+    describe_tempering(args, p, log)
 
     log("")
     log("")
@@ -359,7 +392,7 @@ def MCMCbenchmark(args, log):
                                           'gibbs gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'seqmodel outdir')
+    addopt(parser,  None,                 'seqmodel outdir rngseed')
 
     args = parser.parse_args(args)
     nloop = args.nloop
@@ -368,6 +401,7 @@ def MCMCbenchmark(args, log):
     log("Initialization")
     log("===============")
     log("")
+
 
     p = attrdict({'outdir': args.outdir})
     mkdir_p(args.outdir)
@@ -447,16 +481,21 @@ def equilibrate(args, log):
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
                                           'trackequil tempering nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'seqmodel outdir')
+    addopt(parser,  None,                 'seqmodel outdir rngseed')
 
     args = parser.parse_args(args)
     args.measurefperror = False
+
+    log("IvoGPU running on {}".format(socket.gethostname()))
+    log("")
 
     log("Initialization")
     log("===============")
 
     p = attrdict({'outdir': args.outdir})
     mkdir_p(args.outdir)
+
+    setup_seed(args, p, log)
 
     p.update(process_potts_args(args, None, None, None, log))
     L, q, alpha = p.L, p.q, p.alpha
@@ -486,6 +525,16 @@ def equilibrate(args, log):
                                    needseed=needseed))
     log("")
 
+    log("Computation Overview")
+    log("====================")
+    log(("Running {} MC walkers for {} equilibration loops then "
+         "sampling every {} loops to get {} samples ({} total seqs) with {} MC "
+         "steps per loop (Each walker equilibrated a total of {} MC steps)."
+         ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples,
+                p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime))
+
+    describe_tempering(args, p, log)
+
     # set up gpu buffers
     if needseed:
         for gpu in gpus:
@@ -493,12 +542,15 @@ def equilibrate(args, log):
     else:
         transferSeqsToGPU(gpus, 'main', p.seqs, log)
 
-    log("Equilibrating ...")
+    log("")
+
+    log("Equilibrating")
+    log("====================")
     # set up tempering if needed
     MCMC_func = runMCMC
     if p.tempering is not None:
         MCMC_func = runMCMC_tempered
-        B0 = p.tempering[0]
+        B0 = np.max(p.tempering)
 
         if p.nwalkers % len(p.tempering) != 0:
             raise Exception("# of temperatures must evenly divide # walkers")
@@ -549,7 +601,7 @@ def equil_PT(args, log):
     addopt(parser, 'Sampling Options',    'equiltime trackequil tempering '
                                           'nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'seqmodel outdir')
+    addopt(parser,  None,                 'seqmodel outdir rngseed')
 
     args = parser.parse_args(args)
     args.measurefperror = False
@@ -559,6 +611,8 @@ def equil_PT(args, log):
 
     p = attrdict({'outdir': args.outdir})
     mkdir_p(args.outdir)
+
+    setup_seed(args, p, log)
 
     p.update(process_potts_args(args, None, None, None, log))
     L, q, alpha = p.L, p.q, p.alpha
@@ -985,6 +1039,10 @@ def process_sequence_args(args, L, alpha, bimarg, log,
     if nseqs is not None:
         if args.seqs in ['uniform', 'independent']:
             seqs = [generateSequences(args.seqs, L, q, nseqs, bimarg, log)]
+            for n,s in enumerate(seqs):
+                seqload.writeSeqs(os.path.join(args.outdir, 
+                                  'initial_seqs-{}'.format(n)),
+                                  s, alpha)
         elif args.seqs is not None:
             seqs = [loadSequenceFile(args.seqs, alpha, log)]
         elif args.seqmodel in ['uniform', 'independent']:
@@ -1073,7 +1131,7 @@ def loadSequenceFile(sfile, alpha, log):
     return seqs
 
 def loadSequenceDir(sdir, bufname, alpha, log):
-    log("Loading sequences from dir {}".format(sdir))
+    log("Loading {} sequences from dir {}".format(bufname, sdir))
     seqs = []
     while True:
         sfile = os.path.join(sdir, 'seqs{}-{}'.format(bufname, len(seqs)))
@@ -1102,9 +1160,9 @@ def transferSeqsToGPU(gpus, bufname, seqs, log):
                              sum(sizes), len(seqs)))
 
     for n,(gpu,seq) in enumerate(zip(gpus, seqs)):
-        if len(seq) != gpu.nseq[bufname]:
-            raise Exception("Expected {} sequences, got {}".format(
-                            gpu.nseq[bufname], len(seq)))
+        #if len(seq) != gpu.nseq[bufname]:
+        #    raise Exception("Expected {} sequences, got {}".format(
+        #                    gpu.nseq[bufname], len(seq)))
         gpu.setBuf('seq ' + bufname, seq)
 
 def process_sample_args(args, log):
