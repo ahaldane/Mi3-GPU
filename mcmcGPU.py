@@ -818,7 +818,7 @@ def setupGPUs(scriptpath, scriptfile, param, log):
     ptx = cl_prg.get_info(cl.program_info.BINARIES)
     for n,p in enumerate(ptx):
         #useful to see if compilation changed
-        log("PTX length: ", len(p))
+        #log("PTX length: ", len(p))
         with open(os.path.join(outdir, 'ptx{}'.format(n)), 'wt') as f:
             f.write(p)
 

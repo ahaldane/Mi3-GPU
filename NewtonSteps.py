@@ -21,6 +21,7 @@ from __future__ import print_function
 from scipy import *
 import scipy
 import scipy.stats.distributions as dists
+from scipy.stats import pearsonr
 import numpy as np
 from numpy.random import randint, shuffle
 import numpy.random
@@ -32,6 +33,7 @@ import seqload
 from scipy.optimize import leastsq
 from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
 from mcmcGPU import readGPUbufs
+from IvoGPU import generateSequences
 
 def unimarg(bimarg):
     L, q = seqsize_from_param_shape(bimarg.shape)
@@ -74,7 +76,7 @@ printsome = lambda a: " ".join(map(str,a.flatten()[:5]))
 #Helper funcs
 
 def printstats(name, bicount, bimarg_target, bimarg_model, couplings,
-               energies, ptinfo):
+               energies, e_rho, ptinfo):
     topbi = bimarg_target > 0.01
     ferr = mean((abs(bimarg_target - bimarg_model)/bimarg_target)[topbi])
     ssr = sum((bimarg_target - bimarg_model)**2)
@@ -86,6 +88,9 @@ def printstats(name, bicount, bimarg_target, bimarg_model, couplings,
     Co = bimarg_target - indep_bimarg(bimarg_target)
     Xo = sum(couplings*Co, axis=1)
 
+    rhostr = np.array2string(e_rho, precision=2, floatmode='fixed',
+                                    suppress_small=True)
+
     #print some details 
     disp = [("{} Ferr: {: 7.5f}  SSR: {: 7.3f}  dX: {: 7.3f} : {: 7.3f}"
             ).format(name, ferr, ssr, sum(X), sum(Xo)),
@@ -93,18 +98,19 @@ def printstats(name, bicount, bimarg_target, bimarg_model, couplings,
             "Bicounts: " + printsome(bicount) + '...',
             "Marginals: " + printsome(bimarg_model) + '...',
             "Couplings: " + printsome(couplings) + "...",
-            "Energies: Lowest =  {}, Mean = {}".format(min(energies), 
-                                                       mean(energies))]
+            "{} Energies: Lowest =  {}, Mean = {}".format(name,
+                              min(energies), mean(energies)),
+            "{} Energy Autocorrelation: {}".format(name, rhostr)]
     if ptinfo != None:
         disp.append("PT swap rate: {}".format(ptinfo[1]))
 
     return "\n".join(disp)
 
 def writeStatus(name, bimarg_target, bicount, bimarg_model, couplings, 
-                seqs_large, seqs, energies, alpha, ptinfo, outdir, log):
+                seqs_large, seqs, energies, alpha, e_rho, ptinfo, outdir, log):
 
     dispstr = printstats(name, bicount, bimarg_target, bimarg_model, couplings,
-                         energies, ptinfo)
+                         energies, e_rho, ptinfo)
     with open(os.path.join(outdir, name, 'info.txt'), 'wt') as f:
         f.write(dispstr)
 
@@ -206,6 +212,14 @@ def resample_target(unicounts, gpus):
 
     for gpu in gpus:
         gpu.setBuf('bi target', bimarg_indep_ss)
+
+def singleNewton(bimarg, gamma, pc, gpus):
+    gpus[0].setBuf('bi back', bimarg)
+    gpus[0].copyBuf('J main', 'J back')
+    # note: updateJ should give same result on all GPUs
+    # overwrites J front using bi back and J back
+    gpus[0].updateJ(gamma, pc)
+    return gpus[0].getBuf('J front').read()
 
 def resampled_target(ff, N, gpus):
     ct = N*ff
@@ -315,12 +329,19 @@ def preOpt(param, gpus, log):
     log("S Ferr: {: 9.7f}  SSR: {: 9.5f}  wDf: {: 9.5f}".format(ferr,ssr,wdf))
 
     #modify couplings a little
-    couplings, bimarg_p = iterNewton(param, bimarg, gpus, log)
-    save(os.path.join(outdir, 'preopt', 'perturbedbimarg'), bimarg_p)
-    save(os.path.join(outdir, 'preopt', 'perturbedJ'), couplings)
+    if param.newtonSteps != 1:
+        couplings, bimarg_p = iterNewton(param, bimarg, gpus, log)
+        save(os.path.join(outdir, 'preopt', 'perturbedbimarg'), bimarg_p)
+        save(os.path.join(outdir, 'preopt', 'perturbedJ'), couplings)
+    else:
+        log("Performing single newton update step")
+        couplings = singleNewton(bimarg, param.gamma0,
+                                 param.pcdamping, gpus)
 
     log(printstats('preopt', bicount, bimarg_target, bimarg,
-                   couplings, energies, None))
+                   couplings, energies, None, None))
+
+    return couplings
 
 
 def swapTemps(gpus, dummy, N):
@@ -376,62 +397,6 @@ def swapTemps(gpus, dummy, N):
     #print(t2-t1)
     return Bs, r
 
-def swapTemps2(gpus, nbs, N):
-    # CPU implementation of PT swap.
-    # This implementation simply swaps neighboring temps only, it is likely
-    # possible to improve the performance here.
-
-    t1 = time.time()
-
-    for gpu in gpus:
-        gpu.calcEnergies('main', 'main')
-    es, Bs = map(concatenate, readGPUbufs(['E main', 'Bs'], gpus))
-    ns = len(es)
-    #r1 = logaddexp.reduce(-Bs*es)/len(Bs)
-    
-    bsize = Bs.shape[0]/nbs
-
-    idx = argsort(Bs).reshape((nbs, bsize))
-    origBs = Bs[idx]
-    es = es[idx]
-    
-    def swaparr(arr1, arr2, inds):
-        arr1, arr2 = arr1.flatten(), arr2.flatten()
-        tmp = arr1[swap]
-        arr1[swap] = arr2[swap]
-        arr2[swap] = tmp
-    
-    # assumes an even number of temperatures
-    r = 0
-    for n in range(N):
-        for x in [0,1]:  # even and odd swaps
-            # first permute all the first arrays if length is more than 1
-            # since in the infinite-swap limit they just get shuffled
-            if bsize > 1:
-                for r in range(0,nbs,2):
-                    permut = permutation(bsize)
-                    es[r,:] = es[r,permut]
-                    idx[r,:] = idx[r,permut]
-
-            # then we attempt swaps with the next temperature
-            w = exp((Bs[n] - Bs[n+1])*(es[x::2,:] - es[x+1::2,:]))
-            swap = where((w < rand(nbs/2, bsize)).flatten())[0]
-            swaparr(es[x::2,:], es[x+1::2,:], swap)
-            swaparr(idx[x::2,:], idx[x+1::2,:], swap)
-            r += mean(swap)
-    r = r/N
-    
-    # finally reassign the temperatures in the right order and write back to gpu
-    Bs[idx] = origBs
-    Bs = split(Bs, len(gpus)) 
-    for B,gpu in zip(Bs, gpus):
-        gpu.setBuf('Bs', B)
-
-    t2 = time.time()
-    #print(t2-t1)
-    #r2 = logaddexp.reduce(-Bs*es)/len(Bs)
-    return Bs, r
-
 def runMCMC(gpus, couplings, runName, param):
     nloop = param.equiltime
     nsamples = param.nsamples
@@ -450,19 +415,31 @@ def runMCMC(gpus, couplings, runName, param):
         for i in range(nloop):
             for gpu in gpus:
                 gpu.runMCMC()
+
+        e_rho = None
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
         mkdir_p(os.path.join(outdir, runName, 'equilibration'))
+        equil_e = []
         for j in range(nloop/trackequil):
             for i in range(trackequil):
                 for gpu in gpus:
                     gpu.runMCMC()
             for gpu in gpus:
                 gpu.calcBicounts('main')
-            bicounts = sumarr(readGPUbufs(['bicount'], gpus)[0])
+                gpu.calcEnergies('main', 'main')
+            bicounts, energies = readGPUbufs(['bicount', 'E main'], gpus)
+            bicounts = sumarr(bicounts)
             bimarg_model = bicounts.astype('f4')/float32(sum(bicounts[0,:]))
             save(os.path.join(outdir, runName, 
                  'equilibration', 'bimarg_{}'.format(j)), bimarg_model)
+            energies = concatenate(energies)
+            save(os.path.join(outdir, runName, 
+                 'equilibration', 'energies_{}'.format(j)), energies)
+            equil_e.append(energies)
+
+        # track how well different walkers are equilibrated. Should go to 0
+        e_rho = np.array([pearsonr(ei, equil_e[-1])[0] for ei in equil_e])
 
     #post-equilibration samples
     for gpu in gpus:
@@ -485,7 +462,7 @@ def runMCMC(gpus, couplings, runName, param):
     bimarg_model = bicount.astype(float32)/float32(sum(bicount[0,:]))
     sampledenergies = concatenate(res[1])
     
-    return bimarg_model, bicount, sampledenergies, None
+    return bimarg_model, bicount, sampledenergies, e_rho, None
 
 def runMCMC_tempered(gpus, couplings, runName, param):
     nloop = param.equiltime
@@ -511,6 +488,7 @@ def runMCMC_tempered(gpus, couplings, runName, param):
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
         mkdir_p(os.path.join(outdir, runName, 'equilibration'))
+        equil_e = []
         for j in range(nloop/trackequil):
             for i in range(trackequil):
                 for gpu in gpus:
@@ -524,11 +502,20 @@ def runMCMC_tempered(gpus, couplings, runName, param):
             #save(os.path.join(outdir, runName, 
             #     'equilibration', 'bimarg_{}'.format(j)), bimarg_model)
 
-            es = concatenate(readGPUbufs(['E main'], gpus)[0])
-            save(os.path.join(outdir, runName, 
-                 'equilibration', 'energies_{}'.format(j)), es)
             save(os.path.join(outdir, runName, 
                  'equilibration', 'Bs_{}'.format(j)), concatenate(Bs))
+            energies = concatenate(readGPUbufs(['E main'], gpus)[0])
+            save(os.path.join(outdir, runName, 
+                 'equilibration', 'energies_{}'.format(j)), energies)
+            equil_e.append(energies)
+
+        # track how well different walkers are equilibrated. Should go to 0
+        # Note: Do we expect this to go to 0 with PT? SHould we only
+        # be looking at walkers which ate at the lowest temperature?
+        # No, this needs to be changed... it gives large correlations when there should
+        # be none. May be because we did not reach the infinite swap limit,
+        # so even if the walker distribution is equilibrated the PT swapping is not.
+        e_rho = np.array([pearsonr(ei, equil_e[-1])[0] for ei in equil_e])
 
     for B,gpu in zip(Bs,gpus):
         gpu.markSeqs(B == B0)
@@ -557,7 +544,7 @@ def runMCMC_tempered(gpus, couplings, runName, param):
     bimarg_model = bicount.astype(float32)/float32(sum(bicount[0,:]))
     sampledenergies = concatenate(res[1])
     
-    return bimarg_model, bicount, sampledenergies, (Bs, r)
+    return bimarg_model, bicount, sampledenergies, e_rho, (Bs, r)
 
 def MCMCstep(runName, couplings, param, gpus, log):
     outdir = param.outdir
@@ -570,8 +557,8 @@ def MCMCstep(runName, couplings, param, gpus, log):
     #re-distribute energy among couplings
     #(not really needed, but makes nicer output and might prevent
     # numerical inaccuracy, but also shifts all seq energies)
-    log("(Re-centering gauge of couplings)")
-    couplings = fieldlessGaugeEven(zeros((L,q)), couplings)[1]
+    #log("(Re-centering gauge of couplings)")
+    #couplings = fieldlessGaugeEven(zeros((L,q)), couplings)[1]
 
     mkdir_p(os.path.join(outdir, runName))
     save(os.path.join(outdir, runName, 'J'), couplings)
@@ -584,6 +571,7 @@ def MCMCstep(runName, couplings, param, gpus, log):
     (bimarg_model, 
      bicount, 
      sampledenergies,
+     e_rho,
      ptinfo) = MCMC_func(gpus, couplings, runName, param)
 
     seq_large, seqs = readGPUbufs(['seq large', 'seq main'], gpus)
@@ -591,7 +579,7 @@ def MCMCstep(runName, couplings, param, gpus, log):
     #get summary statistics and output them
     writeStatus(runName, bimarg_target, bicount, bimarg_model, 
                 couplings, seq_large, seqs, sampledenergies, 
-                alpha, ptinfo, outdir, log)
+                alpha, e_rho, ptinfo, outdir, log)
 
     if param.tempering is not None:
         e, b = readGPUbufs(['E main', 'Bs'], gpus)
@@ -599,22 +587,16 @@ def MCMCstep(runName, couplings, param, gpus, log):
         save(os.path.join(outdir, runName, 'walker_Bs'), concatenate(b))
     
     #compute new J using local newton updates (in-place on GPU)
-    newcouplings, bimarg_p = iterNewton(param, bimarg_model, gpus, log)
-    save(os.path.join(outdir, runName, 'predictedBimarg'), bimarg_p)
-    save(os.path.join(outdir, runName, 'predictedJ'), newcouplings)
+    if param.newtonSteps != 1:
+        newcouplings, bimarg_p = iterNewton(param, bimarg_model, gpus, log)
+        save(os.path.join(outdir, runName, 'predictedBimarg'), bimarg_p)
+        save(os.path.join(outdir, runName, 'predictedJ'), newcouplings)
+    else:
+        log("Performing single newton update step")
+        newcouplings = singleNewton(bimarg_model, param.gamma0,
+                                    param.pcdamping, gpus)
 
     return seqs, newcouplings
-
-def chooseSeed(seqs):
-    #choose random seed sequence for next roundS
-    rseq = None
-    rseq_ind = numpy.random.randint(0, len(sampledenergies))
-    for s in seq_large:
-        if rseq_ind < s.shape[0]:
-            rseq = s[rseq_ind]
-            break
-        rseq_ind -= s.shape[0]
-    return rseq
 
 def newtonMCMC(param, gpus, log):
     couplings = param.couplings
@@ -623,7 +605,7 @@ def newtonMCMC(param, gpus, log):
     for gpu in gpus:
         gpu.setBuf('bi target', param.bimarg)
 
-    if param.reseed and param.seedseq is None:
+    if param.reseed.startswith('single') and param.seedseq is None:
         raise Exception("Error: resetseq option requires a starting sequence")
     
     if param.tempering is not None:
@@ -643,7 +625,7 @@ def newtonMCMC(param, gpus, log):
         if param.seqs_large is None:
             raise Exception("Error: sequence buffers must be filled for "
                             "pre-optimization") 
-        preOpt(param, gpus, log)
+        couplings = preOpt(param, gpus, log)
     elif param.preequiltime:
         log("Pre-equilibration for {} steps...".format(param.preequiltime))
         log("(Re-centering gauge of couplings)")
@@ -670,21 +652,39 @@ def newtonMCMC(param, gpus, log):
         for gpu in gpus:
             gpu.setBuf('Creg', param.regarg)
 
-    if param.reseed: 
-        for i in range(param.mcmcsteps):
-            runname = 'run_{}'.format(i)
-
-            with open(os.path.join(param.outdir,runName, 'seedseq'), 'wt') as f:
-                f.write("".join(alpha[c] for c in param.seedseq))
+    # solve using newton-MCMC
+    for i in range(param.mcmcsteps):
+        runname = 'run_{}'.format(i)
+        
+        if param.reseed.startswith('single'):
+            mkdir_p(os.path.join(param.outdir, runname))
+            with open(os.path.join(param.outdir,runname, 'seedseq'), 'wt') as f:
+                f.write("".join(param.alpha[c] for c in param.seedseq))
             for gpu in gpus:
                 gpu.fillSeqs(param.seedseq)
+        elif param.reseed == 'independent': 
+            for gpu in gpus:
+                indep_seqs = generateSequences('independent', param.L, param.q,
+                                            gpu.nseq['main'], param.bimarg, log)
+                gpu.setBuf('seq main', indep_seqs)
 
-            seqs, couplings = MCMCstep(runname, couplings, param, gpus, log)
+        seqs, couplings = MCMCstep(runname, couplings, param, gpus, log)
 
-            param['seedseq'] = chooseSeed(seqs)
-    else:
+        if param.reseed == 'single_random':
+            #choose random seed sequence from the final sequences for next round
+            nseq = sum(s.shape[0] for s in seqs)
+            rseq = None
+            rseq_ind = numpy.random.randint(0, nseq)
+            for s in seqs:
+                if rseq_ind < s.shape[0]:
+                    rseq = s[rseq_ind]
+                    break
+                rseq_ind -= s.shape[0]
+            param['seedseq'] = rseq
+        if param.reseed == 'single_best':
+            raise Exception("Not implemented yet")
+        if param.reseed == 'single_indep':
+            seq = generateSequences('independent', param.L, param.q, 1,
+                                    param.bimarg, log)[0]
+            param['seedseq'] = seq
 
-        # solve using newton-MCMC
-        for i in range(param.mcmcsteps):
-            runname = 'run_{}'.format(i)
-            seqs, couplings = MCMCstep(runname, couplings, param, gpus, log)
