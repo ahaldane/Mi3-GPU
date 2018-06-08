@@ -344,6 +344,18 @@ def preOpt(param, gpus, log):
 
     return couplings
 
+def rand_f32(size):
+    """
+    Generate random float32 values [0, 1), assuming little-endian IEEE binary32
+
+    In the IEEE binary32 floating point format, such values all have the same
+    exponent and only vary in the mantissa. So, we only need to generate the 23
+    bit mantissa per uniform float32. It turns out in numpy it is fastest to
+    generate 32 bits and then drop the first 9.
+    """
+    x = np.random.randint(np.uint32(2**32-1), size=size, dtype=uint32)
+    shift, exppat = np.uint32(9), np.uint32(0x3F800000)
+    return ((x >> shift) | exppat).view('f4') - np.float32(1.0)
 
 def swapTemps(gpus, dummy, N):
     # CPU implementation of PT swap
@@ -354,7 +366,7 @@ def swapTemps(gpus, dummy, N):
     es, Bs = map(concatenate, readGPUbufs(['E main', 'Bs'], gpus))
     ns = len(es)
 
-    Bs_orig = Bs.copy()
+    #Bs_orig = Bs.copy()
     #r1 = logaddexp.reduce(-Bs*es)/len(Bs)
     
     # swap consecutive replicas, where consecutive is in E order
@@ -375,7 +387,7 @@ def swapTemps(gpus, dummy, N):
         delta = dE[ind_diff]*(a[ind_diff] - b[ind_diff])
         ind_lz = where(delta < 0)[0]
         sind = ones(len(delta), dtype='bool')
-        sind[ind_lz] = exp(delta[ind_lz]) > rand(len(ind_lz))
+        sind[ind_lz] = exp(delta[ind_lz]) > rand_f32(len(ind_lz))
         sind = ind_diff[sind]
 
         a[sind], b[sind] = b[sind], a[sind]
@@ -386,8 +398,9 @@ def swapTemps(gpus, dummy, N):
     
     # get back to original order
     Bs[order] = Bs.copy()
-
-    r = sum(Bs != Bs_orig)/float(len(Bs))
+    
+    r = 0
+    #r = sum(Bs != Bs_orig)/float(len(Bs))
     #r2 = logaddexp.reduce(-Bs*es)/len(Bs)
 
     Bs = split(Bs, len(gpus)) 
