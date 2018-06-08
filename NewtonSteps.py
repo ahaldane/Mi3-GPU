@@ -87,9 +87,10 @@ def printstats(name, bicount, bimarg_target, bimarg_model, couplings,
 
     Co = bimarg_target - indep_bimarg(bimarg_target)
     Xo = sum(couplings*Co, axis=1)
-
-    rhostr = np.array2string(e_rho, precision=2, floatmode='fixed',
-                                    suppress_small=True)
+    
+    rho, rp = zip(*e_rho)
+    rhostr = np.array2string(np.array(rho), precision=2, floatmode='fixed',
+                             suppress_small=True)
 
     #print some details 
     disp = [("{} Ferr: {: 7.5f}  SSR: {: 7.3f}  dX: {: 7.3f} : {: 7.3f}"
@@ -397,7 +398,21 @@ def swapTemps(gpus, dummy, N):
     #print(t2-t1)
     return Bs, r
 
-def runMCMC(gpus, couplings, runName, param):
+def track_main_bufs(gpus, savedir=None, step=None):
+    for gpu in gpus:
+        gpu.calcBicounts('main')
+        gpu.calcEnergies('main', 'main')
+    bicounts, energies = readGPUbufs(['bicount', 'E main'], gpus)
+    bicounts = sumarr(bicounts)
+    bimarg_model = bicounts.astype('f4')/float32(sum(bicounts[0,:]))
+    energies = concatenate(energies)
+    
+    if savedir:
+        save(os.path.join(savedir, 'bimarg_{}'.format(step)), bimarg_model)
+        save(os.path.join(savedir, 'energies_{}'.format(step)), energies)
+    return energies, bimarg_model
+
+def runMCMC(gpus, couplings, runName, param, log):
     nloop = param.equiltime
     nsamples = param.nsamples
     nsampleloops = param.sampletime
@@ -410,7 +425,46 @@ def runMCMC(gpus, couplings, runName, param):
         gpu.setBuf('J main', couplings)
     
     #equilibration MCMC
-    if trackequil == 0:
+    if nloop == 'auto':
+        equil_dir = os.path.join(outdir, runName, 'equilibration')
+        mkdir_p(equil_dir)
+
+        loops = 32
+        for i in range(loops):
+            for gpu in gpus:
+                gpu.runMCMC()
+        step = loops
+
+        equil_e = []
+        while True:
+            for i in range(loops):
+                for gpu in gpus:
+                    gpu.runMCMC()
+
+            step += loops
+            energies, _ = track_main_bufs(gpus, equil_dir, step=step)
+            equil_e.append(energies)
+
+            if len(equil_e) >= 3:
+                r1, p1 = pearsonr(equil_e[-1], equil_e[-2])
+                r2, p2 = pearsonr(equil_e[-1], equil_e[-3])
+
+                fmt = "({:.3f}, {:.2g})".format
+                rstr = "Step {}, r=cur:{} prev:{}".format(
+                        step, fmt(r1, p1), fmt(r2, p2))
+
+                if p1 > 0.02 and p2 > 0.02:
+                    log(rstr + ". Equilibrated.")
+                    break
+            else:
+                rstr = "Step {}".format(step)
+
+            loops = loops*2
+            log(rstr + ". Continuing equilibration.")
+
+        e_rho = [pearsonr(ei, equil_e[-1]) for ei in equil_e]
+
+    elif trackequil == 0:
         #keep nloop iterator on outside to avoid filling queue with only 1 gpu
         for i in range(nloop):
             for gpu in gpus:
@@ -425,21 +479,11 @@ def runMCMC(gpus, couplings, runName, param):
             for i in range(trackequil):
                 for gpu in gpus:
                     gpu.runMCMC()
-            for gpu in gpus:
-                gpu.calcBicounts('main')
-                gpu.calcEnergies('main', 'main')
-            bicounts, energies = readGPUbufs(['bicount', 'E main'], gpus)
-            bicounts = sumarr(bicounts)
-            bimarg_model = bicounts.astype('f4')/float32(sum(bicounts[0,:]))
-            save(os.path.join(outdir, runName, 
-                 'equilibration', 'bimarg_{}'.format(j)), bimarg_model)
-            energies = concatenate(energies)
-            save(os.path.join(outdir, runName, 
-                 'equilibration', 'energies_{}'.format(j)), energies)
+            energies, _ = track_main_bufs(gpus, equil_dir, step=step)
             equil_e.append(energies)
 
         # track how well different walkers are equilibrated. Should go to 0
-        e_rho = np.array([pearsonr(ei, equil_e[-1])[0] for ei in equil_e])
+        e_rho = [pearsonr(ei, equil_e[-1]) for ei in equil_e]
 
     #post-equilibration samples
     for gpu in gpus:
@@ -464,7 +508,7 @@ def runMCMC(gpus, couplings, runName, param):
     
     return bimarg_model, bicount, sampledenergies, e_rho, None
 
-def runMCMC_tempered(gpus, couplings, runName, param):
+def runMCMC_tempered(gpus, couplings, runName, param, log):
     nloop = param.equiltime
     nsamples = param.nsamples
     nsampleloops = param.sampletime
@@ -515,7 +559,7 @@ def runMCMC_tempered(gpus, couplings, runName, param):
         # No, this needs to be changed... it gives large correlations when there should
         # be none. May be because we did not reach the infinite swap limit,
         # so even if the walker distribution is equilibrated the PT swapping is not.
-        e_rho = np.array([pearsonr(ei, equil_e[-1])[0] for ei in equil_e])
+        e_rho = [pearsonr(ei, equil_e[-1])[0] for ei in equil_e]
 
     for B,gpu in zip(Bs,gpus):
         gpu.markSeqs(B == B0)
@@ -572,7 +616,7 @@ def MCMCstep(runName, couplings, param, gpus, log):
      bicount, 
      sampledenergies,
      e_rho,
-     ptinfo) = MCMC_func(gpus, couplings, runName, param)
+     ptinfo) = MCMC_func(gpus, couplings, runName, param, log)
 
     seq_large, seqs = readGPUbufs(['seq large', 'seq main'], gpus)
 

@@ -160,7 +160,7 @@ def optionRegistry():
     # Sampling Param
     add('preequiltime', type=uint32, default=0,
         help="Number of MC kernel calls to run before newton steps")
-    add('equiltime', type=uint32, required=True,
+    add('equiltime', default='auto',
         help="Number of MC kernel calls to equilibrate")
     add('sampletime', type=uint32, default=1,
         help="Number of MC kernel calls between samples")
@@ -278,8 +278,11 @@ def inverseIsing(orig_args, args, log):
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
     gpus = [initGPU(n, cldat, dev, nwalk, p, log)
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
-
-    rngPeriod = (p.equiltime + p.sampletime*p.nsamples)*p.mcmcsteps
+    
+    if p.equiltime == 'auto':
+        rngPeriod = 0
+    else:
+        rngPeriod = (p.equiltime + p.sampletime*p.nsamples)*p.mcmcsteps
     for gpu in gpus:
         gpu.initMCMC(p.nsteps, rngPeriod)
         gpu.initLargeBufs(gpu.nseq['main']*p.nsamples)
@@ -327,13 +330,16 @@ def inverseIsing(orig_args, args, log):
     log("====================")
     log("Running {} Newton-MCMC rounds, with {} parameter update steps per "
         "round.".format(p.mcmcsteps, p.newtonSteps))
-    log(("In each round, running {} MC walkers for {} equilibration loops then "
-         "sampling every {} loops to get {} samples ({} total seqs) with {} MC "
-         "steps per loop (Each walker equilibrated a total of {} MC steps, "
-         "or {:.1f} steps per position)."
-         ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples,
-                p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime,
-                p.nsteps*p.equiltime/float(p.L)))
+    if p.equiltime == 'auto':
+        log("In each round, running {} MC walkers until equilibrated")
+    else:
+        log(("In each round, running {} MC walkers for {} equilibration loops then "
+             "sampling every {} loops to get {} samples ({} total seqs) with {} MC "
+             "steps per loop (Each walker equilibrated a total of {} MC steps, "
+             "or {:.1f} steps per position)."
+             ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples,
+                    p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime,
+                    p.nsteps*p.equiltime/float(p.L)))
 
     describe_tempering(args, p, log)
 
@@ -528,7 +534,10 @@ def equilibrate(orig_args, args, log):
     L, q, alpha = p.L, p.q, p.alpha
 
     p.update(process_sample_args(args, log))
-    rngPeriod = (p.equiltime + p.sampletime*p.nsamples)
+    if p.equiltime == 'auto':
+        rngPeriod = 0
+    else:
+        rngPeriod = (p.equiltime + p.sampletime*p.nsamples)
     gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
@@ -554,11 +563,16 @@ def equilibrate(orig_args, args, log):
 
     log("Computation Overview")
     log("====================")
-    log(("Running {} MC walkers for {} equilibration loops then "
-         "sampling every {} loops to get {} samples ({} total seqs) with {} MC "
-         "steps per loop (Each walker equilibrated a total of {} MC steps)."
-         ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples,
-                p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime))
+    if p.equiltime == 'auto':
+        log("In each round, running {} MC walkers until equilibrated")
+    else:
+        log(("In each round, running {} MC walkers for {} equilibration loops then "
+             "sampling every {} loops to get {} samples ({} total seqs) with {} MC "
+             "steps per loop (Each walker equilibrated a total of {} MC steps, "
+             "or {:.1f} steps per position)."
+             ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples,
+                    p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime,
+                    p.nsteps*p.equiltime/float(p.L)))
 
     describe_tempering(args, p, log)
 
@@ -1100,6 +1114,9 @@ def process_sample_args(args, log):
                   'nsamples': args.nsamples,
                   'trackequil': args.trackequil})
 
+    if p['equiltime'] != 'auto':
+        p['equiltime'] = int(p['equiltime'])
+
     if 'tempering' in args and args.tempering:
         try:
             Bs = np.load(args.tempering)
@@ -1115,14 +1132,18 @@ def process_sample_args(args, log):
 
     log("MCMC Sampling Setup")
     log("-------------------")
-    log(("In each MCMC round, running {} GPU MCMC kernel calls then sampling "
-         "every {} kernel calls to get {} samples").format(p.equiltime,
-                                             p.sampletime, p.nsamples))
+
+    if p.equiltime == 'auto':
+        log("In each round, running {} MC walkers until equilibrated")
+    else:
+        log(("In each MCMC round, running {} GPU MCMC kernel calls then sampling "
+             "every {} kernel calls to get {} samples").format(p.equiltime,
+                                                 p.sampletime, p.nsamples))
     if 'tempering' in p:
         log("Parallel tempering with inverse temperatures {}, "
             "swapping {} times per loop".format(args.tempering, p.nswaps))
 
-    if p.trackequil != 0:
+    if p.equiltime != 'auto' and p.trackequil != 0:
         if p.equiltime%p.trackequil != 0:
             raise Exception("Error: trackequil must be a divisor of equiltime")
         log("Tracking equilibration every {} loops.".format(p.trackequil))
