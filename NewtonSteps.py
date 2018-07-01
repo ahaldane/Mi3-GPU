@@ -21,7 +21,7 @@ from __future__ import print_function
 from scipy import *
 import scipy
 import scipy.stats.distributions as dists
-from scipy.stats import pearsonr
+from scipy.stats import pearsonr, dirichlet
 import numpy as np
 from numpy.random import randint, shuffle
 import numpy.random
@@ -196,6 +196,58 @@ def newtonStep(n, bimarg_target, gamma, pc, reg, gpus, log):
 
     return SSR, bimarg_model
 
+def newtonStep_GPU(n, bimarg_target, gamma, pc, reg, gpus, log):
+    # expects the back buffers to contain current couplings & bimarg,
+    # will overwrite front buffers
+
+    # calculate perturbed marginals
+    for gpu in gpus:
+        # note: updateJ should give same result on all GPUs
+        # overwrites J front using bi back and J back
+        if reg[0] == 'Creg':
+            gpu.updateJ_weightfn(gamma, pc)
+        elif reg[0] == 'l2z':
+            lh, lJ = reg[1]
+            gpu.updateJ_l2z(gamma, pc, lh, lJ)
+        elif reg[0] == 'Lstep':
+            gpu.updateJ_Lstep(gamma, pc)
+        else:
+            gpu.updateJ(gamma, pc)
+
+    for gpu in gpus:
+        gpu.swapBuf('J') #temporarily put trial J in back buffer
+        gpu.perturbMarg() #overwrites bi front using J back
+        gpu.swapBuf('J')
+    # at this point, front = trial param, back = last accepted param
+    
+    #read out result and update bimarg
+    res = readGPUbufs(['bi front', 'neff', 'weights'], gpus)
+    bimargb, Neffs, weightb = res
+    Neff = sum(Neffs)
+    bimarg_model = sumarr([N*buf for N,buf in zip(Neffs, bimargb)])/Neff
+    weights = concatenate(weightb)
+    SSR = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
+    trialJ = gpus[0].getBuf('J front').read()
+    
+    #display result
+    log("")
+    log(("{}  ssr: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
+         n, SSR, Neff, min(weights), max(weights)))
+    log("    trialJ:", printsome(trialJ))
+    log("    bimarg:", printsome(bimarg_model))
+    log("   weights:", printsome(weights))
+    #save('bimodel'+str(n), bimarg_model)
+
+    if isinf(Neff) or Neff == 0:
+        raise Exception("Error: Divergence. Decrease gamma or increase "
+                        "pc-damping")
+    
+    # dump profiling info if profiling is turned on
+    for gpu in gpus:
+        gpu.logProfile()
+
+    return SSR, bimarg_model
+
 import pseudocount
 def resample_target(unicounts, gpus):
     L, q = unicounts.shape
@@ -223,10 +275,12 @@ def singleNewton(bimarg, gamma, pc, gpus):
     return gpus[0].getBuf('J front').read()
 
 def resampled_target(ff, N, gpus):
-    ct = N*ff
-    sample = dists.binom.rvs(N, dists.beta.rvs(1+ct, 1+N-ct))
-    ff = sample/sum(sample, axis=1).astype('<f4')[:,newaxis]
-    return pseudocount.prior(ff, 0.001).astype('<f4')
+    #ct = N*ff
+    #sample = dists.binom.rvs(N, dists.beta.rvs(1+ct, 1+N-ct))
+    #ff = sample/sum(sample, axis=1).astype('<f4')[:,newaxis]
+    #return pseudocount.prior(ff, 1e-8).astype('<f4')
+    c = 0.5+N*ff
+    return np.array([dirichlet.rvs(ci)[0] for ci in c]).astype('<f4')
 
 def iterNewton(param, bimarg_model, gpus, log):
     gamma = gamma0 = param.gamma0
@@ -293,6 +347,50 @@ def iterNewton(param, bimarg_model, gpus, log):
     # return back buffer, which contains last accepted move
     return (gpus[0].getBuf('J back').read(), 
             gpus[0].getBuf('bi back').read())
+
+def iterNewtonGPU(param, bimarg_model, gpus, log):
+    bimarg_target = param.bimarg
+    gamma = param.gamma0
+    newtonSteps = param.newtonSteps
+    pc = param.pcdamping
+    gpu0 = gpus[0]
+
+    log("")
+    log("Local optimization for {} steps:".format(newtonSteps))
+
+    # copy all sequences into gpu-0's large seq buffer
+    seq_large = concatenate(readGPUbufs(['seq large'], gpus)[0], axis=0)
+    gpu0.clearLargeSeqs()
+    gpu0.storeSeqs(seq_large)
+    gpu0.calcEnergies('large', 'main')
+    gpu0.calcBicounts('large')
+    gpu0.bicounts_to_bimarg(gpu0.nstoredseqs)
+    
+    # actually to coupling updates
+    for i in range(newtonSteps): 
+        # updates front J buffer using back J and bimarg buffers
+        gpu0.updateJ_inplace(gamma, pc)
+        gpu0.perturbMarg_inplace()  # overwrites bi front using J back
+
+    #read out result and update bimarg
+    fbuf = [gpu0.getBuf(f) for f in ['bi main', 'neff', 'weights', 'J front']]
+    bimarg_model, Neff, weights, trialJ = [f.read() for f in fbuf]
+    Neff = Neff[0]
+    SSR = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
+    
+    #display result
+    log(("ssr: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
+         SSR, Neff, min(weights), max(weights)))
+    log("    trialJ:", printsome(trialJ))
+    log("    bimarg:", printsome(bimarg_model))
+    log("   weights:", printsome(weights))
+    #save('bimodel'+str(n), bimarg_model)
+
+    if isinf(Neff) or Neff == 0:
+        raise Exception("Error: Divergence. Decrease gamma or increase "
+                        "pc-damping")
+
+    return SSR, bimarg_model
     
 ################################################################################
 
@@ -331,7 +429,7 @@ def preOpt(param, gpus, log):
 
     #modify couplings a little
     if param.newtonSteps != 1:
-        couplings, bimarg_p = iterNewton(param, bimarg, gpus, log)
+        couplings, bimarg_p = iterNewtonGPU(param, bimarg, gpus, log)
         save(os.path.join(outdir, 'preopt', 'perturbedbimarg'), bimarg_p)
         save(os.path.join(outdir, 'preopt', 'perturbedJ'), couplings)
     else:
@@ -442,7 +540,7 @@ def runMCMC(gpus, couplings, runName, param, log):
         equil_dir = os.path.join(outdir, runName, 'equilibration')
         mkdir_p(equil_dir)
 
-        loops = 32
+        loops = 16
         for i in range(loops):
             for gpu in gpus:
                 gpu.runMCMC()
@@ -679,7 +777,7 @@ def MCMCstep(runName, couplings, param, gpus, log):
     
     #compute new J using local newton updates (in-place on GPU)
     if param.newtonSteps != 1:
-        newcouplings, bimarg_p = iterNewton(param, bimarg_model, gpus, log)
+        newcouplings, bimarg_p = iterNewtonGPU(param, bimarg_model, gpus, log)
         save(os.path.join(outdir, runName, 'predictedBimarg'), bimarg_p)
         save(os.path.join(outdir, runName, 'predictedJ'), newcouplings)
     else:

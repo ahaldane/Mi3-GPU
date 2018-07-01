@@ -220,7 +220,7 @@ def describe_tempering(args, p, log):
 def setup_node(log):
     log("Hostname:   {}".format(socket.gethostname()))
     log("Start Time: {}".format(datetime.datetime.now()))
-    if os.environ['PBS_JOBID'] is not None:
+    if 'PBS_JOBID' in os.environ:
         log("Job name:   {}".format(os.environ['PBS_JOBID']))
 
     atexit.register(lambda: log("Exited at {}".format(datetime.datetime.now())))
@@ -283,9 +283,13 @@ def inverseIsing(orig_args, args, log):
         rngPeriod = 0
     else:
         rngPeriod = (p.equiltime + p.sampletime*p.nsamples)*p.mcmcsteps
-    for gpu in gpus:
+    for n,gpu in enumerate(gpus):
         gpu.initMCMC(p.nsteps, rngPeriod)
-        gpu.initLargeBufs(gpu.nseq['main']*p.nsamples)
+        if n == 0:
+            # first gpu may need to store all collected seqs
+            gpu.initLargeBufs(gpu.nseq['main']*p.nsamples*len(gpus))
+        else:
+            gpu.initLargeBufs(gpu.nseq['main']*p.nsamples)
         gpu.initJstep()
         if p.tempering is not None:
             gpu.initMarkSeq()
@@ -435,8 +439,12 @@ def MCMCbenchmark(orig_args, args, log):
 
     p = attrdict({'outdir': args.outdir})
     mkdir_p(args.outdir)
+
+    setup_seed(args, p, log)
+
     p.update(process_potts_args(args, p.L, p.q, None, log))
     L, q, alpha = p.L, p.q, p.alpha
+
     args.nlargebuf = 1
     gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
@@ -452,9 +460,9 @@ def MCMCbenchmark(orig_args, args, log):
     if args.seqs is not None:
         nseqs = sum([g.nseq['main'] for g in gpus])
     if args.seedseq is not None:
-        if nseqs is not None:
-            raise Exception("can't supply both seqs and seedseq")
         needseed = True
+    else:
+        nseqs = p.nwalkers
     p.update(process_sequence_args(args, L, alpha, None, log,
                                    nseqs=nseqs, needseed=needseed))
 
@@ -464,7 +472,6 @@ def MCMCbenchmark(orig_args, args, log):
         for gpu in gpus:
             gpu.fillSeqs(p.seedseq)
     log("")
-
 
     log("Benchmark")
     log("=========")
@@ -495,7 +502,7 @@ def MCMCbenchmark(orig_args, args, log):
     end = time.clock()
 
     log("Elapsed time: ", end - start, )
-    totsteps = p.nwalkers*nloop*p.nsteps
+    totsteps = p.nwalkers*nloop*np.float64(p.nsteps)
     steps_per_second = totsteps/(end-start)
     log("MC steps computed: {}".format(totsteps))
     log("MC steps per second: {:g}".format(steps_per_second))
@@ -969,7 +976,8 @@ def process_sequence_args(args, L, alpha, bimarg, log,
     log("Sequence Setup")
     log("--------------")
 
-    if bimarg is None and args.seqbimarg is not None:
+    if bimarg is None and (hasattr(args, 'seqbimarg') and 
+                           args.seqbimarg is not None):
         log("loading bimarg from {} for independent model sequence "
             "generation".format(args.seqbimarg))
         bimarg = load(args.seqbimarg)

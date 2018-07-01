@@ -620,6 +620,18 @@ void countBivariate(__global uint *bicount,
     }
 }
 
+__kernel
+void bicounts_to_bimarg(__global uint *bicount,
+                        __global float *bimarg,
+                                 uint  nseq) {
+    uint n = get_global_id(0);
+    if(n > NCOUPLE){
+        return;
+    }
+
+    bimarg[n] = ((float)bicount[n])/((float)nseq);
+}
+
 __kernel //call with group size = NHIST, for nPair groups
 void countMarkedBivariate(__global uint *bicount,
                           uint nseq,

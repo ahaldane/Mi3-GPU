@@ -366,6 +366,15 @@ class MCMCGPU:
                      uint32(nseq), seq_dev, uint32(buflen), localhist)
         self.saveEvt(evt, 'calcBicounts')
 
+    def bicounts_to_bimarg(self, nseq):
+        self.log("bicounts_to_bimarg ")
+        q, nPairs = self.q, self.nPairs
+        nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
+        evt = self.prg.bicounts_to_bimarg(self.queue,
+                     (nworkunits,), (self.wgsize,),
+                     self.bufs['bicount'], self.bufs['bi main'], uint32(nseq))
+        self.saveEvt(evt, 'bicounts_to_bimarg')
+
     def calcMarkedBicounts(self):
         self.require('Markseq')
 
@@ -400,6 +409,38 @@ class MCMCGPU:
                              self.bufs['Jpacked'], seq_dev, uint32(buflen),
                              energies_dev)
         self.saveEvt(evt, 'getEnergies')
+    
+    # perturbed J update, inplace. Only affects bi main and J main.
+    def perturbMarg_inplace(self):
+        self.require('Jstep')
+        self.log("weightedMarg")
+        q, L, nPairs, nhist = self.q, self.L, self.nPairs, self.nhist
+
+        nseq = self.nstoredseqs
+        self.packJ('main')
+        buflen = self.nseq['large']
+
+        # pad to be a multiple of wgsize (uses dummy seqs at end)
+        ns_pad = nseq + ((self.wgsize - nseq) % self.wgsize)
+
+        evt = self.prg.perturbedWeights(self.queue, (ns_pad,), (self.wgsize,),
+                       self.bufs['Jpacked'],
+                       self.seqbufs['large'], uint32(buflen),
+                       self.bufs['weights'], self.Ebufs['large'])
+        self.saveEvt(evt, 'perturbedWeights')
+        localarr = cl.LocalMemory(self.vsize*dtype(float32).itemsize)
+        evt = self.prg.sumFloats(self.queue, (self.vsize,), (self.vsize,), 
+                            self.bufs['weights'], self.bufs['neff'], 
+                            uint32(nseq), localarr)
+        self.saveEvt(evt, 'sumFloats')
+
+        localhist = cl.LocalMemory(nhist*q*q*dtype(float32).itemsize)
+        evt = self.prg.weightedMarg(self.queue, (nPairs*nhist,), (nhist,),
+                        self.bibufs['main'], self.bufs['weights'],
+                        self.bufs['neff'], uint32(self.nstoredseqs),
+                        self.seqbufs['large'], uint32(self.nseq['large']),
+                        localhist)
+        self.saveEvt(evt, 'weightedMarg')
 
     # update front bimarg buffer using back J buffer and large seq buffer
     def perturbMarg(self):
@@ -448,6 +489,20 @@ class MCMCGPU:
                         self.seqbufs['large'], uint32(self.nseq['large']),
                         localhist)
         self.events.append((evt, 'weightedMarg'))
+
+    def updateJ_inplace(self, gamma, pc):
+        self.require('Jstep')
+        self.log("updateJ inplace")
+        q, nPairs = self.q, self.nPairs
+        #find next highest multiple of wgsize, for num work units
+        nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
+        evt = self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,),
+                                self.bibufs['target'], self.bibufs['main'],
+                                float32(gamma), float32(pc),
+                                self.Jbufs['main'], self.Jbufs['main'])
+        self.saveEvt(evt, 'updateJ')
+        if self.packedJ == 'main':
+            self.packedJ = None
 
     # updates front J buffer using back J and bimarg buffers
     def updateJ(self, gamma, pc):
@@ -541,8 +596,13 @@ class MCMCGPU:
         buftype, bufshape = bufspec[0], bufspec[1]
         if not isinstance(buf, ndarray):
             buf = array(buf, dtype=buftype)
-        assert(dtype(buftype) == buf.dtype)
-        assert(bufshape == buf.shape) or (bufshape == (1,) and buf.size == 1)
+
+        if dtype(buftype) != buf.dtype:
+            raise ValueError("Buffer dtype mismatch.Expected {}, got {}".format(
+                             dtype(buftype), buf.dtype))
+        if bufshape != buf.shape and not (bufshape == (1,) or buf.size == 1):
+            raise ValueError("Buffer size mismatch. Expected {}, got {}".format(
+                            bufshape, buf.shape))
 
         evt = cl.enqueue_copy(self.queue, self.bufs[bufname], buf,
                               is_blocking=False)
