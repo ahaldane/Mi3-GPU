@@ -373,7 +373,7 @@ def iterNewtonGPU(param, bimarg_model, gpus, log):
         gpu0.perturbMarg_inplace()  # overwrites bi front using J back
 
     #read out result and update bimarg
-    fbuf = [gpu0.getBuf(f) for f in ['bi main', 'neff', 'weights', 'J front']]
+    fbuf = [gpu0.getBuf(f) for f in ['bi main', 'neff', 'weights', 'J main']]
     bimarg_model, Neff, weights, trialJ = [f.read() for f in fbuf]
     Neff = Neff[0]
     SSR = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
@@ -386,11 +386,11 @@ def iterNewtonGPU(param, bimarg_model, gpus, log):
     log("   weights:", printsome(weights))
     #save('bimodel'+str(n), bimarg_model)
 
-    if isinf(Neff) or Neff == 0:
+    if not isfinite(Neff) or Neff == 0:
         raise Exception("Error: Divergence. Decrease gamma or increase "
                         "pc-damping")
 
-    return SSR, bimarg_model
+    return trialJ, bimarg_model
     
 ################################################################################
 
