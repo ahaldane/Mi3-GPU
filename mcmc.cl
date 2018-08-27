@@ -824,7 +824,7 @@ float zeroGauge(float J, uint li, __local float *scratch,
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-    float mean = scratch[0]/q;
+    float mean = scratch[0]/q/q;
     barrier(CLK_LOCAL_MEM_FENCE);
 
     if(li < q){
@@ -943,12 +943,12 @@ float get_unimarg(float ff, uint li,
 
 __kernel
 void updatedJ_l2z(__global float *bimarg_target,
-              __global float *bimarg,
-                       float gamma,
-                       float pc,
-                       float lh, float lJ,
-              __global float *Ji,
-              __global float *Jo){
+                  __global float *bimarg,
+                           float gamma,
+                           float pc,
+                           float lh, float lJ,
+                  __global float *Ji,
+                  __global float *Jo){
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
     uint n = gi*q*q + li;

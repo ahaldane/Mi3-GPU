@@ -500,7 +500,7 @@ class MCMCGPU:
                                 self.bibufs['target'], self.bibufs['main'],
                                 float32(gamma), float32(pc),
                                 self.Jbufs['main'], self.Jbufs['main'])
-        self.saveEvt(evt, 'updateJ')
+        self.saveEvt(evt, 'updateJ inplace')
         if self.packedJ == 'main':
             self.packedJ = None
 
@@ -532,6 +532,21 @@ class MCMCGPU:
                                 self.Jbufs['back'], self.Jbufs['front'])
         self.saveEvt(evt, 'updateJ l2z')
         if self.packedJ == 'front':
+            self.packedJ = None
+
+    # updates front J buffer using back J and bimarg buffers
+    def updateJ_l2z_inplace(self, gamma, pc, lh, lJ):
+        self.require('Jstep')
+        self.log("updateJ l2z inplace")
+        q, nPairs = self.q, self.nPairs
+        #find next highest multiple of wgsize, for num work units
+        evt = self.prg.updatedJ_l2z(self.queue, (nPairs*q*q,), (q*q,),
+                                self.bibufs['target'], self.bibufs['main'],
+                                float32(gamma), float32(pc),
+                                float32(2*lh), float32(2*lJ),
+                                self.Jbufs['main'], self.Jbufs['main'])
+        self.saveEvt(evt, 'updateJ l2z inplace')
+        if self.packedJ == 'main':
             self.packedJ = None
 
     # updates front J buffer using back J and bimarg buffers

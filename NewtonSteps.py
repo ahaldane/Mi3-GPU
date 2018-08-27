@@ -21,7 +21,7 @@ from __future__ import print_function
 from scipy import *
 import scipy
 import scipy.stats.distributions as dists
-from scipy.stats import pearsonr, dirichlet
+from scipy.stats import pearsonr, dirichlet, spearmanr
 import numpy as np
 from numpy.random import randint, shuffle
 import numpy.random
@@ -356,7 +356,7 @@ def iterNewtonGPU(param, bimarg_model, gpus, log):
     gpu0 = gpus[0]
 
     log("")
-    log("Local optimization for {} steps:".format(newtonSteps))
+    log("Local optimization {} for {} steps:".format(param.reg, newtonSteps))
 
     # copy all sequences into gpu-0's large seq buffer
     seq_large = concatenate(readGPUbufs(['seq large'], gpus)[0], axis=0)
@@ -369,7 +369,11 @@ def iterNewtonGPU(param, bimarg_model, gpus, log):
     # actually to coupling updates
     for i in range(newtonSteps): 
         # updates front J buffer using back J and bimarg buffers
-        gpu0.updateJ_inplace(gamma, pc)
+        if param.reg == 'l2z':
+            lh, lJ = param.regarg
+            gpu0.updateJ_l2z_inplace(gamma, pc, lh, lJ)
+        else:
+            gpu0.updateJ_inplace(gamma, pc)
         gpu0.perturbMarg_inplace()  # overwrites bi front using J back
 
     #read out result and update bimarg
@@ -557,8 +561,8 @@ def runMCMC(gpus, couplings, runName, param, log):
             equil_e.append(energies)
 
             if len(equil_e) >= 3:
-                r1, p1 = pearsonr(equil_e[-1], equil_e[-2])
-                r2, p2 = pearsonr(equil_e[-1], equil_e[-3])
+                r1, p1 = spearmanr(equil_e[-1], equil_e[-2])
+                r2, p2 = spearmanr(equil_e[-1], equil_e[-3])
 
                 fmt = "({:.3f}, {:.2g})".format
                 rstr = "Step {}, r=cur:{} prev:{}".format(
@@ -573,7 +577,7 @@ def runMCMC(gpus, couplings, runName, param, log):
             loops = loops*2
             log(rstr + ". Continuing equilibration.")
 
-        e_rho = [pearsonr(ei, equil_e[-1]) for ei in equil_e]
+        e_rho = [spearmanr(ei, equil_e[-1]) for ei in equil_e]
 
     elif trackequil == 0:
         #keep nloop iterator on outside to avoid filling queue with only 1 gpu
@@ -594,7 +598,7 @@ def runMCMC(gpus, couplings, runName, param, log):
             equil_e.append(energies)
 
         # track how well different walkers are equilibrated. Should go to 0
-        e_rho = [pearsonr(ei, equil_e[-1]) for ei in equil_e]
+        e_rho = [spearmanr(ei, equil_e[-1]) for ei in equil_e]
 
     #post-equilibration samples
     for gpu in gpus:
@@ -658,8 +662,8 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
                  'equilibration', 'Bs_{}'.format(step)), concatenate(Bs))
 
             if len(equil_e) >= 3:
-                r1, p1 = pearsonr(equil_e[-1], equil_e[-2])
-                r2, p2 = pearsonr(equil_e[-1], equil_e[-3])
+                r1, p1 = spearmanr(equil_e[-1], equil_e[-2])
+                r2, p2 = spearmanr(equil_e[-1], equil_e[-3])
 
                 fmt = "({:.3f}, {:.2g})".format
                 rstr = "Step {}, r=cur:{} prev:{}".format(
@@ -680,7 +684,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
             loops = loops*2
             log(rstr + ". Continuing equilibration.")
 
-        e_rho = [pearsonr(ei, equil_e[-1]) for ei in equil_e]
+        e_rho = [spearmanr(ei, equil_e[-1]) for ei in equil_e]
     elif trackequil == 0:
         #keep nloop iterator on outside to avoid filling queue with only 1 gpu
         for i in range(nloop):
@@ -704,7 +708,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
             equil_e.append(energies)
 
         # track how well different walkers are equilibrated. Should go to 0
-        e_rho = [pearsonr(ei, equil_e[-1]) for ei in equil_e]
+        e_rho = [spearmanr(ei, equil_e[-1]) for ei in equil_e]
 
     for B,gpu in zip(Bs,gpus):
         gpu.markSeqs(B == B0)

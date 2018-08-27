@@ -723,6 +723,14 @@ def nestedZ(args, log):
     #    Bayesian computation
     #    Nikolas S. Burkoff, Csilla Varnai, Stephen A. Wells and David L. Wild
     # we can probably do K = 1024, P = 256 or even better
+    #
+    # see also:
+    #    Nested sampling for Potts models
+    #    Murray, MacKay, MacKay, MacKay, NIPS 2005
+    #    (This is specifically for 2-d finite-range Potts models)
+    # 
+    #    Nested sampling, statistical physics and the Potts model
+    #    Pfeifenberger, Rumetshofer, von der Linden, 2017
 
 def ExactZS(args, log):
     raise Exception("Not implemented yet")
@@ -732,11 +740,12 @@ def ExactZS(args, log):
     # sequences would not need to be loaded from memory, but could
     # be computed on the fly. Z = sum(exp(-E)), and S = -sum(p*log(p))
 
-def testing(args, log):
+def testing(orig_args, args, log):
     parser = argparse.ArgumentParser(prog=progname + ' test',
                                      description="for testing")
     addopt(parser, 'GPU options',         'nwalkers wgsize gpus')
     addopt(parser, 'Newton Step Options', 'bimarg gamma damping')
+    addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'outdir')
 
     args = parser.parse_args(args)
@@ -767,18 +776,21 @@ def testing(args, log):
         gpu.initLargeBufs(nwalk)
         gpu.initJstep()
 
+    p.update(process_potts_args(args, p.L, p.q, p.bimarg, log))
+    L, q, alpha = p.L, p.q, p.alpha
+
     rbim = p.bimarg + 0.1*rand(*(p.bimarg.shape))
     rbim = (rbim/sum(rbim, axis=1)[:,newaxis]).astype('f4')
     for g in gpus:
         g.setBuf('bi target', rbim)
         g.setBuf('bi back', p.bimarg)
 
-    save(os.path.join(outdir, 'bitarget'), rbim)
-    save(os.path.join(outdir, 'binew'), p.bimarg)
+    #save(os.path.join(outdir, 'bitarget'), rbim)
+    #save(os.path.join(outdir, 'binew'), p.bimarg)
 
-    for g in gpus:
-        g.updateJ_Lstep(p.gamma, p.damping)
-    save(os.path.join(outdir, 'dJ0001'), readGPUbufs(['J front'], gpus)[0][0])
+    #for g in gpus:
+    #    g.updateJ_Lstep(p.gamma, p.damping)
+    #save(os.path.join(outdir, 'dJ0001'), readGPUbufs(['J front'], gpus)[0][0])
 
     #res = readGPUbufs(['J front', 'J back'], gpus)
     #dJ1, dJ2 = res[0][0], res[1][0]
@@ -786,8 +798,10 @@ def testing(args, log):
     #save(os.path.join(outdir, 'dJ2'), dJ2)
 
     for g in gpus:
-        g.updateJ_Lstep(p.gamma, 0.01)
-    save(os.path.join(outdir, 'dJ01'), readGPUbufs(['J front'], gpus)[0][0])
+        g.setBuf('J back', p.couplings)
+
+    gpus[0].updateJ_l2z(0.004, 0.1, 0.01, 140)
+    save(os.path.join(outdir, 'J0'), gpus[0].getBuf('J front').read())
 
 ################################################################################
 
