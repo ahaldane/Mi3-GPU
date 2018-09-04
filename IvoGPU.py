@@ -314,7 +314,7 @@ def inverseIsing(orig_args, args, log):
             str([s.shape[0] for s in p.seqs_large])))
         seqs = p.seqs_large
         if len(seqs) == 1:
-            seqs = np.split(seqs[0], len(gpus)) # could refine for unequal nwalkers
+            seqs = np.split(seqs[0], len(gpus)) # refine for unequal nwalkers?
         for g,s in zip(gpus, seqs):
             g.storeSeqs(s)
 
@@ -337,10 +337,10 @@ def inverseIsing(orig_args, args, log):
     if p.equiltime == 'auto':
         log("In each round, running {} MC walkers until equilibrated")
     else:
-        log(("In each round, running {} MC walkers for {} equilibration loops then "
-             "sampling every {} loops to get {} samples ({} total seqs) with {} MC "
-             "steps per loop (Each walker equilibrated a total of {} MC steps, "
-             "or {:.1f} steps per position)."
+        log(("In each round, running {} MC walkers for {} equilibration loops "
+             "then sampling every {} loops to get {} samples ({} total seqs) "
+             "with {} MC steps per loop (Each walker equilibrated a total of "
+             "{} MC steps, or {:.1f} steps per position)."
              ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples,
                     p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime,
                     p.nsteps*p.equiltime/float(p.L)))
@@ -405,10 +405,10 @@ def getEnergies(orig_args, args, log):
     log("==================")
 
     for gpu in gpus:
-        gpu.setBuf('J main', p.couplings)
+        gpu.setBuf('J', p.couplings)
 
     for gpu in gpus:
-        gpu.calcEnergies('main', 'main')
+        gpu.calcEnergies('main')
     es = concatenate(readGPUbufs(['E main'], gpus)[0])
 
     log("Saving results to file '{}'".format(args.out))
@@ -489,7 +489,7 @@ def MCMCbenchmark(orig_args, args, log):
 
     #initialize
     for gpu in gpus:
-        gpu.setBuf('J main', p.couplings)
+        gpu.setBuf('J', p.couplings)
 
     #warmup
     log("Warmup run...")
@@ -573,10 +573,10 @@ def equilibrate(orig_args, args, log):
     if p.equiltime == 'auto':
         log("In each round, running {} MC walkers until equilibrated")
     else:
-        log(("In each round, running {} MC walkers for {} equilibration loops then "
-             "sampling every {} loops to get {} samples ({} total seqs) with {} MC "
-             "steps per loop (Each walker equilibrated a total of {} MC steps, "
-             "or {:.1f} steps per position)."
+        log(("In each round, running {} MC walkers for {} equilibration loops "
+             "then sampling every {} loops to get {} samples ({} total seqs) "
+             "with {} MC steps per loop (Each walker equilibrated a total of "
+             "{} MC steps, or {:.1f} steps per position)."
              ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples,
                     p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime,
                     p.nsteps*p.equiltime/float(p.L)))
@@ -688,7 +688,7 @@ def subseqFreq(orig_args, args, log):
         gpu.setBuf('seq main', sseqs)
         gpu.setBuf('seq large', bs)
         gpu.markPos(fixedmarks)
-        gpu.setBuf('J main', p.couplings)
+        gpu.setBuf('J', p.couplings)
 
     log("")
 
@@ -697,7 +697,7 @@ def subseqFreq(orig_args, args, log):
     log("")
 
     for gpu in gpus:
-        gpu.calcEnergies('large', 'main')
+        gpu.calcEnergies('large')
     origEs = concatenate(readGPUbufs(['E large'], gpus)[0])
 
     log("Getting substituted energies...")
@@ -707,7 +707,7 @@ def subseqFreq(orig_args, args, log):
         # replaced fixed positions by subsequence, and calc energies
         for gpu in gpus:
             gpu.copySubseq(n)
-            gpu.calcEnergies('large', 'main')
+            gpu.calcEnergies('large')
         energies = concatenate(readGPUbufs(['E large'], gpus)[0])
         logf[n] = logsumexp(origEs - energies)
 

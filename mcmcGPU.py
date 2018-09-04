@@ -40,10 +40,6 @@ cf = cl.mem_flags
 #The gpu has two sequence buffers: A "small" buffer for MCMC gpu generation,
 #and a "large buffer" for combined sequence sets.
 
-#The GPU also has double buffers for Js and for Marginals ('front' and 'back').
-#You can copy one buffer to the other with 'storebuf', and swap them with
-#'swapbuf'.
-
 #Note that in openCL implementations there is generally a limit on the
 #number of queued items allowed in a context. If you reach the limit, all queues
 #will block until a kernel finishes. So you must be careful that one GPU
@@ -115,8 +111,6 @@ class MCMCGPU:
 
         self.bufs = {}
         self.buf_spec = {}
-        self.Jbufs = {}
-        self.bibufs = {}
         self.seqbufs = {}
         self.Ebufs = {}
         self.largebufs = []
@@ -124,12 +118,12 @@ class MCMCGPU:
         # setup essential buffers
         nPairs, SWORDS = self.nPairs, self.SWORDS
         self._setupBuffer( 'Jpacked', '<f4', (L*L, q*q))
-        self._setupBuffer(  'J main', '<f4', (nPairs, q*q))
-        self._setupBuffer( 'bi main', '<f4', (nPairs, q*q)),
+        self._setupBuffer(       'J', '<f4', (nPairs, q*q))
+        self._setupBuffer(      'bi', '<f4', (nPairs, q*q)),
         self._setupBuffer( 'bicount', '<u4', (nPairs, q*q)),
         self._setupBuffer('seq main', '<u4', (SWORDS, self.nseq['main'])),
         self._setupBuffer(  'E main', '<f4', (self.nseq['main'],)),
-        self.packedJ = None #use to keep track of which Jbuf is packed
+        self.packedJ = False #use to keep track of whether J is packed
 
     def log(self, str):
         #logs are rare, so just open the file every time
@@ -171,8 +165,9 @@ class MCMCGPU:
         # add it to convenience dicts if applicable
         names = bufname.split()
         if len(names) > 1:
-            {'J': self.Jbufs, 'bi': self.bibufs, 'seq': self.seqbufs, 
-             'E': self.Ebufs}[names[0]][names[1]] = buf
+            bufs = {'seq': self.seqbufs, 'E': self.Ebufs}
+            if names[0] in bufs:
+                bufs[names[0]][names[1]] = buf
 
     def require(self, *reqs):
         for r in reqs:
@@ -233,21 +228,10 @@ class MCMCGPU:
 
         nPairs, q = self.nPairs, self.q
         self._setupBuffer('bi target', '<f4',  (nPairs, q*q))
-        self._setupBuffer(     'Creg', '<f4',  (nPairs, q*q))
         self._setupBuffer(     'neff', '<f4',  (1,))
         self._setupBuffer(  'weights', '<f4',  (self.nseq['large'],))
 
         self.largebufs.append('weights')
-        self.initBackBufs()
-
-    def initBackBufs(self):
-        self._initcomponent('backBufs')
-
-        nPairs, q = self.nPairs, self.q
-        self._setupBuffer(  'J front', '<f4',  (nPairs, q*q))
-        self._setupBuffer(   'J back', '<f4',  (nPairs, q*q))
-        self._setupBuffer( 'bi front', '<f4',  (nPairs, q*q))
-        self._setupBuffer(  'bi back', '<f4',  (nPairs, q*q))
 
     def packSeqs(self, seqs):
         "converts seqs to uchars, padded to 32bits, assume GPU is little endian"
@@ -265,22 +249,21 @@ class MCMCGPU:
             bseqs.view(uint32)[:,i] = mem[i,:]
         return bseqs[:,:self.L]
 
-    def packJ(self, Jbufname):
+    def packJ(self):
         """convert from format where every row is a unique ij pair (L choose 2
         rows) to format with every pair, all orders (L^2 rows)."""
 
         # quit if J already loaded/packed
-        if self.packedJ == Jbufname:
+        if self.packedJ:
             return  
 
-        self.log("packJ " + Jbufname)
+        self.log("packJ")
 
         q, nPairs = self.q, self.nPairs
-        J_dev = self.Jbufs[Jbufname]
         evt = self.prg.packfV(self.queue, (nPairs*q*q,), (q*q,),
-                        J_dev, self.bufs['Jpacked'])
+                        self.bufs['J'], self.bufs['Jpacked'])
         self.saveEvt(evt, 'packJ')
-        self.packedJ = Jbufname
+        self.packedJ = True
 
     def _initMCMC_RNG(self, nMCMCcalls):
         self.require('MCMC')
@@ -317,7 +300,7 @@ class MCMCGPU:
 
         nseq = self.nseq['main']
         nsteps = self.nsteps
-        self.packJ('main')
+        self.packJ()
 
         # all gpus use same rng series. This way there is no difference
         # between running on one gpu vs splitting on multiple
@@ -336,14 +319,14 @@ class MCMCGPU:
         for n in range(nloops):
             self.runMCMC()
             e1 = self.getBuf('E main').read()
-            self.calcEnergies('main', 'main')
+            self.calcEnergies('main')
             e2 = self.getBuf('E main').read()
             log("Run", n, "Error:", mean((e1-e2)**2))
             log('    Final E MC', printsome(e1), '...')
             log("    Final E rc", printsome(e2), '...')
 
             seqs = self.getBuf('seq main').read()
-            J = self.getBuf('J main').read()
+            J = self.getBuf('J').read()
             e3 = getEnergies(seqs, J)
             log("    Exact E", e3[:5])
             log("    Error:", mean([float((a-b)**2) for a,b in zip(e1, e3)]))
@@ -372,7 +355,7 @@ class MCMCGPU:
         nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
         evt = self.prg.bicounts_to_bimarg(self.queue,
                      (nworkunits,), (self.wgsize,),
-                     self.bufs['bicount'], self.bufs['bi main'], uint32(nseq))
+                     self.bufs['bicount'], self.bufs['bi'], uint32(nseq))
         self.saveEvt(evt, 'bicounts_to_bimarg')
 
     def calcMarkedBicounts(self):
@@ -390,8 +373,8 @@ class MCMCGPU:
                      self.bufs['markseqs'], seq_dev, localhist)
         self.saveEvt(evt, 'calcMarkedBicounts')
 
-    def calcEnergies(self, seqbufname, Jbufname):
-        self.log("calcEnergies " + seqbufname + " " + Jbufname)
+    def calcEnergies(self, seqbufname):
+        self.log("calcEnergies " + seqbufname)
 
         energies_dev = self.Ebufs[seqbufname]
         seq_dev = self.seqbufs[seqbufname]
@@ -404,45 +387,12 @@ class MCMCGPU:
             # pad to be a multiple of wgsize (uses dummy seqs at end)
             nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
 
-        self.packJ(Jbufname)
+        self.packJ()
         evt = self.prg.getEnergies(self.queue, (nseq,), (self.wgsize,),
                              self.bufs['Jpacked'], seq_dev, uint32(buflen),
                              energies_dev)
         self.saveEvt(evt, 'getEnergies')
     
-    # perturbed J update, inplace. Only affects bi main and J main.
-    def perturbMarg_inplace(self):
-        self.require('Jstep')
-        self.log("weightedMarg")
-        q, L, nPairs, nhist = self.q, self.L, self.nPairs, self.nhist
-
-        nseq = self.nstoredseqs
-        self.packJ('main')
-        buflen = self.nseq['large']
-
-        # pad to be a multiple of wgsize (uses dummy seqs at end)
-        ns_pad = nseq + ((self.wgsize - nseq) % self.wgsize)
-
-        evt = self.prg.perturbedWeights(self.queue, (ns_pad,), (self.wgsize,),
-                       self.bufs['Jpacked'],
-                       self.seqbufs['large'], uint32(buflen),
-                       self.bufs['weights'], self.Ebufs['large'])
-        self.saveEvt(evt, 'perturbedWeights')
-        localarr = cl.LocalMemory(self.vsize*dtype(float32).itemsize)
-        evt = self.prg.sumFloats(self.queue, (self.vsize,), (self.vsize,), 
-                            self.bufs['weights'], self.bufs['neff'], 
-                            uint32(nseq), localarr)
-        self.saveEvt(evt, 'sumFloats')
-
-        localhist = cl.LocalMemory(nhist*q*q*dtype(float32).itemsize)
-        evt = self.prg.weightedMarg(self.queue, (nPairs*nhist,), (nhist,),
-                        self.bibufs['main'], self.bufs['weights'],
-                        self.bufs['neff'], uint32(self.nstoredseqs),
-                        self.seqbufs['large'], uint32(self.nseq['large']),
-                        localhist)
-        self.saveEvt(evt, 'weightedMarg')
-
-    # update front bimarg buffer using back J buffer and large seq buffer
     def perturbMarg(self):
         self.log("perturbMarg")
         self.calcWeights()
@@ -456,7 +406,7 @@ class MCMCGPU:
         #overwrites weights, neff
         #assumes seqmem_dev, energies_dev are filled in
         nseq = self.nstoredseqs
-        self.packJ('back')
+        self.packJ()
         buflen = self.nseq['large']
 
         # pad to be a multiple of wgsize (uses dummy seqs at end)
@@ -484,98 +434,40 @@ class MCMCGPU:
         #perturbMarg
         localhist = cl.LocalMemory(nhist*q*q*dtype(float32).itemsize)
         evt = self.prg.weightedMarg(self.queue, (nPairs*nhist,), (nhist,),
-                        self.bibufs['front'], self.bufs['weights'],
+                        self.bufs['bi'], self.bufs['weights'],
                         self.bufs['neff'], uint32(self.nstoredseqs),
                         self.seqbufs['large'], uint32(self.nseq['large']),
                         localhist)
         self.events.append((evt, 'weightedMarg'))
 
-    def updateJ_inplace(self, gamma, pc):
-        self.require('Jstep')
-        self.log("updateJ inplace")
-        q, nPairs = self.q, self.nPairs
-        #find next highest multiple of wgsize, for num work units
-        nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
-        evt = self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,),
-                                self.bibufs['target'], self.bibufs['main'],
-                                float32(gamma), float32(pc),
-                                self.Jbufs['main'], self.Jbufs['main'])
-        self.saveEvt(evt, 'updateJ inplace')
-        if self.packedJ == 'main':
-            self.packedJ = None
-
-    # updates front J buffer using back J and bimarg buffers
     def updateJ(self, gamma, pc):
         self.require('Jstep')
         self.log("updateJ")
         q, nPairs = self.q, self.nPairs
         #find next highest multiple of wgsize, for num work units
         nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
+        
+        bibuf = self.bufs['bi']
+        Jin = Jout = self.bufs['J']
         evt = self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,),
-                                self.bibufs['target'], self.bibufs['back'],
-                                float32(gamma), float32(pc),
-                                self.Jbufs['back'], self.Jbufs['front'])
+                                self.bufs['bi target'], bibuf,
+                                float32(gamma), float32(pc), Jin, Jout)
         self.saveEvt(evt, 'updateJ')
-        if self.packedJ == 'front':
-            self.packedJ = None
+        self.packedJ = False
 
-    # updates front J buffer using back J and bimarg buffers
     def updateJ_l2z(self, gamma, pc, lh, lJ):
         self.require('Jstep')
         self.log("updateJ l2z")
         q, nPairs = self.q, self.nPairs
-        #find next highest multiple of wgsize, for num work units
+
+        bibuf = self.bufs['bi']
+        Jin = Jout = self.bufs['J']
         evt = self.prg.updatedJ_l2z(self.queue, (nPairs*q*q,), (q*q,),
-                                self.bibufs['target'], self.bibufs['back'],
+                                self.bufs['bi target'], bibuf,
                                 float32(gamma), float32(pc),
-                                float32(2*lh), float32(2*lJ),
-                                self.Jbufs['back'], self.Jbufs['front'])
+                                float32(2*lh), float32(2*lJ), Jin, Jout)
         self.saveEvt(evt, 'updateJ l2z')
-        if self.packedJ == 'front':
-            self.packedJ = None
-
-    # updates front J buffer using back J and bimarg buffers
-    def updateJ_l2z_inplace(self, gamma, pc, lh, lJ):
-        self.require('Jstep')
-        self.log("updateJ l2z inplace")
-        q, nPairs = self.q, self.nPairs
-        #find next highest multiple of wgsize, for num work units
-        evt = self.prg.updatedJ_l2z(self.queue, (nPairs*q*q,), (q*q,),
-                                self.bibufs['target'], self.bibufs['main'],
-                                float32(gamma), float32(pc),
-                                float32(2*lh), float32(2*lJ),
-                                self.Jbufs['main'], self.Jbufs['main'])
-        self.saveEvt(evt, 'updateJ l2z inplace')
-        if self.packedJ == 'main':
-            self.packedJ = None
-
-    # updates front J buffer using back J and bimarg buffers
-    def updateJ_Lstep(self, gamma, pc):
-        self.require('Jstep')
-        self.log("updateJ_Lstep")
-        q, nPairs = self.q, self.nPairs
-        #find next highest multiple of wgsize, for num work units
-        evt = self.prg.updatedJ_Lstep2(self.queue, (nPairs*q*q,), (q*q,),
-                                self.bibufs['target'], self.bibufs['back'],
-                                float32(gamma), float32(pc), 
-                                self.Jbufs['back'], self.Jbufs['front'])
-        self.saveEvt(evt, 'updateJ_Lstep')
-        if self.packedJ == 'front':
-            self.packedJ = None
-    
-    # XXX updateJ_reg
-    def updateJ_weightfn(self, gamma, pc):
-        self.require('Jstep')
-        self.log("updateJPerturb_weightfn")
-        q, nPairs = self.q, self.nPairs
-        evt = self.prg.updatedJ_weightfn(self.queue, (nPairs*q*q,), (q*q,), 
-                                self.bibufs['target'], self.bibufs['back'], 
-                                self.bufs['Creg'],
-                                float32(gamma), float32(pc),
-                                self.Jbufs['back'], self.Jbufs['front'])
-        self.saveEvt(evt, 'updateJPerturb_weightfn')
-        if self.packedJ == 'front':
-            self.packedJ = None
+        self.packedJ = None
 
     def getBuf(self, bufname, truncateLarge=True):
         """get buffer data. truncateLarge means only return the
@@ -624,41 +516,9 @@ class MCMCGPU:
         self.saveEvt(evt, 'setBuf', buf.nbytes)
         #unset packedJ flag if we modified that J buf
         if bufname.split()[0] == 'J':
-            if bufname.split()[1] == self.packedJ:
-                self.packedJ = None
+            self.packedJ = None
         if bufname == 'seq large':
             self.nstoredseqs = bufshape[1]
-
-    def swapBuf(self, buftype):
-        self.require('backBufs')
-        self.log("swapBuf " + buftype)
-
-        #update convenience dicts
-        bufs = {'J': self.Jbufs, 'bi': self.bibufs}[buftype]
-        bufs['front'], bufs['back'] = bufs['back'], bufs['front']
-        #update self.bufs
-        bufs, t = self.bufs, buftype
-        bufs[t+' front'], bufs[t+' back'] = bufs[t+' back'], bufs[t+' front']
-        #update packedJ
-        if buftype == 'J':
-            self.packedJ = {'front':  'back',
-                             'back': 'front'}.get(self.packedJ, self.packedJ)
-
-    def storeBuf(self, buftype):
-        self.require('backBufs')
-        self.log("storeBuf " + buftype)
-        self.copyBuf(buftype+' front', buftype+' back')
-
-    def copyBuf(self, srcname, dstname):
-        self.log("copyBuf " + srcname + " " + dstname)
-        assert(srcname.split()[0] == dstname.split()[0])
-        assert(self.buf_spec[srcname][1] == self.buf_spec[dstname][1])
-        srcbuf = self.bufs[srcname]
-        dstbuf = self.bufs[dstname]
-        evt = cl.enqueue_copy(self.queue, dstbuf, srcbuf)
-        self.saveEvt(evt, 'copyBuf')
-        if dstname.split()[0] == 'J' and self.packedJ == dstname.split()[1]:
-            self.packedJ = None
 
     def markPos(self, marks):
         self.require('Subseq')

@@ -144,211 +144,33 @@ def meanarr(arrlist):
 ################################################################################
 #local optimization related code
 
-def newtonStep(n, bimarg_target, gamma, pc, reg, gpus, log):
-    # expects the back buffers to contain current couplings & bimarg,
-    # will overwrite front buffers
-
-    # calculate perturbed marginals
-    for gpu in gpus:
-        # note: updateJ should give same result on all GPUs
-        # overwrites J front using bi back and J back
-        if reg[0] == 'Creg':
-            gpu.updateJ_weightfn(gamma, pc)
-        elif reg[0] == 'l2z':
-            lh, lJ = reg[1]
-            gpu.updateJ_l2z(gamma, pc, lh, lJ)
-        elif reg[0] == 'Lstep':
-            gpu.updateJ_Lstep(gamma, pc)
-        else:
-            gpu.updateJ(gamma, pc)
-
-    for gpu in gpus:
-        gpu.swapBuf('J') #temporarily put trial J in back buffer
-        gpu.perturbMarg() #overwrites bi front using J back
-        gpu.swapBuf('J')
-    # at this point, front = trial param, back = last accepted param
-    
-    #read out result and update bimarg
-    res = readGPUbufs(['bi front', 'neff', 'weights'], gpus)
-    bimargb, Neffs, weightb = res
-    Neff = sum(Neffs)
-    bimarg_model = sumarr([N*buf for N,buf in zip(Neffs, bimargb)])/Neff
-    weights = concatenate(weightb)
-    SSR = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
-    trialJ = gpus[0].getBuf('J front').read()
-    
-    #display result
-    log("")
-    log(("{}  ssr: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
-         n, SSR, Neff, min(weights), max(weights)))
-    log("    trialJ:", printsome(trialJ))
-    log("    bimarg:", printsome(bimarg_model))
-    log("   weights:", printsome(weights))
-    #save('bimodel'+str(n), bimarg_model)
-
-    if isinf(Neff) or Neff == 0:
-        raise Exception("Error: Divergence. Decrease gamma or increase "
-                        "pc-damping")
-    
-    # dump profiling info if profiling is turned on
-    for gpu in gpus:
-        gpu.logProfile()
-
-    return SSR, bimarg_model
-
-def newtonStep_GPU(n, bimarg_target, gamma, pc, reg, gpus, log):
-    # expects the back buffers to contain current couplings & bimarg,
-    # will overwrite front buffers
-
-    # calculate perturbed marginals
-    for gpu in gpus:
-        # note: updateJ should give same result on all GPUs
-        # overwrites J front using bi back and J back
-        if reg[0] == 'Creg':
-            gpu.updateJ_weightfn(gamma, pc)
-        elif reg[0] == 'l2z':
-            lh, lJ = reg[1]
-            gpu.updateJ_l2z(gamma, pc, lh, lJ)
-        elif reg[0] == 'Lstep':
-            gpu.updateJ_Lstep(gamma, pc)
-        else:
-            gpu.updateJ(gamma, pc)
-
-    for gpu in gpus:
-        gpu.swapBuf('J') #temporarily put trial J in back buffer
-        gpu.perturbMarg() #overwrites bi front using J back
-        gpu.swapBuf('J')
-    # at this point, front = trial param, back = last accepted param
-    
-    #read out result and update bimarg
-    res = readGPUbufs(['bi front', 'neff', 'weights'], gpus)
-    bimargb, Neffs, weightb = res
-    Neff = sum(Neffs)
-    bimarg_model = sumarr([N*buf for N,buf in zip(Neffs, bimargb)])/Neff
-    weights = concatenate(weightb)
-    SSR = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
-    trialJ = gpus[0].getBuf('J front').read()
-    
-    #display result
-    log("")
-    log(("{}  ssr: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
-         n, SSR, Neff, min(weights), max(weights)))
-    log("    trialJ:", printsome(trialJ))
-    log("    bimarg:", printsome(bimarg_model))
-    log("   weights:", printsome(weights))
-    #save('bimodel'+str(n), bimarg_model)
-
-    if isinf(Neff) or Neff == 0:
-        raise Exception("Error: Divergence. Decrease gamma or increase "
-                        "pc-damping")
-    
-    # dump profiling info if profiling is turned on
-    for gpu in gpus:
-        gpu.logProfile()
-
-    return SSR, bimarg_model
-
-import pseudocount
-def resample_target(unicounts, gpus):
-    L, q = unicounts.shape
-    N = sum(unicounts[0,:])
-
-    unimarg = unicounts/float(N)
-    bins = cumsum(unimarg, axis=1)
-    unicountss = [bincount(searchsorted(cp, rand(N)), minlength=8)
-                  for cp in bins]
-    unimargss = array(unicountss)/float(N)
-    pairs = [(i,j) for i in range(L-1) for j in range(i+1,L)]
-    bimarg_indep_ss = array([outer(unimargss[i], unimargss[j]).flatten()
-                             for i,j in pairs], dtype='<f4')
-    bimarg_indep_ss = pseudocount.prior(bimarg_indep_ss, 0.001)
-
-    for gpu in gpus:
-        gpu.setBuf('bi target', bimarg_indep_ss)
-
 def singleNewton(bimarg, gamma, pc, gpus):
-    gpus[0].setBuf('bi back', bimarg)
-    gpus[0].copyBuf('J main', 'J back')
+    gpus[0].setBuf('bi', bimarg)
     # note: updateJ should give same result on all GPUs
     # overwrites J front using bi back and J back
-    gpus[0].updateJ(gamma, pc)
-    return gpus[0].getBuf('J front').read()
+    if param.reg == 'l2z':
+        lh, lJ = param.regarg
+        gpus[0].updateJ_l2z(gamma, pc, lh, lJ)
+    else:
+        gpus[0].updateJ(gamma, pc)
+    return gpus[0].getBuf('J').read()
 
-def resampled_target(ff, N, gpus):
-    #ct = N*ff
-    #sample = dists.binom.rvs(N, dists.beta.rvs(1+ct, 1+N-ct))
-    #ff = sample/sum(sample, axis=1).astype('<f4')[:,newaxis]
-    #return pseudocount.prior(ff, 1e-8).astype('<f4')
-    c = 0.5+N*ff
-    return np.array([dirichlet.rvs(ci)[0] for ci in c]).astype('<f4')
+def NewtonStatus(n, gpu0, bimarg_target, log):
+    #read out result and update bimarg
+    fbuf = [gpu0.getBuf(f) for f in ['bi', 'neff', 'weights', 'J']]
+    bimarg_model, Neff, weights, trialJ = [f.read() for f in fbuf]
+    Neff = Neff[0]
+    SSR = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
+    
+    #display result
+    log(("{}  ssr: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
+         n, SSR, Neff, min(weights), max(weights)))
+    log("    trialJ:", printsome(trialJ))
+    log("    bimarg:", printsome(bimarg_model))
+    log("   weights:", printsome(weights))
+    return Neff, bimarg_model, trialJ
 
 def iterNewton(param, bimarg_model, gpus, log):
-    gamma = gamma0 = param.gamma0
-    newtonSteps = param.newtonSteps
-    pc = param.pcdamping
-    gammasteps = 16
-    bimarg_target = param.bimarg
-    reg = (param.reg, param.regarg)
-
-    # setup front and back buffers. Back buffers should contain last accepted
-    # values, front buffers vonctain trial values.
-    for gpu in gpus:
-        gpu.calcEnergies('large', 'main')
-        gpu.copyBuf('J main', 'J back')
-        gpu.copyBuf('J main', 'J front')
-        gpu.setBuf('bi main', bimarg_model)
-        gpu.copyBuf('bi main', 'bi back')
-
-    log("Local target: ", printsome(bimarg_target))
-    log("Local optimization:")
-    
-    # newton updates
-    n = 1
-    lastSSR = inf
-    nrejects = 0
-    for i in range(newtonSteps): 
-        #resample_target(unicounts, gpus)
-        if param.noiseN is not None:
-            bimarg_target_noise = resampled_target(bimarg_target, 
-                                                   param.noiseN, gpus)
-            for gpu in gpus:
-                gpu.setBuf('bi target', bimarg_target_noise)
-
-        # increase gamma every gammasteps steps
-        if 0 and i != 0 and i % gammasteps == 0:
-            if nrejects == gammasteps:
-                log("Too many ssr increases. Stopping newton updates.")
-                break
-            gamma = gamma*2
-            log("Increasing gamma to {}".format(gamma))
-            nrejects = 0
-        
-        # do newton step
-        ssr, bimarg_model = newtonStep(n, bimarg_target, gamma, pc, reg,
-                                       gpus, log)
-
-        # accept move if ssr decreases, reject otherwise
-        if True or ssr <= lastSSR:  # accept move
-            #keep this step, and store current J and bm to back buffer
-            for gpu in gpus:
-                gpu.storeBuf('J') #copy trial J to back buffer
-                gpu.setBuf('bi front', bimarg_model)
-                gpu.storeBuf('bi')
-            n += 1
-            lastSSR = ssr
-        else: # reject move
-            gamma = gamma/2
-            log("Reducing gamma to {} and repeating step".format(gamma))
-            nrejects += 1
-            if gamma < gamma0/64:
-                log("gamma decreased too much relative to gamma0. Stopping")
-                break
-
-    # return back buffer, which contains last accepted move
-    return (gpus[0].getBuf('J back').read(), 
-            gpus[0].getBuf('bi back').read())
-
-def iterNewtonGPU(param, bimarg_model, gpus, log):
     bimarg_target = param.bimarg
     gamma = param.gamma0
     newtonSteps = param.newtonSteps
@@ -356,13 +178,15 @@ def iterNewtonGPU(param, bimarg_model, gpus, log):
     gpu0 = gpus[0]
 
     log("")
-    log("Local optimization {} for {} steps:".format(param.reg, newtonSteps))
+    log("Local optimization for {} steps:".format(newtonSteps))
+    if param.reg:
+        log("Using regularization {}".format(param.reg))
 
     # copy all sequences into gpu-0's large seq buffer
     seq_large = concatenate(readGPUbufs(['seq large'], gpus)[0], axis=0)
     gpu0.clearLargeSeqs()
     gpu0.storeSeqs(seq_large)
-    gpu0.calcEnergies('large', 'main')
+    gpu0.calcEnergies('large')
     gpu0.calcBicounts('large')
     gpu0.bicounts_to_bimarg(gpu0.nstoredseqs)
     
@@ -371,28 +195,24 @@ def iterNewtonGPU(param, bimarg_model, gpus, log):
         # updates front J buffer using back J and bimarg buffers
         if param.reg == 'l2z':
             lh, lJ = param.regarg
-            gpu0.updateJ_l2z_inplace(gamma, pc, lh, lJ)
+            gpu0.updateJ_l2z(gamma, pc, lh, lJ)
         else:
-            gpu0.updateJ_inplace(gamma, pc)
-        gpu0.perturbMarg_inplace()  # overwrites bi front using J back
+            gpu0.updateJ(gamma, pc)
+        gpu0.perturbMarg()  # overwrites bi front using J back
 
-    #read out result and update bimarg
-    fbuf = [gpu0.getBuf(f) for f in ['bi main', 'neff', 'weights', 'J main']]
-    bimarg_model, Neff, weights, trialJ = [f.read() for f in fbuf]
-    Neff = Neff[0]
-    SSR = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
-    
-    #display result
-    log(("ssr: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
-         SSR, Neff, min(weights), max(weights)))
-    log("    trialJ:", printsome(trialJ))
-    log("    bimarg:", printsome(bimarg_model))
-    log("   weights:", printsome(weights))
-    #save('bimodel'+str(n), bimarg_model)
+        # optinally output iteration status here
+        if 0: # XXX disabled for now
+            NewtonStatus(i, gpu0, bimarg_target, log)
+
+    Neff, bimarg_model, trialJ = NewtonStatus(i, gpu0, bimarg_target, log)
 
     if not isfinite(Neff) or Neff == 0:
         raise Exception("Error: Divergence. Decrease gamma or increase "
                         "pc-damping")
+
+    # dump profiling info if profiling is turned on
+    for gpu in gpus:
+        gpu.logProfile()
 
     return trialJ, bimarg_model
     
@@ -408,8 +228,8 @@ def preOpt(param, gpus, log):
     log("Pre-Optimization using large seq buffer:")
     
     for gpu in gpus:
-        gpu.setBuf('J main', couplings)
-        gpu.calcEnergies('large', 'main')
+        gpu.setBuf('J', couplings)
+        gpu.calcEnergies('large')
         gpu.calcBicounts('large')
     res = readGPUbufs(['bicount', 'seq large', 'E large'], gpus)
     bicount, seqs, energies = sumarr(res[0]), res[1], concatenate(res[2])
@@ -433,7 +253,7 @@ def preOpt(param, gpus, log):
 
     #modify couplings a little
     if param.newtonSteps != 1:
-        couplings, bimarg_p = iterNewtonGPU(param, bimarg, gpus, log)
+        couplings, bimarg_p = iterNewton(param, bimarg, gpus, log)
         save(os.path.join(outdir, 'preopt', 'perturbedbimarg'), bimarg_p)
         save(os.path.join(outdir, 'preopt', 'perturbedJ'), couplings)
     else:
@@ -464,7 +284,7 @@ def swapTemps(gpus, dummy, N):
     t1 = time.time()
 
     for gpu in gpus:
-        gpu.calcEnergies('main', 'main')
+        gpu.calcEnergies('main')
     es, Bs = map(concatenate, readGPUbufs(['E main', 'Bs'], gpus))
     ns = len(es)
 
@@ -516,7 +336,7 @@ def swapTemps(gpus, dummy, N):
 def track_main_bufs(gpus, savedir=None, step=None):
     for gpu in gpus:
         gpu.calcBicounts('main')
-        gpu.calcEnergies('main', 'main')
+        gpu.calcEnergies('main')
     bicounts, energies = readGPUbufs(['bicount', 'E main'], gpus)
     bicounts = sumarr(bicounts)
     bimarg_model = bicounts.astype('f4')/float32(sum(bicounts[0,:]))
@@ -537,7 +357,7 @@ def runMCMC(gpus, couplings, runName, param, log):
 
     #get ready for MCMC
     for gpu in gpus:
-        gpu.setBuf('J main', couplings)
+        gpu.setBuf('J', couplings)
     
     #equilibration MCMC
     if nloop == 'auto':
@@ -614,7 +434,7 @@ def runMCMC(gpus, couplings, runName, param, log):
     #process results
     for gpu in gpus:
         gpu.calcBicounts('large')
-        gpu.calcEnergies('large', 'main')
+        gpu.calcEnergies('large')
     res = readGPUbufs(['bicount', 'E large'], gpus)
     bicount = sumarr(res[0])
     # assert sum(bicount, axis=1) are all equal here
@@ -635,7 +455,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
 
     #get ready for MCMC
     for gpu in gpus:
-        gpu.setBuf('J main', couplings)
+        gpu.setBuf('J', couplings)
     
     #equilibration MCMC
     if nloop == 'auto':
@@ -673,8 +493,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
                 # no matter their temperature. In other words, we are waiting
                 # for both the temperatures and energies to equilibrate - each
                 # walker is expected to visit most temperatures during the 
-                # equilibration. (Should we explicitly test that? Is temperature
-                # equilibration really necessary?)
+                # equilibration.
                 if p1 > 0.02 and p2 > 0.02:
                     log(rstr + ". Equilibrated.")
                     break
@@ -730,7 +549,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
     #process results
     for gpu in gpus:
         gpu.calcBicounts('large')
-        gpu.calcEnergies('large', 'main')
+        gpu.calcEnergies('large')
     res = readGPUbufs(['bicount', 'E large'], gpus)
     bicount = sumarr(res[0])
     # assert sum(bicount, axis=1) are all equal here
@@ -750,8 +569,8 @@ def MCMCstep(runName, couplings, param, gpus, log):
     #re-distribute energy among couplings
     #(not really needed, but makes nicer output and might prevent
     # numerical inaccuracy, but also shifts all seq energies)
-    #log("(Re-centering gauge of couplings)")
-    #couplings = fieldlessGaugeEven(zeros((L,q)), couplings)[1]
+    log("(Re-centering gauge of couplings)")
+    couplings = fieldlessGaugeEven(zeros((L,q)), couplings)[1]
 
     mkdir_p(os.path.join(outdir, runName))
     save(os.path.join(outdir, runName, 'J'), couplings)
@@ -781,7 +600,7 @@ def MCMCstep(runName, couplings, param, gpus, log):
     
     #compute new J using local newton updates (in-place on GPU)
     if param.newtonSteps != 1:
-        newcouplings, bimarg_p = iterNewtonGPU(param, bimarg_model, gpus, log)
+        newcouplings, bimarg_p = iterNewton(param, bimarg_model, gpus, log)
         save(os.path.join(outdir, runName, 'predictedBimarg'), bimarg_p)
         save(os.path.join(outdir, runName, 'predictedJ'), newcouplings)
     else:
@@ -828,7 +647,7 @@ def newtonMCMC(param, gpus, log):
             for gpu in gpus:
                 gpu.fillSeqs(seedseq)
         for gpu in gpus:
-            gpu.setBuf('J main', couplings)
+            gpu.setBuf('J', couplings)
         for i in range(param.preequiltime):
             for gpu in gpus:
                 gpu.runMCMC()
