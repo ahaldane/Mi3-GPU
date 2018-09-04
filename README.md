@@ -18,7 +18,7 @@ Rough Usage Guide
 
 Required packages: Python2, scipy/numpy, pyopencl, mwc64x.
 
-The helper module "seqtools" must be compiled with `make seqtools` (requires gcc).
+The helper module "seqtools" in the utils directory must be compiled with `make seqtools` (requires gcc).
 The `mwc64x` package must be obtained (available at http://cas.ee.ic.ac.uk/people/dt10/research/rngs-gpu-mwc64x.html) and placed in a directory named `mwc64x` next to the `IvoGPU.py` script.
 
 The `IvoGPU.py` script can then be run in a variety of modes, incuding inverse ising inference, Monte-Carlo sequence generation, and Potts energy evaluation. Run `IvoGPU.py -h` to see a list of modes (see "positional arguments"). To get more info on each mode, use the `-h` option:
@@ -39,4 +39,5 @@ Most testing has been done on Nvidia graphics cards. It is confirmed to run on s
  * 2x Nvidia Tesla K80
  * 2x Nvidia Tesla P100
  * 1x Nvidia GTX 580
- * 4x Nvidia GTX Titan X (fastest tested)
+ * 4x Nvidia GTX Titan X
+ * 4x Nvidia V100

@@ -27,8 +27,8 @@ import pyopencl as cl
 import pyopencl.array as cl_array
 import sys, os, errno, argparse, time, datetime, ConfigParser, socket, signal,\
        atexit
-import seqload
-from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
+from utils.seqload import loadSeqs, writeSeqs
+from utils.changeGauge import fieldlessGaugeEven
 from mcmcGPU import setupGPUs, initGPU, divideWalkers, printGPUs, readGPUbufs
 import NewtonSteps
 
@@ -621,11 +621,10 @@ def equilibrate(orig_args, args, log):
     save(os.path.join(outdir, 'bimarg'), bimarg_model)
     save(os.path.join(outdir, 'energies'), energies)
     for n,seqbuf in enumerate(seqs):
-        seqload.writeSeqs(os.path.join(outdir, 'seqs-{}'.format(n)),
-                          seqbuf, alpha)
+        writeSeqs(os.path.join(outdir, 'seqs-{}'.format(n)), seqbuf, alpha)
     for n,seqbuf in enumerate(seq_large):
-        seqload.writeSeqs(os.path.join(outdir, 'seqs_large-{}'.format(n)),
-                          seqbuf, alpha)
+        writeSeqs(os.path.join(outdir, 'seqs_large-{}'.format(n)),
+                  seqbuf, alpha)
 
     if p.tempering is not None:
         e, b = readGPUbufs(['E main', 'Bs'], gpus)
@@ -1004,9 +1003,8 @@ def process_sequence_args(args, L, alpha, bimarg, log,
         if args.seqs in ['uniform', 'independent']:
             seqs = [generateSequences(args.seqs, L, q, nseqs, bimarg, log)]
             for n,s in enumerate(seqs):
-                seqload.writeSeqs(os.path.join(args.outdir, 
-                                  'initial_seqs-{}'.format(n)),
-                                  s, alpha)
+                fn = os.path.join(args.outdir, 'initial_seqs-{}'.format(n))
+                writeSeqs(fn, s, alpha)
         elif args.seqs is not None:
             seqs = [loadSequenceFile(args.seqs, alpha, log)]
         elif args.seqmodel in ['uniform', 'independent']:
@@ -1091,7 +1089,7 @@ def loadseedseq(fn, alpha, log):
 
 def loadSequenceFile(sfile, alpha, log):
     log("Loading sequences from file {}".format(sfile))
-    seqs = seqload.loadSeqs(sfile, names=alpha)[0].astype('<u1')
+    seqs = loadSeqs(sfile, names=alpha)[0].astype('<u1')
     log("Found {} sequences".format(seqs.shape[0]))
     return seqs
 
@@ -1102,7 +1100,7 @@ def loadSequenceDir(sdir, bufname, alpha, log):
         sfile = os.path.join(sdir, 'seqs{}-{}'.format(bufname, len(seqs)))
         if not os.path.exists(sfile):
             break
-        seqs.append(seqload.loadSeqs(sfile, names=alpha)[0].astype('<u1'))
+        seqs.append(loadSeqs(sfile, names=alpha)[0].astype('<u1'))
     log("Found {} sequences".format(sum([s.shape[0] for s in seqs])))
 
     if seqs == []:

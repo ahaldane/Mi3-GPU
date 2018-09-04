@@ -35,7 +35,7 @@ def getCouplingMatrix(couplings):
     return C
 
 def weightedGauge(hs, Js, weights=None):
-    if weights == None:
+    if weights is None:
         raise Exception("weights must be supplied to get weighted gauge")
 
     L, nB = hs.shape

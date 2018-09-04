@@ -25,7 +25,6 @@ from numpy.random import RandomState
 import pyopencl as cl
 import pyopencl.array as cl_array
 import os, time
-import seqload
 import textwrap
 
 cf = cl.mem_flags

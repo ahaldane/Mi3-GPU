@@ -29,9 +29,9 @@ import pyopencl as cl
 import pyopencl.array as cl_array
 import sys, os, errno, glob, argparse, time
 import ConfigParser
-import seqload
 from scipy.optimize import leastsq
-from changeGauge import zeroGauge, zeroJGauge, fieldlessGaugeEven
+from utils.changeGauge import fieldlessGaugeEven
+from utils.seqload import writeSeqs, loadSeqs
 from mcmcGPU import readGPUbufs
 from IvoGPU import generateSequences
 
@@ -120,11 +120,11 @@ def writeStatus(name, bimarg_target, bicount, bimarg_model, couplings,
     save(os.path.join(outdir, name, 'bimarg'), bimarg_model)
     save(os.path.join(outdir, name, 'energies'), energies)
     for n,seqbuf in enumerate(seqs_large):
-        seqload.writeSeqs(os.path.join(outdir, name, 'seqs_large-{}'.format(n)), 
-                          seqbuf, alpha, zipf=True)
+        fn = os.path.join(outdir, name, 'seqs_large-{}'.format(n))
+        writeSeqs(fn, seqbuf, alpha, zipf=True)
     for n,seqbuf in enumerate(seqs):
-        seqload.writeSeqs(os.path.join(outdir, name, 'seqs-{}'.format(n)), 
-                          seqbuf, alpha, zipf=True)
+        fn = os.path.join(outdir, name, 'seqs-{}'.format(n))
+        writeSeqs(fn, seqbuf, alpha, zipf=True)
     if ptinfo != None:
         for n,B in enumerate(ptinfo[0]):
             save(os.path.join(outdir, 'Bs-{}'.format(n)), B)
@@ -242,8 +242,8 @@ def preOpt(param, gpus, log):
     save(os.path.join(outdir, 'preopt', 'initJ'), couplings)
     save(os.path.join(outdir, 'preopt', 'initBicount'), bicount)
     for n,s in enumerate(seqs):
-        seqload.writeSeqs(os.path.join(outdir, 'preopt', 'seqs-'+str(n)+'.bz2'),
-                          s, alpha, zipf=True)
+        fn = os.path.join(outdir, 'preopt', 'seqs-'+str(n)+'.bz2')
+        writeSeqs(fn, s, alpha, zipf=True)
     
     topbi = bimarg_target > 0.01
     ferr = mean((abs(bimarg_target - bimarg)/bimarg_target)[topbi])
