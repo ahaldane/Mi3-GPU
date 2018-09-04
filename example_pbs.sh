@@ -2,32 +2,26 @@
 #PBS -q gpu
 #PBS -N potts_inference
 #PBS -l walltime=6:00:00
-#PBS -l nodes=1:ppn=4
-#PBS -o stdout
-#PBS -e stderr
 
 cd $PBS_O_WORKDIR
 
-execpath=./IvoGPU.py
+execpath=~/IvoGPU/IvoGPU.py
 
 margfile="example_bimarg_pc.npy"
 logfile="hiv_pr_inference.log"
 outdir="hiv_pr_inference"
 
 stdbuf -i0 -o0 -e0 $execpath inverseIsing \
-  --seqmodel    logscore \
+  --seqmodel    independent \
   --bimarg      $margfile \
   --alpha       ABCD \
   --gamma       0.0004 \
-  --mcsteps     100 \
-  --nwalkers    8192 \
-  --equiltime   1024 \
-  --nsamples    64 \
-  --sampletime  64 \
-  --damping     0.001 \
+  --mcsteps     64 \
+  --nwalkers    65536 \
+  --reseed      single_indep \
+  --damping     0.01 \
   --nsteps      2048 \
-  --newtonsteps 64 \
-  --trackequil  16 \
+  --newtonsteps 256 \
   --outdir $outdir >$logfile
 
 # The --seqmodel option may be set to a directory such as $outdir/run_24
