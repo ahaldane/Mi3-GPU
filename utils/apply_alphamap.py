@@ -62,7 +62,7 @@ def main():
         # only for one reduction level.  Each line should look like:
         # ALPHA8 -DNAGSQFMYCI E HWP K L R T V
         newalphas = [a.split()[1:] for a in f.readlines()]
-    reduceSeqAlphaPerpos(seqs, newalphas, fullAlpha)
+    reduceSeqAlphaPerpos(seqs, newalphas, alpha)
 
 if __name__ == '__main__':
     main()

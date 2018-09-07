@@ -70,9 +70,9 @@ class Counter:
 
 def main():
     parser = argparse.ArgumentParser(description='Compute Bivariate Marginals')
-    parser.add_argument('-alpha', default='protgap')
-    parser.add_argument('-weights')
-    parser.add_argument('-counts', action='store_true')
+    parser.add_argument('--alpha', default='protgap')
+    parser.add_argument('--weights')
+    parser.add_argument('--counts', action='store_true')
     parser.add_argument('seqfile')
     parser.add_argument('outfile')
 

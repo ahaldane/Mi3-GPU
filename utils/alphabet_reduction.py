@@ -168,7 +168,7 @@ def reduceSeq(L, q, alphas, ffs, uni):
             f = len(alphas[pos])
             reduceAPos(L, ffs, uni[pos], mis21, mis, pos, alphas[pos])
 
-        printReduction(sys.stderr, i-1, mis, mis21, alphas)
+        printReduction(sys.stdout, i-1, mis, mis21, alphas)
 
     return ffs, alphas
 

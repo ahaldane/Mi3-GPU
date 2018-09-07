@@ -40,7 +40,7 @@ def main():
     parser.add_argument('seqs')
     parser.add_argument('couplings')
     parser.add_argument('-o', '--out')
-    parser.add_argument('-alpha', default='protgap')
+    parser.add_argument('--alpha', default='protgap')
 
     args = parser.parse_args(sys.argv[1:])
     
