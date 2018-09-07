@@ -181,6 +181,15 @@ def iterNewton(param, bimarg_model, gpus, log):
     log("Local optimization for {} steps:".format(newtonSteps))
     if param.reg:
         log("Using regularization {}".format(param.reg))
+    
+    # Note: The following calculation only uses the first GPU. It is
+    # possible to reimplement it so that each GPU does part of the work,
+    # however then the result must be averaged over GPUs, which in OpenCL
+    # requires some expensive device->host transfers. For now, for small # of
+    # GPUs, it was faster to do the whole computation on one GPU instead.
+    # In the future it would be good to update this to divide the work 
+    # across GPUs. The memory transfer slowdowns might be avoided by using
+    # systems with NVlink for device->device transfer or UVA.
 
     # copy all sequences into gpu-0's large seq buffer
     seq_large = concatenate(readGPUbufs(['seq large'], gpus)[0], axis=0)
@@ -190,7 +199,7 @@ def iterNewton(param, bimarg_model, gpus, log):
     gpu0.calcBicounts('large')
     gpu0.bicounts_to_bimarg(gpu0.nstoredseqs)
     
-    # actually to coupling updates
+    # actually do coupling updates
     for i in range(newtonSteps): 
         # updates front J buffer using back J and bimarg buffers
         if param.reg == 'l2z':

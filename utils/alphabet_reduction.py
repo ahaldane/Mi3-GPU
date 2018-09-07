@@ -1,4 +1,22 @@
 #!/usr/bin/env python3
+#
+#Copyright 2016 Allan Haldane.
+
+#This file is part of IvoGPU.
+
+#IvoGPU is free software: you can redistribute it and/or modify
+#it under the terms of the GNU General Public License as published by
+#the Free Software Foundation, version 3 of the License.
+
+#IvoGPU is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+
+#You should have received a copy of the GNU General Public License
+#along with IvoGPU.  If not, see <http://www.gnu.org/licenses/>.
+
+#Contact: allan.haldane _AT_ gmail.com
 import scipy
 from scipy import *
 import numpy as np
@@ -129,10 +147,11 @@ def reduceAPos(L, ffs, uni, mis21, mis, pos, alpha):
     del uni[B]
 
 def printReduction(f, q, mis, mis21, alphas):
+    goodness = pearsonGoodness(mis21, mis)
     print("-----------------------------------------------", file=f)
     print("{} Alphabet length: {}".format(q, q), file=f)
     print("{} Mean Sq Error: {}".format(q, msqerr(mis21, mis)), file=f)
-    print("{} Pearson Correlation: {}".format(q, pearsonGoodness(mis21, mis)), file=f)
+    print("{} Pearson Correlation: {}".format(q, goodness), file=f)
     amap = [" ".join(a + ['*']*(q - len(a))) for a in alphas]
     print("\n".join("ALPHA{} {}".format(q, a) for a in amap), file=f)
 
@@ -210,7 +229,14 @@ def mergeUnseen(ffs, letters, L):
     return ffs, newuni, newalpha
 
 def main():
-    parser = argparse.ArgumentParser(description='Find optimal alphabet reduction')
+    helpstr = """Typical usage: 
+  $ ./alphabet_reduction.py bimarg21.npy >alpha_reductions
+  $ grep ALPHA8 alpha_reductions >map8  # select 8 letter reduction
+  $ ./apply_alphamap.py seq21 map8 >seq8
+"""
+    parser = argparse.ArgumentParser(description='Optimal alphabet reduction',
+                                     epilog=helpstr,
+                          formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('marginals')
     parser.add_argument('-alpha', default='protgap')
 

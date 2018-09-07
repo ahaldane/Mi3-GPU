@@ -134,32 +134,28 @@ def main():
     parser.add_argument('-Jin')
     parser.add_argument('-hout')
     parser.add_argument('-Jout')
-    parser.add_argument('-weights')
-    parser.add_argument('--bin', action='store_true', 
-                                 help='save in binary format')
+    parser.add_argument('-weights', help='only needed for weighted gauge')
+    parser.add_argument('--txt', action='store_true', 
+                        help='save in text format')
     args = parser.parse_args()
 
-    if args.hin:
+    if args.hin is not None:
         h0 = tryload(args.hin)
         hL,hnB = h0.shape
-    else:
-        h0 = None
 
-    if args.Jin:
+    if args.Jin is not None:
         J0 = tryload(args.Jin)
         jL = int((1+sqrt(1+8*J0.shape[0]))/2 + 0.5)
         jnB = int(sqrt(J0.shape[1]) + 0.5)
-    else:
-        J0 = None
 
-    if args.hin == None and args.Jin == None:
+    if args.hin is None and args.Jin is None:
         parser.error("Must supply either hin or Jin (or both)")
 
-    if args.hin == None:
+    if args.hin is None:
         print "No h supplied, assuming h = 0"
         L,nB = jL,jnB
         h0 = zeros((L,nB))
-    elif args.Jin == None:
+    elif args.Jin is None:
         print "No J supplied, assuming J = 0"
         L,nB = hL,hnB
         J0 = zeros((L*(L-1)/2,nB*nB))
@@ -178,7 +174,7 @@ def main():
               'zeroJ':         zeroJGauge}
     h1, J1 = gfuncs[args.gauge](h0, J0, weights)
 
-    savefunc = save if args.bin else savetxt
+    savefunc = savetxt if args.txt else save
     if args.hout:
         savefunc(args.hout, h1)
     if args.Jout:
