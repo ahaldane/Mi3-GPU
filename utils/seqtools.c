@@ -726,8 +726,8 @@ minsim(PyObject *self, PyObject *args){
 static PyObject *
 sumsim(PyObject *self, PyObject *args){	
     PyArrayObject *seqs;
-    PyObject *meansim;
-    npy_uint64 *meansimdat;
+    PyObject *sumsim;
+    npy_uint64 *sumsimdat;
     uint32 *hsim, *origindex;
     uint8 *seqdata, *oldseq, *newseq;
     npy_intp dim;
@@ -948,7 +948,7 @@ static PyMethodDef SeqtoolsMethods[] = {
             "histogram pariwise similarities, with weights"},
 	{"minsim", minsim, METH_VARARGS, 
             "compute most dissimilar sequences"},
-	{"sumsim", meansim, METH_VARARGS, 
+	{"sumsim", sumsim, METH_VARARGS, 
             "compute sum of similarity with other all sequences"},
 	{"translateascii", translateascii, METH_VARARGS, 
             "translate sequence buffer from scii to integers"},
