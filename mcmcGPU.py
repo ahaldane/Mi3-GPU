@@ -1,6 +1,6 @@
 #!/usr/bin/env python2
 #
-#Copyright 2016 Allan Haldane.
+#Copyright 2018 Allan Haldane.
 
 #This file is part of IvoGPU.
 
@@ -26,7 +26,7 @@ import pyopencl as cl
 import pyopencl.array as cl_array
 import os, time
 import textwrap
-from NewtonSteps import printsome
+from IvoGPU import printsome
 
 cf = cl.mem_flags
 

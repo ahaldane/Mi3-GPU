@@ -1,6 +1,6 @@
 #!/usr/bin/env python2
 #
-#Copyright 2016 Allan Haldane.
+#Copyright 2018 Allan Haldane.
 
 #This file is part of IvoGPU.
 
@@ -19,21 +19,17 @@
 #Contact: allan.haldane _AT_ gmail.com
 from __future__ import print_function
 from scipy import *
-import scipy
-import scipy.stats.distributions as dists
-from scipy.stats import pearsonr, dirichlet, spearmanr
 import numpy as np
-from numpy.random import randint, shuffle
-import numpy.random
+from scipy.stats import pearsonr, dirichlet, spearmanr
+from numpy.random import randint
 import pyopencl as cl
-import pyopencl.array as cl_array
-import sys, os, errno, glob, argparse, time
 import ConfigParser
-from scipy.optimize import leastsq
+import sys, os, errno, glob, argparse, time
 from utils.changeGauge import fieldlessGaugeEven
 from utils.seqload import writeSeqs, loadSeqs
+
 from mcmcGPU import readGPUbufs
-from IvoGPU import generateSequences
+from IvoGPU import generateSequences, printsome
 
 def unimarg(bimarg):
     L, q = seqsize_from_param_shape(bimarg.shape)
@@ -70,7 +66,6 @@ class attrdict(dict):
         except KeyError:
             return None
 
-printsome = lambda a: array2string(a.flatten()[:5], precision=6, sign=' ')[1:-1]
 
 ################################################################################
 #Helper funcs
@@ -88,8 +83,8 @@ def printstats(name, bicount, bimarg_target, bimarg_model, couplings,
     Xo = sum(couplings*Co, axis=1)
 
     rho, rp = zip(*e_rho)
-    rhostr = np.array2string(np.array(rho), precision=2, floatmode='fixed',
-                             suppress_small=True)[1:-1]
+    rhostr = array2string(array(rho), precision=2, floatmode='fixed',
+                          suppress_small=True)[1:-1]
 
     #print some details
     disp = """\
@@ -286,7 +281,7 @@ def rand_f32(size):
     bit mantissa per uniform float32. It turns out in numpy it is fastest to
     generate 32 bits and then drop the first 9.
     """
-    x = np.random.randint(np.uint32(2**32-1), size=size, dtype=uint32)
+    x = randint(np.uint32(2**32-1), size=size, dtype=uint32)
     shift, exppat = np.uint32(9), np.uint32(0x3F800000)
     return ((x >> shift) | exppat).view('f4') - np.float32(1.0)
 
@@ -696,7 +691,7 @@ def newtonMCMC(param, gpus, log):
             #choose random seed sequence from the final sequences for next round
             nseq = sum(s.shape[0] for s in seqs)
             rseq = None
-            rseq_ind = numpy.random.randint(0, nseq)
+            rseq_ind = randint(0, nseq)
             for s in seqs:
                 if rseq_ind < s.shape[0]:
                     rseq = s[rseq_ind]

@@ -1,6 +1,6 @@
 #!/usr/bin/env python2
 #
-#Copyright 2016 Allan Haldane.
+#Copyright 2018 Allan Haldane.
 
 #This file is part of IvoGPU.
 
@@ -18,20 +18,23 @@
 
 #Contact: allan.haldane _AT_ gmail.com
 from __future__ import print_function
+import scipy
 from scipy import *
 from scipy.misc import logsumexp
-import scipy
 import numpy as np
-from numpy.random import randint, shuffle
+from numpy.random import randint 
 import pyopencl as cl
 import pyopencl.array as cl_array
-import sys, os, errno, argparse, time, datetime, ConfigParser, socket, signal,\
-       atexit
+import sys, os, errno, time, datetime, socket, signal, atexit
+import argparse, ConfigParser
 from utils.seqload import loadSeqs, writeSeqs
 from utils.changeGauge import fieldlessGaugeEven
+
+# define this here to avoid circular import issues
+printsome = lambda a: array2string(a.flatten()[:5], precision=6, sign=' ')[1:-1]
+
 from mcmcGPU import setupGPUs, initGPU, divideWalkers, printGPUs, readGPUbufs
 import NewtonSteps
-from NewtonSteps import printsome
 
 try:
     from shlex import quote as cmd_quote
@@ -117,8 +120,6 @@ def optionRegistry():
         help='size of large seq buffer, in multiples of nwalkers')
     add('measurefperror', action='store_true',
         help="enable fp error calculation")
-    add('gibbs', action='store_true',
-        help='Use gibbs sampling instead of metropoils-hastings')
 
     # Newton options
     add('bimarg', required=True,
@@ -236,7 +237,7 @@ def inverseIsing(orig_args, args, log):
     parser = argparse.ArgumentParser(prog=progname + ' inverseIsing',
                                      description=descr)
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
-                                          'gibbs gpus profile')
+                                          'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs seqs_large')
     addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps gamma '
                                           'damping reg noiseN '
@@ -389,7 +390,6 @@ def getEnergies(orig_args, args, log):
     log("")
 
     args.nwalkers = len(seqs)
-    args.gibbs = False
     args.nsteps = 1
     args.nlargebuf = 1
     gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, 1, log)
@@ -423,7 +423,7 @@ def MCMCbenchmark(orig_args, args, log):
     add('--nloop', type=uint32, required=True,
         help="Number of kernel calls to benchmark")
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
-                                          'gibbs gpus profile')
+                                          'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'seqmodel outdir rngseed')
@@ -513,7 +513,7 @@ def equilibrate(orig_args, args, log):
                                      description=descr)
     add = parser.add_argument
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
-                                          'gibbs gpus profile')
+                                          'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs seqbimarg')
     addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
                                           'trackequil tempering nswaps_temp')
@@ -758,7 +758,6 @@ def testing(orig_args, args, log):
     p['L'], p['q'] = seqsize_from_param_shape(p.bimarg.shape)
     L, q = p.L, p.q
     args.nsteps = 1
-    args.gibbs = None
     args.profile = None
     args.fperror = None
     p['damping'] = args.damping
@@ -812,7 +811,6 @@ def process_GPU_args(args, L, q, outdir, log):
                       'wgsize': args.wgsize,
                       'nwalkers': args.nwalkers,
                       'gpuspec': args.gpus,
-                      'gibbs': args.gibbs,
                       'profile': args.profile,
                       'fperror': args.measurefperror})
 
@@ -824,8 +822,6 @@ def process_GPU_args(args, L, q, outdir, log):
     log("Total GPU walkers: {}".format(p.nwalkers))
     log("Work Group Size: {}".format(p.wgsize))
     log("{} MC steps per MCMC kernel call".format(p.nsteps))
-    log("Using {} MC sampler".format('Gibbs' if args.gibbs
-                                   else 'Metropolis-hastings'))
     log("GPU Initialization:")
     if p.profile:
         log("Profiling Enabled")
