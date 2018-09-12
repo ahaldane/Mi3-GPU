@@ -29,9 +29,7 @@ import sys, os, errno, time, datetime, socket, signal, atexit
 import argparse, ConfigParser
 from utils.seqload import loadSeqs, writeSeqs
 from utils.changeGauge import fieldlessGaugeEven
-
-# define this here to avoid circular import issues
-printsome = lambda a: array2string(a.flatten()[:5], precision=6, sign=' ')[1:-1]
+from utils import printsome
 
 from mcmcGPU import setupGPUs, initGPU, divideWalkers, printGPUs, readGPUbufs
 import NewtonSteps

@@ -26,7 +26,7 @@ import pyopencl as cl
 import pyopencl.array as cl_array
 import os, time
 import textwrap
-from IvoGPU import printsome
+from utils import printsome
 
 cf = cl.mem_flags
 

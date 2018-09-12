@@ -27,9 +27,10 @@ import ConfigParser
 import sys, os, errno, glob, argparse, time
 from utils.changeGauge import fieldlessGaugeEven
 from utils.seqload import writeSeqs, loadSeqs
+from utils import printsome
 
 from mcmcGPU import readGPUbufs
-from IvoGPU import generateSequences, printsome
+from IvoGPU import generateSequences
 
 def unimarg(bimarg):
     L, q = seqsize_from_param_shape(bimarg.shape)
