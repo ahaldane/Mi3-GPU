@@ -26,6 +26,7 @@ import pyopencl as cl
 import pyopencl.array as cl_array
 import os, time
 import textwrap
+from NewtonSteps import printsome
 
 cf = cl.mem_flags
 
@@ -644,8 +645,6 @@ class MCMCGPU:
 
 ################################################################################
 # Set up enviroment and some helper functions
-
-printsome = lambda a: " ".join(map(str,a.flatten()[:5]))
 
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '0'
 os.environ['PYOPENCL_NO_CACHE'] = '1'

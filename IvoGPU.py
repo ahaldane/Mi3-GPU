@@ -31,6 +31,7 @@ from utils.seqload import loadSeqs, writeSeqs
 from utils.changeGauge import fieldlessGaugeEven
 from mcmcGPU import setupGPUs, initGPU, divideWalkers, printGPUs, readGPUbufs
 import NewtonSteps
+from NewtonSteps import printsome
 
 try:
     from shlex import quote as cmd_quote
@@ -49,7 +50,6 @@ def mkdir_p(path):
         if not (exc.errno == errno.EEXIST and os.path.isdir(path)):
             raise
 scriptPath = os.path.dirname(os.path.realpath(__file__))
-printsome = lambda a: " ".join(map(str,a.flatten()[:5]))
 
 class attrdict(dict):
     def __getattr__(self, attr):
