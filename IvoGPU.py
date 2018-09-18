@@ -569,9 +569,10 @@ def equilibrate(orig_args, args, log):
     log("Computation Overview")
     log("====================")
     if p.equiltime == 'auto':
-        log("In each round, running {} MC walkers until equilibrated")
+        log("Running {} MC walkers until equilibrated".format(
+            p.nwalkers))
     else:
-        log(("In each round, running {} MC walkers for {} equilibration loops "
+        log(("Running {} MC walkers for {} equilibration loops "
              "then sampling every {} loops to get {} samples ({} total seqs) "
              "with {} MC steps per loop (Each walker equilibrated a total of "
              "{} MC steps, or {:.1f} steps per position)."
@@ -610,7 +611,8 @@ def equilibrate(orig_args, args, log):
     (bimarg_model,
      bicount,
      energies,
-     ptinfo) = MCMC_func(gpus, p.couplings, '.', p)
+     e_rho,
+     ptinfo) = MCMC_func(gpus, p.couplings, 'gen', p, log)
 
     seq_large, seqs = readGPUbufs(['seq large', 'seq main'], gpus)
 
