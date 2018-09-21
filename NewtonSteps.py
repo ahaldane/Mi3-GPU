@@ -149,6 +149,8 @@ def singleNewton(bimarg, gamma, pc, gpus):
     if param.reg == 'l2z':
         lh, lJ = param.regarg
         gpus[0].updateJ_l2z(gamma, pc, lh, lJ)
+    elif param.reg == 'X':
+        gpus[0].updateJ_X(gamma, pc)
     else:
         gpus[0].updateJ(gamma, pc)
     return gpus[0].getBuf('J').read()
@@ -203,6 +205,8 @@ def iterNewton(param, bimarg_model, gpus, log):
         if param.reg == 'l2z':
             lh, lJ = param.regarg
             gpu0.updateJ_l2z(gamma, pc, lh, lJ)
+        elif param.reg == 'X':
+            gpu0.updateJ_X(gamma, pc)
         else:
             gpu0.updateJ(gamma, pc)
         gpu0.perturbMarg()  # overwrites bi front using J back
@@ -666,7 +670,7 @@ def newtonMCMC(param, gpus, log):
         log("No Pre-optimization")
 
     # setup up regularization if needed
-    if param.reg == 'Creg':
+    if param.reg == 'X':
         for gpu in gpus:
             gpu.setBuf('Creg', param.regarg)
 

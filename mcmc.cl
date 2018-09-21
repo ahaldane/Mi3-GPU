@@ -635,3 +635,26 @@ void updatedJ_l2z(__global float *bimarg_target,
     float R = lJ*J0 + lh*(hi[li/q] + hj[li%q]);
     Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + R)/(bimarg[n] + pc);
 }
+
+__kernel
+void updatedJ_X(__global float *bimarg_target,
+              __global float *bimarg,
+              __global float *Creg,
+                       float gamma,
+                       float pc,
+              __global float *Ji,
+              __global float *Jo){
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float l_qq[q*q];
+    float X = sumqq(Ji[n]*Creg[n], li, l_qq);
+    float bias = Creg[n]*sign(X);
+    //float bias = -Creg[n];
+
+    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
+}
+
+
+

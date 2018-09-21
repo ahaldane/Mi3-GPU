@@ -228,6 +228,7 @@ class MCMCGPU:
 
         nPairs, q = self.nPairs, self.q
         self._setupBuffer('bi target', '<f4',  (nPairs, q*q))
+        self._setupBuffer(     'Creg', '<f4',  (nPairs, q*q))
         self._setupBuffer(     'neff', '<f4',  (1,))
         self._setupBuffer(  'weights', '<f4',  (self.nseq['large'],))
 
@@ -468,6 +469,21 @@ class MCMCGPU:
                                 float32(2*lh), float32(2*lJ), Jin, Jout)
         self.saveEvt(evt, 'updateJ l2z')
         self.packedJ = None
+
+    def updateJ_X(self, gamma, pc):
+        self.require('Jstep')
+        self.log("updateJ X")
+        q, nPairs = self.q, self.nPairs
+
+        bibuf = self.bufs['bi']
+        Jin = Jout = self.bufs['J']
+        evt = self.prg.updatedJ_X(self.queue, (nPairs*q*q,), (q*q,), 
+                                self.bufs['bi target'], bibuf, 
+                                self.bufs['Creg'],
+                                float32(gamma), float32(pc), Jin, Jout)
+        self.saveEvt(evt, 'updateJ X')
+        self.packedJ = None
+
 
     def getBuf(self, bufname, truncateLarge=True):
         """get buffer data. truncateLarge means only return the

@@ -862,16 +862,16 @@ def process_newton_args(args, log):
 
     if args.reg is not None:
         rtype, dummy, rarg = args.reg.partition(':')
-        rtypes = ['Creg', 'l2z', 'L']
+        rtypes = ['X', 'l2z', 'L']
         if rtype not in rtypes:
             raise Exception("reg must be one of {}".format(str(rtypes)))
         p['reg'] = rtype
         rargs = rarg.split(',')
-        if rtype == 'Creg':
-            log("Regularizing with Creg from file {}".format(rarg[0]))
-            p['regarg'] = scipy.load(rarg[0])
+        if rtype == 'X':
+            log("Regularizing with X from file {}".format(rargs[0]))
+            p['regarg'] = scipy.load(rargs[0])
             if p['regarg'].shape != bimarg.shape:
-                raise Exception("Creg in wrong format")
+                raise Exception("X in wrong format")
         if rtype == 'l2z':
             try:
                 lh, lJ = float(rargs[0]), float(rargs[1])
