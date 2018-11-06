@@ -1150,11 +1150,12 @@ def process_sample_args(args, log):
     log("-------------------")
 
     if p.equiltime == 'auto':
-        log("In each round, running {} MC walkers until equilibrated")
+        log("In each round, running {} MC walkers until equilibrated".format(
+            p.nwalkers))
     else:
-        log(("In each MCMC round, running {} GPU MCMC kernel calls then sampling "
-             "every {} kernel calls to get {} samples").format(p.equiltime,
-                                                 p.sampletime, p.nsamples))
+        log(("In each MCMC round, running {} GPU MCMC kernel calls then "
+             "sampling every {} kernel calls to get {} samples").format(
+              p.equiltime, p.sampletime, p.nsamples))
     if 'tempering' in p:
         log("Parallel tempering with inverse temperatures {}, "
             "swapping {} times per loop".format(args.tempering, p.nswaps))

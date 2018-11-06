@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python2
 #
 #Copyright 2018 Allan Haldane.
 
@@ -17,6 +17,7 @@
 #along with IvoGPU.  If not, see <http://www.gnu.org/licenses/>.
 
 #Contact: allan.haldane _AT_ gmail.com
+from __future__ import print_function
 import scipy
 from scipy import *
 import numpy as np
@@ -41,7 +42,8 @@ class PairData:
     def __init__(self, pairvals):
         self.data = pairvals
         L = getL(len(pairvals))
-        inds, pairs = zip(*enumerate((a,b) for a in range(L-1) for b in range(a+1, L)))
+        inds, pairs = zip(*enumerate((a,b) for a in range(L-1)
+                                           for b in range(a+1, L)))
         self.coords = dict(zip(pairs, inds))
 
     def __iter__(self):

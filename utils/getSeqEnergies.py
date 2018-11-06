@@ -32,7 +32,7 @@ def energies(s, J):
     L, q = getLq(J)
     pairenergy = zeros(s.shape[0])
     for n,(i,j) in enumerate([(i,j) for i in range(L-1) for j in range(i+1,L)]):
-        pairenergy += couplings[n,s[:,j] + q*s[:,i]]
+        pairenergy += J[n,s[:,j] + q*s[:,i]]
     return pairenergy
 
 def main():
@@ -59,7 +59,7 @@ def main():
         return energies(seqs, couplings)
     
     # process the file in chunks for speed
-    e = seqload.mapSeqs(args.seqs, letters, chunkE)[0]
+    e = seqload.mapSeqs(args.seqs, chunkE, letters)[0]
     if args.out:
         save(args.out, e)
     else:
