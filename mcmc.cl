@@ -656,5 +656,73 @@ void updatedJ_X(__global float *bimarg_target,
     Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
 }
 
+// expects to be called with work-group size of q*q
+float getXC(float J, float bimarg, uint li, __local float *scratch,
+            __local float *fi, __local float *fj){
+    uint m;
+
+    // add up bimarg rows
+    scratch[li] = bimarg;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = q/2; m > 0; m >>= 1){
+        if(li%q < m){
+            scratch[li] = scratch[li] + scratch[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if(li < q){
+        fi[li] = scratch[q*li]/q;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    //add up bimarg columns
+    scratch[q*(li%q) + li/q] = bimarg;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = q/2; m > 0; m >>= 1){
+        if(li%q < m){
+            scratch[li] = scratch[li] + scratch[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if(li < q){
+        fj[li] = scratch[q*li]/q;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    // each work unit computes one of the Xijab terms
+    scratch[li] = J*(bimarg - fi[li/q]*fj[li%q]);
+
+    //sum up all terms over ab
+    for(m = q/2; m > 0; m >>= 1){
+        if(li < m){
+            scratch[q*li] = scratch[q*li] + scratch[q*(li + m)];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    // write out C and return X
+    scratch[li] = bimarg - fi[li/q]*fj[li%q];
+    return scratch[0]
+}
+
+__kernel
+void updatedJ_Xself(__global float *bimarg_target,
+              __global float *bimarg,
+              __global float *lambdas,
+                       float gamma,
+                       float pc,
+              __global float *Ji,
+              __global float *Jo){
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float hi[q], hj[q];
+    __local float C[q*q];
+
+    float X = getXC(Ji[n], li, C, hi, hj);
+    float bias = lambdas[gi]*C[li]*sign(X);
+
+    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n]+pc);
+}
 
 

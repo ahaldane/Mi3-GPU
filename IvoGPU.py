@@ -862,7 +862,7 @@ def process_newton_args(args, log):
 
     if args.reg is not None:
         rtype, dummy, rarg = args.reg.partition(':')
-        rtypes = ['X', 'l2z', 'L']
+        rtypes = ['X', 'Xself', 'l2z', 'L']
         if rtype not in rtypes:
             raise Exception("reg must be one of {}".format(str(rtypes)))
         p['reg'] = rtype
@@ -872,7 +872,12 @@ def process_newton_args(args, log):
             p['regarg'] = scipy.load(rargs[0])
             if p['regarg'].shape != bimarg.shape:
                 raise Exception("X in wrong format")
-        if rtype == 'l2z':
+        elif rtype == 'Xself':
+            log("Regularizing with X-lambdas from file {}".format(rargs[0]))
+            p['regarg'] = scipy.load(rargs[0])
+            if p['regarg'].shape != (bimarg.shape[0],):
+                raise Exception("X in wrong format")
+        elif rtype == 'l2z':
             try:
                 lh, lJ = float(rargs[0]), float(rargs[1])
                 log(("Regularizing using l2 norm with lambda_J = {}"

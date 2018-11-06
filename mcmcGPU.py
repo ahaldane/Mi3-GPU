@@ -229,6 +229,7 @@ class MCMCGPU:
         nPairs, q = self.nPairs, self.q
         self._setupBuffer('bi target', '<f4',  (nPairs, q*q))
         self._setupBuffer(     'Creg', '<f4',  (nPairs, q*q))
+        self._setupBuffer( 'Xlambdas', '<f4',  (nPairs,))
         self._setupBuffer(     'neff', '<f4',  (1,))
         self._setupBuffer(  'weights', '<f4',  (self.nseq['large'],))
 
@@ -482,6 +483,20 @@ class MCMCGPU:
                                 self.bufs['Creg'],
                                 float32(gamma), float32(pc), Jin, Jout)
         self.saveEvt(evt, 'updateJ X')
+        self.packedJ = None
+
+    def updateJ_Xself(self, gamma, pc):
+        self.require('Jstep')
+        self.log("updateJ Xself")
+        q, nPairs = self.q, self.nPairs
+
+        bibuf = self.bufs['bi']
+        Jin = Jout = self.bufs['J']
+        evt = self.prg.updatedJ_Xself(self.queue, (nPairs*q*q,), (q*q,),
+                                self.bufs['bi target'], bibuf,
+                                self.bufs['Xlambdas'],
+                                float32(gamma), float32(pc), Jin, Jout)
+        self.saveEvt(evt, 'updateJ Xself')
         self.packedJ = None
 
 
