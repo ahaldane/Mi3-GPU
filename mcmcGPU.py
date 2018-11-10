@@ -106,7 +106,7 @@ class MCMCGPU:
         maxwgs = self.mcmcprg.get_work_group_info(
                  cl.kernel_work_group_info.WORK_GROUP_SIZE, gpu)
         self.log("Max MCMC WGSIZE: {}".format(maxwgs))
-        
+
         self.initted = []
 
         self.bufs = {}
@@ -121,6 +121,8 @@ class MCMCGPU:
         self._setupBuffer(       'J', '<f4', (nPairs, q*q))
         self._setupBuffer(      'bi', '<f4', (nPairs, q*q)),
         self._setupBuffer( 'bicount', '<u4', (nPairs, q*q)),
+            # XXX optimize coalescing by padding 2nd dim of seq main?
+            # yes, but doesn't matter for now if nwalkers is multiple of 32
         self._setupBuffer('seq main', '<u4', (SWORDS, self.nseq['main'])),
         self._setupBuffer(  'E main', '<f4', (self.nseq['main'],)),
         self.packedJ = False #use to keep track of whether J is packed
@@ -128,7 +130,7 @@ class MCMCGPU:
     def log(self, str):
         #logs are rare, so just open the file every time
         with open(self.logfn, "at") as f:
-            print(time.clock(), str, file=f)
+            print(repr(time.time()), str, file=f) # replace by time.process_time() in python3
 
     def saveEvt(self, evt, name, nbytes=None):
         # don't save events if not profiling.
@@ -136,7 +138,7 @@ class MCMCGPU:
         if not self.profile:
             return
         if len(self.events)%1000 == 0 and self.events != []:
-            log("Warning: Over {} profiling events are not flushed "
+            self.log("Warning: Over {} profiling events are not flushed "
                 "(using up memory)".format(len(self.events)))
         if nbytes:
             self.events.append((evt, name, nbytes))
@@ -154,14 +156,14 @@ class MCMCGPU:
                 print("EVT", name, evt.profile.start, evt.profile.end,
                       size, file=f)
 
-    def _setupBuffer(self, bufname, buftype, bufshape, 
-                          flags=cf.READ_WRITE | cf.ALLOC_HOST_PTR):
+    def _setupBuffer(self, bufname, buftype, bufshape, flags=cf.READ_WRITE):
+        flags = flags | cf.ALLOC_HOST_PTR
         size = dtype(buftype).itemsize*int(product(bufshape))
         buf = cl.Buffer(self.ctx, flags, size=size)
 
         self.bufs[bufname] = buf
         self.buf_spec[bufname] = (buftype, bufshape, flags)
-        
+
         # add it to convenience dicts if applicable
         names = bufname.split()
         if len(names) > 1:
@@ -227,12 +229,13 @@ class MCMCGPU:
         self._initcomponent('Jstep')
 
         nPairs, q = self.nPairs, self.q
-        self._setupBuffer('bi target', '<f4',  (nPairs, q*q))
-        self._setupBuffer(     'Creg', '<f4',  (nPairs, q*q))
-        self._setupBuffer(     'neff', '<f4',  (1,))
-        self._setupBuffer(  'weights', '<f4',  (self.nseq['large'],))
+        self._setupBuffer(    'bi target', '<f4',  (nPairs, q*q))
+        self._setupBuffer(         'Creg', '<f4',  (nPairs, q*q))
+        self._setupBuffer(         'neff', '<f4',  (1,))
+        self._setupBuffer(      'weights', '<f4',  (self.nseq['main'],))
+        self._setupBuffer('weights large', '<f4',  (self.nseq['large'],))
 
-        self.largebufs.append('weights')
+        self.largebufs.append('weights large')
 
     def packSeqs(self, seqs):
         "converts seqs to uchars, padded to 32bits, assume GPU is little endian"
@@ -256,7 +259,7 @@ class MCMCGPU:
 
         # quit if J already loaded/packed
         if self.packedJ:
-            return  
+            return
 
         self.log("packJ")
 
@@ -308,10 +311,10 @@ class MCMCGPU:
         rng = self.rngstate.randint(0, self.L, size=nsteps).astype('u4')
         self.setBuf('randpos', rng)
 
-        evt = self.mcmcprg(self.queue, (nseq,), (self.wgsize,), 
-                          self.bufs['Jpacked'], self.bufs['rngstates'], 
-                          self.bufs['randpos'], uint32(nsteps), 
-                          self.Ebufs['main'], self.bufs['Bs'], 
+        evt = self.mcmcprg(self.queue, (nseq,), (self.wgsize,),
+                          self.bufs['Jpacked'], self.bufs['rngstates'],
+                          self.bufs['randpos'], uint32(nsteps),
+                          self.Ebufs['main'], self.bufs['Bs'],
                           self.seqbufs['main'])
         self.saveEvt(evt, 'mcmc')
 
@@ -359,21 +362,6 @@ class MCMCGPU:
                      self.bufs['bicount'], self.bufs['bi'], uint32(nseq))
         self.saveEvt(evt, 'bicounts_to_bimarg')
 
-    def calcMarkedBicounts(self):
-        self.require('Markseq')
-
-        self.log("calcMarkedBicounts ")
-        L, q, nPairs, nhist = self.L, self.q, self.nPairs, self.nhist
-        nseq = self.nseq['main']
-        seq_dev = self.seqbufs['main']
-
-        localhist = cl.LocalMemory(nhist*q*q*dtype(uint32).itemsize)
-        evt = self.prg.countMarkedBivariate(
-                     self.queue, (nPairs*nhist,), (nhist,),
-                     self.bufs['bicount'], uint32(nseq),
-                     self.bufs['markseqs'], seq_dev, localhist)
-        self.saveEvt(evt, 'calcMarkedBicounts')
-
     def calcEnergies(self, seqbufname):
         self.log("calcEnergies " + seqbufname)
 
@@ -393,53 +381,106 @@ class MCMCGPU:
                              self.bufs['Jpacked'], seq_dev, uint32(buflen),
                              energies_dev)
         self.saveEvt(evt, 'getEnergies')
-    
-    def perturbMarg(self):
+
+    def perturbMarg(self, seqbufname='main'):
         self.log("perturbMarg")
-        self.calcWeights()
-        self.wait()
-        self.weightedMarg()
+        self.calcWeights(seqbufname)
+        self.weightedMarg(seqbufname)
 
-    def calcWeights(self):
-        self.require('Jstep')
-        self.log("getWeights")
-
+    def calcWeights(self, seqbufname='main'):
         #overwrites weights, neff
         #assumes seqmem_dev, energies_dev are filled in
-        nseq = self.nstoredseqs
+        self.require('Jstep')
+        self.log("calcWeights")
+
         self.packJ()
-        buflen = self.nseq['large']
 
-        # pad to be a multiple of wgsize (uses dummy seqs at end)
-        ns_pad = nseq + ((self.wgsize - nseq) % self.wgsize)
+        if seqbufname == 'main':
+            nseq = self.nseq[seqbufname]
+            buflen = nseq
+            weights_dev = self.bufs['weights']
+        else:
+            nseq = self.nstoredseqs
+            # pad to be a multiple of wgsize (uses dummy seqs at end)
+            nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
 
-        evt = self.prg.perturbedWeights(self.queue, (ns_pad,), (self.wgsize,),
-                       self.bufs['Jpacked'],
-                       self.seqbufs['large'], uint32(buflen),
-                       self.bufs['weights'], self.Ebufs['large'])
+            buflen = self.nseq[seqbufname]
+            weights_dev = self.bufs['weights large']
+        seq_dev = self.seqbufs[seqbufname]
+        E_dev = self.Ebufs[seqbufname]
+
+        evt = self.prg.perturbedWeights(self.queue, (nseq,), (self.wgsize,),
+                       self.bufs['Jpacked'], seq_dev, uint32(buflen),
+                       weights_dev, E_dev)
         self.saveEvt(evt, 'perturbedWeights')
-        localarr = cl.LocalMemory(self.vsize*dtype(float32).itemsize)
-        evt = self.prg.sumFloats(self.queue, (self.vsize,), (self.vsize,), 
-                            self.bufs['weights'], self.bufs['neff'], 
-                            uint32(nseq), localarr)
-        self.saveEvt(evt, 'sumFloats')
     
-    def weightedMarg(self):
+    def weightedMarg(self, seqbufname='main'):
         self.require('Jstep')
         self.log("weightedMarg")
         q, L, nPairs, nhist = self.q, self.L, self.nPairs, self.nhist
 
-        #like calcBimarg, but only works on large seq buf, and also calculate
-        #neff. overwites front bimarg buf. Uses weights_dev,
-        #neff. Usually not used by user, but is called from
-        #perturbMarg
+        if seqbufname == 'main':
+            nseq = self.nseq[seqbufname]
+            buflen = nseq
+            weights_dev = self.bufs['weights']
+        else:
+            nseq = self.nstoredseqs
+            buflen = self.nseq[seqbufname]
+            weights_dev = self.bufs['weights large']
+            # pad to be a multiple of wgsize (uses dummy seqs at end)
+            nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
+        seq_dev = self.seqbufs[seqbufname]
+
         localhist = cl.LocalMemory(nhist*q*q*dtype(float32).itemsize)
         evt = self.prg.weightedMarg(self.queue, (nPairs*nhist,), (nhist,),
-                        self.bufs['bi'], self.bufs['weights'],
-                        self.bufs['neff'], uint32(self.nstoredseqs),
-                        self.seqbufs['large'], uint32(self.nseq['large']),
-                        localhist)
-        self.events.append((evt, 'weightedMarg'))
+                        self.bufs['bi'], weights_dev, self.bufs['neff'],
+                        uint32(nseq), seq_dev, uint32(buflen), localhist)
+        self.saveEvt(evt, 'weightedMarg')
+    
+    # WIP: alternate version of weightedmarg. Initial tests show it is slower.
+    def weightedMargAlt(self, seqbufname='main'):
+        self.require('Jstep')
+        self.log("weightedMarg")
+        L, q = self.L, self.q
+        n_ij = self.SWORDS*(self.SWORDS+1)/2
+
+        if seqbufname == 'main':
+            nseq = self.nseq[seqbufname]
+            buflen = nseq
+            weights_dev = self.bufs['weights']
+        else:
+            nseq = self.nstoredseqs
+            buflen = self.nseq[seqbufname]
+            weights_dev = self.bufs['weights large']
+        seq_dev = self.seqbufs[seqbufname]
+
+        evt = self.prg.weightedMargAlt(self.queue, (n_ij*256,), (256,),
+                        self.bufs['bi'], weights_dev, uint32(nseq), seq_dev,
+                        uint32(buflen))
+        self.saveEvt(evt, 'weightedMarg')
+
+    def renormalize_bimarg(self):
+        self.log("renormalize_bimarg")
+        q, nPairs = self.q, self.nPairs
+        evt = self.prg.renormalize_bimarg(self.queue, (nPairs*q*q,), (q*q,),
+                                          self.bufs['bi'])
+        self.saveEvt(evt, 'renormalize_bimarg')
+
+    def addBiBuffer(self, bufname, otherbuf):
+        # used for combining results from different gpus, where  otherbuf is a
+        # buffer "belonging" to another gpu
+        self.log("addbuf")
+
+        selfbuf = self.bufs[bufname]
+        if selfbuf.size != otherbuf.size:
+            raise Exception('Tried to add bufs of different sizes')
+
+        q, nPairs = self.q, self.nPairs
+        nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
+
+        evt = self.prg.addBiBufs(self.queue, (nworkunits,), (self.wgsize,),
+                               selfbuf, otherbuf)
+        self.saveEvt(evt, 'addbuf')
 
     def updateJ(self, gamma, pc):
         self.require('Jstep')
@@ -447,7 +488,7 @@ class MCMCGPU:
         q, nPairs = self.q, self.nPairs
         #find next highest multiple of wgsize, for num work units
         nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
-        
+
         bibuf = self.bufs['bi']
         Jin = Jout = self.bufs['J']
         evt = self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,),
@@ -458,7 +499,7 @@ class MCMCGPU:
 
     def updateJ_l2z(self, gamma, pc, lh, lJ):
         self.require('Jstep')
-        self.log("updateJ l2z")
+        self.log("updateJ_l2z")
         q, nPairs = self.q, self.nPairs
 
         bibuf = self.bufs['bi']
@@ -467,7 +508,7 @@ class MCMCGPU:
                                 self.bufs['bi target'], bibuf,
                                 float32(gamma), float32(pc),
                                 float32(2*lh), float32(2*lJ), Jin, Jout)
-        self.saveEvt(evt, 'updateJ l2z')
+        self.saveEvt(evt, 'updateJ_l2z')
         self.packedJ = None
 
     def updateJ_X(self, gamma, pc):
@@ -483,7 +524,6 @@ class MCMCGPU:
                                 float32(gamma), float32(pc), Jin, Jout)
         self.saveEvt(evt, 'updateJ X')
         self.packedJ = None
-
 
     def getBuf(self, bufname, truncateLarge=True):
         """get buffer data. truncateLarge means only return the
@@ -511,6 +551,14 @@ class MCMCGPU:
 
     def setBuf(self, bufname, buf):
         self.log("setBuf " + bufname)
+        
+        # device-to-device copies skip all the checks
+        if isinstance(buf, cl.Buffer):
+            evt = cl.enqueue_copy(self.queue, self.bufs[bufname], buf)
+            self.saveEvt(evt, 'setBuf', buf.size)
+            if bufname.split()[0] == 'J':
+                self.packedJ = None
+            return 
 
         if bufname.split()[0] == 'seq':
             buf = self.packSeqs(buf)
@@ -577,7 +625,7 @@ class MCMCGPU:
             # have to switch all this around. buf is uint32, or 4 bytes.
             evt = cl.enqueue_copy(self.queue, self.seqbufs['large'], buf,
                                   is_blocking=False,
-                                  host_origin=(0,0), 
+                                  host_origin=(0,0),
                                   buffer_origin=(4*offset, 0),
                                   buffer_pitches=(4*h, w),
                                   region=(4*buf.shape[1], buf.shape[0]))
@@ -622,7 +670,7 @@ class MCMCGPU:
                            self.bufs['markseqs'])
 
         self.nstoredseqs += newseq
-        self.events.append((evt, 'storeMarkedSeqs'))
+        self.saveEvt(evt, 'storeMarkedSeqs')
 
     def clearLargeSeqs(self):
         self.require('Large')
@@ -697,7 +745,7 @@ def packJ_CPU(self, couplings):
     """convert from format where every row is a unique ij pair (L choose 2
     rows) to format with every pair, all orders (L^2 rows). Note that the
     GPU kernel packfV does the same thing faster"""
-    
+
     L, q = seqsize_from_param_shape(couplings.shape)
     fullcouplings = zeros((L*L,q*q), dtype='<f4', order='C')
     pairs = [(i,j) for i in range(L-1) for j in range(i+1,L)]
@@ -809,4 +857,39 @@ def initGPU(devnum, (cl_ctx, cl_prg), device, nwalkers, param, log):
     gpu = MCMCGPU((device, devnum, cl_ctx, cl_prg), (L, q), 
                   nwalkers, wgsize, outdir, nhist, vsize, seed, profile=profile)
     return gpu
+
+def merge_device_bimarg(gpus):
+    # each gpu has its own bimarg computed for its sequences. We want to sum
+    # the bimarg to get the total bimarg, so need to share the bimarg buffers
+    # across devices. Since gpus are in same context, they can share buffers.
+
+    # There are a few possible transfer strategies with different bus
+    # usage/sync issues. The one below uses a divide by two strategy: In the
+    # first round, second half of gpus send to first half, eg gpu 3 to 1, 2 to
+    # 0, which do a sum. Then repeat on first half of gpus, dividing gpus in
+    # half each round, then broadcast final result from gpu 0.
+    
+    # make sure we are done writing to buffer
+    for g in gpus:
+        g.wait()
+
+    rgpus = gpus
+    while len(rgpus) > 1:
+        h = (len(rgpus)-1)//2 + 1
+        for even, odd in zip(rgpus[:h], rgpus[h:]):
+            even.addBiBuffer('bi', odd.bufs['bi'])
+
+        for even in rgpus[:h]:
+            even.wait()
+
+        rgpus = rgpus[:h]
+
+    rgpus[0].renormalize_bimarg()
+    rgpus[0].wait()
+
+    for g in gpus[1:]:
+        g.setBuf('bi', rgpus[0].bufs['bi'])
+
+    for g in gpus[1:]:
+        g.wait()
 

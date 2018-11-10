@@ -31,6 +31,7 @@ float uniformMap(uint i){
 }
 
 #define NCOUPLE ((L*(L-1)*q*q)/2)
+#define SWORDS ((L-1)/4+1)
 
 #define getbyte(mem, n) (((uchar*)(mem))[n])
 #define setbyte(mem, n, val) {(((uchar*)(mem))[n]) = val;}
@@ -69,11 +70,9 @@ void storeSeqs(__global uint *smallbuf,
     uint nseqs = get_global_size(0);
     uint n = get_global_id(0);
 
-    #define SWORDS ((L-1)/4+1)
     for(w = 0; w < SWORDS; w++){
         largebuf[w*nlargebuf + offset + n] = smallbuf[w*nseqs + n];
     }
-    #undef SWORDS
 }
 
 __kernel
@@ -89,13 +88,11 @@ void storeMarkedSeqs(__global uint *smallbuf,
     uint nseqs = get_global_size(0);
     uint n = get_global_id(0);
 
-    #define SWORDS ((L-1)/4+1)
     for(w = 0; w < SWORDS; w++){
         if(inds[n] != -1){
             largebuf[w*nlarge + offset + inds[n]] = smallbuf[w*nseqs + n];
         }
     }
-    #undef SWORDS
 }
 
 __kernel
@@ -106,13 +103,11 @@ void restoreSeqs(__global uint *smallbuf,
     uint w, n;
     uint nseqs = get_global_size(0);
 
-    #define SWORDS ((L-1)/4+1)
     for(w = 0; w < SWORDS; w++){
         for(n = get_local_id(0); n < nseqs; n += get_local_size(0)){
             smallbuf[w*nseqs + n] = largebuf[w*nlargebuf + offset + n];
         }
     }
-    #undef SWORDS
 }
 
 // copies fixed positions from a sequence in the small buffer to those
@@ -149,7 +144,7 @@ inline float getEnergiesf(__global float *J,
     // This function is complicated by optimizations for the GPU.
     // For clarity, here is equivalent but clearer (pseudo)code:
     //
-    //double energy = 0;
+    //float energy = 0;
     //for(n = 0; n < L-1; n++){
     //    for(m = n+1; m < L; m++){
     //       energy += J[n,m,seq[n],seq[m]];
@@ -191,7 +186,7 @@ inline float getEnergiesf(__global float *J,
     return energy;
 }
 
-__kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
+__kernel
 void getEnergies(__global float *J,
                  __global uint *seqmem,
                           uint  buflen,
@@ -248,7 +243,7 @@ inline float UpdateEnergy(__local float *lcouplings, __global float *J,
     return energy;
 }
 
-__kernel //__attribute__((work_group_size_hint(WGSIZE, 1, 1)))
+__kernel
 void metropolis(__global float *J,
                 __global mwc64xvec2_state_t *rngstates,
                 __global uint *position_list,
@@ -297,7 +292,7 @@ void metropolis(__global float *J,
 
 // ****************************** Histogram Code **************************
 
-__kernel //call with group size = NHIST, for nPair groups
+__kernel
 void countBivariate(__global uint *bicount,
                              uint  nseq,
                     __global uint *seqmem,
@@ -492,9 +487,9 @@ void weightedMarg(__global float *bimarg_new,
     //loop through all sequences
     for(n = li; n < nseq; n += nhist){
         tmp = seqmem[(i/4)*buflen + n];
-        uchar seqi = ((uchar*)&tmp)[i%4];
+        uchar seqi = getbyte(&tmp, i%4);
         tmp = seqmem[(j/4)*buflen + n];
-        uchar seqj = ((uchar*)&tmp)[j%4];
+        uchar seqj = getbyte(&tmp, j%4);
         hist[nhist*(q*seqi + seqj) + li] += weights[n];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -510,8 +505,147 @@ void weightedMarg(__global float *bimarg_new,
     }
 
     for(n = li; n < q*q; n += nhist){ //only loops once if nhist >= q*q
-        bimarg_new[gi*q*q + n] = hist[nhist*n]/(*sumweights);
+        bimarg_new[gi*q*q + n] = hist[nhist*n];///(*sumweights);
     }
+}
+
+// bivariate count kernel, optimized to take advantage of 4-byte transposed
+// sequence memory. 
+//
+// Seems to be slower than the kernel above even though it seemed more 
+// memory-efficient. Keeping it for now for testing purposes.
+//
+// group size must be a multiple of 256. Each wg loads 16 uint pieces of
+// sequence memory: 16 uints of row i4 of seqmem, 16 uints of row j4 of
+// sequmem, and 16 floats of weights. Each uint contains 4 characters. The 256
+// work-units are divided into 16 groups of 16 units. Each group processes one
+// of the 16 words of sequence memory. Within each group of 16, each wu takes
+// care of one of the 16 i,j combinations for that word, computing which
+// histogram entry to increment.
+//
+// There are 16 histograms. Everything is arranged so that in each round, all
+// the histograms can be updated simultaneously by one of the 16 groups. We
+// need to do 16 loops of this, one per group, since the histogram updates need
+// to be atomic across groups.
+__kernel 
+void weightedMargAlt(__global float *bimarg_new,
+                      __global float *weights,
+                                uint  nseq,
+                       __global uint *seqmem,
+                                uint  buflen) {
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint i4, j4;
+
+    //figure out which reduced i4/j4 pair we are
+    i4 = 0;
+    j4 = SWORDS;
+    while(j4 <= gi){
+        i4++;
+        j4 += SWORDS-i4;
+    }
+    j4 = gi + SWORDS - j4; //careful with underflow!
+
+    __local uint seq_rowi4[16];
+    __local uint seq_rowj4[16];
+    __local float tmpweight[16];
+    __local float hist[16*q*q];
+
+    //initialize 16 histograms, for every combination of 4x4 positions. Note:
+    // the histograms are interleaved in memory, see below.
+    for(uint n = li; n < 16*q*q; n += 256){
+        hist[n] = 0;
+    }
+
+    //loop through all sequences in chunks of 16
+    for(uint n = li; n < nseq; n += 16){
+        if (li < 16) {
+            seq_rowi4[li] = seqmem[i4*buflen + n];
+        }
+        else if (li < 32) {
+            seq_rowj4[li - 16] = seqmem[j4*buflen + n - 16];
+        }
+        else if (li < 48) {
+            tmpweight[li - 32] = weights[n - 32];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+        
+        float w = tmpweight[li/16];
+        uint si4 = seq_rowi4[li/16];
+        uint sj4 = seq_rowj4[li/16];
+        uint si = getbyte(&si4, (li%16)/4);
+        uint sj = getbyte(&sj4, li%4);
+        uint ind = 16*(q*si + sj) + (li%16);
+
+        for(uint x = 0; x < 16; x++) {
+            if (li/16 == x) {
+                hist[ind] += w;
+            }
+            barrier(CLK_LOCAL_MEM_FENCE);
+        }
+        // Note arrangement of histogram elements Hijab, where ij
+        // are the position indices (0 to 3) in si and sj, and ab
+        // are the residue letters
+        //                    <--  16  -->
+        //  ^   H00AA H01AA H02AA H03AA H10AA H11AA H12AA ...
+        //  |   H00AB H01AB H02AB H03AB ...
+        // q*q  H00AC H01AC ...
+        //  |   H00BA
+        //  v   ...
+        //                     (shown in C-order)
+        // The work units update successive columns in this table in each
+        // round, rotating through columns over rounds ij
+    }
+
+    // write back histograms. requires transpose and map to ij index
+    for(uint n = li; n < 16*q*q; n += 256){
+        // a computation to convert a i,j pair to bimarg row
+        uint i = ((n/(q*q))/4) + 4*i4;
+        uint j = ((n/(q*q))%4) + 4*j4;
+        // Note ordering of work units to ij pairs:
+        //  n   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+        // ij  00 01 02 03 10 11 12 13 20 21 22 23 30 31 32 33
+        if(i >= j || j >= L) { //only happens if rowi == rowj or in end padding
+            continue;
+        }
+        uint out_row = (L*(L-1)/2) - (L-i)*((L-i)-1)/2 + j - i - 1;
+        float f = hist[16*(n%(q*q)) + (n/(q*q))];
+        bimarg_new[q*q*out_row + (n%(q*q))] = f;
+    }
+}
+
+__kernel
+void addBiBufs(__global float *dst, __global float *src){
+    uint n = get_global_id(0);
+    if(n > NCOUPLE){
+        return;
+    }
+    dst[n] += src[n];
+}
+
+// expects to be called with work-group size of q*q
+__kernel
+void renormalize_bimarg(__global float *bimarg){
+    //normalize rows of bimarg array
+    uint n = get_group_id(0);
+    uint li = get_local_id(0);
+    int m;
+
+    __local float scratch[q*q];
+    float bim = bimarg[q*q*n + li];
+
+    //add up rows
+    scratch[li] = bim;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(m = q*q/2; m > 0; m >>= 1){
+        if(li%q < m){
+            scratch[li] = scratch[li] + scratch[li + m];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    //normalize and write back
+    bimarg[q*q*n + li] = bim/scratch[0];
 }
 
 // expects to be called with work-group size of q*q
