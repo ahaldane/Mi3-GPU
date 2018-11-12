@@ -142,6 +142,8 @@ def optionRegistry():
                  'independent'], 
         default='none',
         help="Strategy to reset walkers after each MCMC round")
+    add('multigpu', action='store_true',
+        help="Whether or not to split newton step computation across GPUs")
 
     # Potts options
     add('alpha', required=True,
@@ -162,10 +164,6 @@ def optionRegistry():
         help="Number of MC kernel calls to run before newton steps")
     add('equiltime', default='auto',
         help="Number of MC kernel calls to equilibrate")
-    add('sampletime', type=uint32, default=1,
-        help="Number of MC kernel calls between samples")
-    add('nsamples', type=uint32, default=1,
-        help="Number of sequence samples")
     add('trackequil', type=uint32, default=0,
         help='Save bimarg every TRACKEQUIL steps during equilibration')
     add('tempering',
@@ -239,16 +237,15 @@ def inverseIsing(orig_args, args, log):
                                           'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs seqs_large')
     addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps gamma '
-                                          'damping reg noiseN '
+                                          'damping reg noiseN multigpu '
                                           'preopt reseed')
-    addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
+    addopt(parser, 'Sampling Options',    'equiltime '
                                           'trackequil tempering nswaps_temp '
                                           'preequiltime')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'seqmodel outdir rngseed')
 
     args = parser.parse_args(args)
-    args.nlargebuf = args.nsamples
     args.measurefperror = False
 
     setup_node(log)
@@ -282,14 +279,12 @@ def inverseIsing(orig_args, args, log):
     if p.equiltime == 'auto':
         rngPeriod = 0
     else:
-        rngPeriod = (p.equiltime + p.sampletime*p.nsamples)*p.mcmcsteps
+        rngPeriod = p.equiltime*p.mcmcsteps
     for n,gpu in enumerate(gpus):
         gpu.initMCMC(p.nsteps, rngPeriod)
         if n == 0:
             # first gpu may need to store all collected seqs
-            gpu.initLargeBufs(gpu.nseq['main']*p.nsamples*len(gpus))
-        else:
-            gpu.initLargeBufs(gpu.nseq['main']*p.nsamples)
+            gpu.initLargeBufs(gpu.nseq['main']*len(gpus))
         gpu.initJstep()
         if p.tempering is not None:
             gpu.initMarkSeq()
@@ -303,18 +298,22 @@ def inverseIsing(orig_args, args, log):
             B0 = np.max(p.tempering)
             npreopt_seqs = sum(p.tempering == B0)
         else:
-            npreopt_seqs = gpus[0].nseq['large']
-            nseqs = sum([g.nseq['main'] for g in gpus])
+            if p.multigpu:
+                nseqs = sum([g.nseq['main'] for g in gpus])
+            else:
+                npreopt_seqs = gpus[0].nseq['large']
     p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
                                    nseqs=nseqs, nlargeseqs=npreopt_seqs,
                                    needseed=p.reseed.startswith('single')))
     if p.preopt:
-        if p.seqs_large is None:
-            raise Exception("Need to provide seqs_large if using preopt")
-        transferSeqsToGPU([gpus[0]], 'large', p.seqs_large, log)
-        if p.seqs is None:
-            raise Exception("Need to provide seqs if using preopt")
-        transferSeqsToGPU(gpus, 'main', p.seqs, log)
+        if p.multigpu:
+            if p.seqs is None:
+                raise Exception("Need to provide seqs if using preopt")
+            transferSeqsToGPU(gpus, 'main', p.seqs, log)
+        else:
+            if p.seqs_large is None:
+                raise Exception("Need to provide seqs_large if using preopt")
+            transferSeqsToGPU([gpus[0]], 'large', p.seqs_large, log)
 
     #if we're not initializing seqs to single sequence, need to load
     # a set of initial sequences into main buffer
@@ -337,11 +336,9 @@ def inverseIsing(orig_args, args, log):
             p.nwalkers))
     else:
         log(("In each round, running {} MC walkers for {} equilibration loops "
-             "then sampling every {} loops to get {} samples ({} total seqs) "
              "with {} MC steps per loop (Each walker equilibrated a total of "
              "{} MC steps, or {:.1f} steps per position)."
-             ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples,
-                    p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime,
+             ).format(p.nwalkers, p.equiltime, p.nsteps, p.nsteps*p.equiltime,
                     p.nsteps*p.equiltime/float(p.L)))
 
     describe_tempering(args, p, log)
@@ -577,7 +574,7 @@ def equilibrate(orig_args, args, log):
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs seqbimarg')
-    addopt(parser, 'Sampling Options',    'equiltime sampletime nsamples '
+    addopt(parser, 'Sampling Options',    'equiltime '
                                           'trackequil tempering nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'seqmodel outdir rngseed')
@@ -606,7 +603,7 @@ def equilibrate(orig_args, args, log):
     if p.equiltime == 'auto':
         rngPeriod = 0
     else:
-        rngPeriod = (p.equiltime + p.sampletime*p.nsamples)
+        rngPeriod = p.equiltime*p.mcmcsteps
     gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
     gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
@@ -614,8 +611,8 @@ def equilibrate(orig_args, args, log):
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
     for gpu in gpus:
         gpu.initMCMC(p.nsteps, rngPeriod)
-        gpu.initLargeBufs(gpu.nseq['main']*p.nsamples)
         if p.tempering is not None:
+            gpu.initLargeBufs(gpu.nseq['main'])
             gpu.initMarkSeq()
     
     nseqs = None
@@ -637,11 +634,9 @@ def equilibrate(orig_args, args, log):
             p.nwalkers))
     else:
         log(("Running {} MC walkers for {} equilibration loops "
-             "then sampling every {} loops to get {} samples ({} total seqs) "
              "with {} MC steps per loop (Each walker equilibrated a total of "
              "{} MC steps, or {:.1f} steps per position)."
-             ).format(p.nwalkers, p.equiltime, p.sampletime, p.nsamples,
-                    p.nsamples*p.nwalkers, p.nsteps, p.nsteps*p.equiltime,
+             ).format(p.nwalkers, p.equiltime, p.nsteps, p.nsteps*p.equiltime,
                     p.nsteps*p.equiltime/float(p.L)))
 
     describe_tempering(args, p, log)
@@ -907,6 +902,7 @@ def process_newton_args(args, log):
              'pcdamping': args.damping,
              'reseed': args.reseed,
              'preopt': args.preopt,
+             'multigpu': args.multigpu,
              'noiseN': args.noiseN if not args.noiseN else int(args.noiseN)}
 
     p = attrdict(param)
@@ -914,6 +910,8 @@ def process_newton_args(args, log):
     log("Updating J locally with gamma={}, and pc-damping {}".format(
         str(p.gamma0), str(p.pcdamping)))
     log("Running {} Newton update steps per round.".format(p.newtonSteps))
+    log("Using {}-GPU mode for Newton-step calculations.".format(
+        'multi' if p.multigpu else 'single'))
 
     log("Reading target marginals from file {}".format(args.bimarg))
     bimarg = scipy.load(args.bimarg)
@@ -1192,8 +1190,6 @@ def transferSeqsToGPU(gpus, bufname, seqs, log):
 
 def process_sample_args(args, log):
     p = attrdict({'equiltime': args.equiltime,
-                  'sampletime': args.sampletime,
-                  'nsamples': args.nsamples,
                   'trackequil': args.trackequil})
 
     if p['equiltime'] != 'auto':
@@ -1209,18 +1205,14 @@ def process_sample_args(args, log):
     if 'preequiltime' in args:
         p['preequiltime'] = args.preequiltime
 
-    if p.nsamples == 0:
-        raise Exception("nsamples must be at least 1")
-
     log("MCMC Sampling Setup")
     log("-------------------")
 
     if p.equiltime == 'auto':
         log('Using "auto" equilibration')
     else:
-        log(("In each MCMC round, running {} GPU MCMC kernel calls then "
-             "sampling every {} kernel calls to get {} samples").format(
-              p.equiltime, p.sampletime, p.nsamples))
+        log(("In each MCMC round, running {} GPU MCMC kernel calls"
+             ).format(p.equiltime))
     if 'tempering' in p:
         log("Parallel tempering with inverse temperatures {}, "
             "swapping {} times per loop".format(args.tempering, p.nswaps))

@@ -198,8 +198,9 @@ class MCMCGPU:
         self._initcomponent('Large')
 
         self.nseq['large'] = nseq_large
-        self._setupBuffer('seq large', '<u4', (self.SWORDS,self.nseq['large']))
-        self._setupBuffer(  'E large', '<f4', (self.nseq['large'],))
+        self._setupBuffer(    'seq large', '<u4', (self.SWORDS, nseq_large))
+        self._setupBuffer(      'E large', '<f4', (nseq_large,))
+        self._setupBuffer('weights large', '<f4',  (nseq_large,))
 
         self.largebufs.extend(['seq large', 'E large'])
         self.nstoredseqs = 0
@@ -225,7 +226,6 @@ class MCMCGPU:
         self.nmarks = self.nseq['main']
 
     def initJstep(self):
-        self.require('Large')
         self._initcomponent('Jstep')
 
         nPairs, q = self.nPairs, self.q
@@ -233,7 +233,6 @@ class MCMCGPU:
         self._setupBuffer(         'Creg', '<f4',  (nPairs, q*q))
         self._setupBuffer(         'neff', '<f4',  (1,))
         self._setupBuffer(      'weights', '<f4',  (self.nseq['main'],))
-        self._setupBuffer('weights large', '<f4',  (self.nseq['large'],))
 
         self.largebufs.append('weights large')
 

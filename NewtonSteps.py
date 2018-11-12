@@ -109,7 +109,7 @@ def printstats(name, bicount, bimarg_target, bimarg_model, couplings,
     return disp
 
 def writeStatus(name, bimarg_target, bicount, bimarg_model, couplings,
-                seqs_large, seqs, energies, alpha, e_rho, ptinfo, outdir, log):
+                seqs, energies, alpha, e_rho, ptinfo, outdir, log):
 
     dispstr = printstats(name, bicount, bimarg_target, bimarg_model, couplings,
                          energies, e_rho, ptinfo)
@@ -120,9 +120,6 @@ def writeStatus(name, bimarg_target, bicount, bimarg_model, couplings,
     savetxt(os.path.join(outdir, name, 'bicounts'), bicount, fmt='%d')
     save(os.path.join(outdir, name, 'bimarg'), bimarg_model)
     save(os.path.join(outdir, name, 'energies'), energies)
-    for n,seqbuf in enumerate(seqs_large):
-        fn = os.path.join(outdir, name, 'seqs_large-{}'.format(n))
-        writeSeqs(fn, seqbuf, alpha, zipf=True)
     for n,seqbuf in enumerate(seqs):
         fn = os.path.join(outdir, name, 'seqs-{}'.format(n))
         writeSeqs(fn, seqbuf, alpha, zipf=True)
@@ -239,7 +236,7 @@ def iterNewton_singleGPU(param, bimarg_model, gpus, log):
     else:
         updateJ = lambda gpu: gpu.updateJ(gamma, pc)
     # copy all sequences into gpu-0's large seq buffer
-    seq_large = concatenate(readGPUbufs(['seq large'], gpus)[0], axis=0)
+    seq_large = concatenate(readGPUbufs(['seq main'], gpus)[0], axis=0)
     gpu0.clearLargeSeqs()
     gpu0.storeSeqs(seq_large)
     gpu0.calcEnergies('large')
@@ -280,10 +277,12 @@ def iterNewton(param, bimarg_model, gpus, log):
     #return iterNewton_multiGPU(param, bimarg_model, gpus, log)
     #return iterNewton_singleGPU(param, bimarg_model, gpus, log)
     s = time.time()
-    ret = iterNewton_multiGPU(param, bimarg_model, gpus, log)
-    #ret = iterNewton_singleGPU(param, bimarg_model, gpus, log)
+    if param.multigpu:
+        ret = iterNewton_multiGPU(param, bimarg_model, gpus, log)
+    else:
+        ret = iterNewton_singleGPU(param, bimarg_model, gpus, log)
     e = time.time()
-    log("Local optimization running time: {} s".format(e-s))
+    log("Total Newton-step running time: {} s".format(e-s))
     return ret
 
 
@@ -296,13 +295,13 @@ def preOpt(param, gpus, log):
     alpha = param.alpha
     bimarg_target = param.bimarg
 
-    log("Pre-Optimization using large seq buffer:")
+    log("Pre-Optimization:")
 
     for gpu in gpus:
         gpu.setBuf('J', couplings)
-        gpu.calcEnergies('large')
-        gpu.calcBicounts('large')
-    res = readGPUbufs(['bicount', 'seq large', 'E large'], gpus)
+        gpu.calcEnergies('main')
+        gpu.calcBicounts('main')
+    res = readGPUbufs(['bicount', 'seq main', 'E main'], gpus)
     bicount, seqs, energies = sumarr(res[0]), res[1], concatenate(res[2])
     bimarg = bicount.astype(float32)/float32(sum(bicount[0,:]))
 
@@ -420,8 +419,6 @@ def track_main_bufs(gpus, savedir=None, step=None):
 
 def runMCMC(gpus, couplings, runName, param, log):
     nloop = param.equiltime
-    nsamples = param.nsamples
-    nsampleloops = param.sampletime
     trackequil = param.trackequil
     outdir = param.outdir
     # assumes small sequence buffer is already filled
@@ -490,33 +487,19 @@ def runMCMC(gpus, couplings, runName, param, log):
         # track how well different walkers are equilibrated. Should go to 0
         e_rho = [spearmanr(ei, equil_e[-1]) for ei in equil_e]
 
-    #post-equilibration samples
-    for gpu in gpus:
-        gpu.clearLargeSeqs()
-        gpu.storeSeqs() #save seqs from smallbuf to largebuf
-    for j in range(1,nsamples):
-        for i in range(nsampleloops):
-            for gpu in gpus:
-                gpu.runMCMC()
-        for gpu in gpus:
-            gpu.storeSeqs()
-
     #process results
     for gpu in gpus:
-        gpu.calcBicounts('large')
-        gpu.calcEnergies('large')
-    res = readGPUbufs(['bicount', 'E large'], gpus)
-    bicount = sumarr(res[0])
-    # assert sum(bicount, axis=1) are all equal here
+        gpu.calcBicounts('main')
+        gpu.calcEnergies('main')
+    bicount, es = readGPUbufs(['bicount', 'E main'], gpus)
+    bicount = sumarr(bicount)
     bimarg_model = bicount.astype(float32)/float32(sum(bicount[0,:]))
-    sampledenergies = concatenate(res[1])
+    sampledenergies = concatenate(es)
 
     return bimarg_model, bicount, sampledenergies, e_rho, None
 
 def runMCMC_tempered(gpus, couplings, runName, param, log):
     nloop = param.equiltime
-    nsamples = param.nsamples
-    nsampleloops = param.sampletime
     trackequil = param.trackequil
     outdir = param.outdir
     # assumes small sequence buffer is already filled
@@ -601,20 +584,8 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
 
     for B,gpu in zip(Bs,gpus):
         gpu.markSeqs(B == B0)
-
-    #post-equilibration samples
-    for gpu in gpus:
         gpu.clearLargeSeqs()
         gpu.storeMarkedSeqs() #save seqs from smallbuf to largebuf
-    for j in range(1,nsamples):
-        for i in range(nsampleloops):
-            for gpu in gpus:
-                gpu.runMCMC()
-
-            Bs,r = swapTemps(gpus, param.tempering, param.nswaps)
-        for B,gpu in zip(Bs,gpus):
-            gpu.markSeqs(B == B0)
-            gpu.storeMarkedSeqs()
 
     #process results
     for gpu in gpus:
@@ -658,15 +629,15 @@ def MCMCstep(runName, couplings, param, gpus, log):
      e_rho,
      ptinfo) = MCMC_func(gpus, couplings, runName, param, log)
 
-    seq_large, seqs = readGPUbufs(['seq large', 'seq main'], gpus)
+    seqs = readGPUbufs(['seq main'], gpus)[0]
 
     end_time = time.time()
 
     #get summary statistics and output them
     writeStatus(runName, bimarg_target, bicount, bimarg_model,
-                couplings, seq_large, seqs, sampledenergies,
+                couplings, seqs, sampledenergies,
                 alpha, e_rho, ptinfo, outdir, log)
-    log("MCMC running time: {} s".format(end_time - start_time))
+    log("Total MCMC running time: {} s".format(end_time - start_time))
 
     if param.tempering is not None:
         e, b = readGPUbufs(['E main', 'Bs'], gpus)
@@ -709,9 +680,6 @@ def newtonMCMC(param, gpus, log):
 
     # pre-optimization
     if param.preopt:
-        if param.seqs_large is None:
-            raise Exception("Error: sequence buffers must be filled for "
-                            "pre-optimization")
         couplings = preOpt(param, gpus, log)
     elif param.preequiltime:
         log("Pre-equilibration for {} steps...".format(param.preequiltime))
