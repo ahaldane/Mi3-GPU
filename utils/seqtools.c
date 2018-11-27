@@ -481,7 +481,8 @@ histsim_weighted(PyObject *self, PyObject *args){
     nseq = PyArray_DIM(seqs, 0);
     L = PyArray_DIM(seqs, 1);
     if(nseq != PyArray_DIM(weights,0)){
-		PyErr_SetString( PyExc_ValueError, "number of weights must equal number of sequences");
+		PyErr_SetString( PyExc_ValueError, 
+            "number of weights must equal number of sequences");
 		return NULL;
     }
 
@@ -493,6 +494,7 @@ histsim_weighted(PyObject *self, PyObject *args){
     seqs = (PyArrayObject*)PyArray_Transpose(seqs, NULL);
     seqs = (PyArrayObject*)PyArray_Copy(seqs);
     seqdata = PyArray_DATA(seqs);
+    weights = PyArray_Copy(weights); //clobbered below
     weightdata = PyArray_DATA(weights);
 
     dim = L+1;
@@ -521,7 +523,7 @@ histsim_weighted(PyObject *self, PyObject *args){
             newseq[p] = seqdata[nseq*p + nextind];
             seqdata[nseq*p + nextind] = seqdata[nseq*p + i];
         }
-        float w = weightdata[nextind];
+        npy_float64 w = weightdata[nextind];
         weightdata[nextind] = weightdata[i];
         hsim[nextind] = hsim[i];
         
@@ -562,6 +564,7 @@ histsim_weighted(PyObject *self, PyObject *args){
     free(newseq);
     free(hsim);
     Py_DECREF(seqs);
+    Py_DECREF(weights);
     return hist;
 }
 
@@ -835,6 +838,7 @@ sumsim(PyObject *self, PyObject *args){
         oldseq = newseq;
         newseq = tmp;
     }
+    sumsimdat[i] += L; // self term
 
     // put each element where it should go
     for(i = 0; i < nseq; i++){ 
@@ -859,6 +863,170 @@ sumsim(PyObject *self, PyObject *args){
     free(hsim);
     free(origindex);
     Py_DECREF(seqs);
+    return sumsim;
+}
+
+static PyObject *
+sumsim_weighted(PyObject *self, PyObject *args){	
+    PyArrayObject *seqs;
+    PyObject *sumsim;
+    npy_float64 *sumsimdat;
+    uint32 *hsim, *origindex;
+    npy_float64 *weightdata;
+    uint8 *seqdata, *oldseq, *newseq;
+    npy_intp dim;
+    int i, j, p, nextind;
+    npy_intp nseq, L;
+
+	if(!PyArg_ParseTuple(args, "O!O!", &PyArray_Type, &seqs,
+                                       &PyArray_Type, &weights)){
+		return NULL;
+    }
+
+	if( (PyArray_NDIM(seqs) != 2) || PyArray_TYPE(seqs) != NPY_UINT8 ){
+		PyErr_SetString( PyExc_ValueError, "seq must be 2d uint8 array");
+		return NULL;
+	}
+
+	if( (PyArray_NDIM(weights) != 1) || PyArray_TYPE(weights) != NPY_FLOAT64 ){
+		PyErr_SetString( PyExc_ValueError, "weights must be 1d float64 array");
+		return NULL;
+	}
+
+    if(!PyArray_ISCARRAY(seqs)){
+		PyErr_SetString( PyExc_ValueError, "seq must be C-contiguous");
+		return NULL;
+    }
+
+    if(!PyArray_ISCARRAY(weights)){
+		PyErr_SetString( PyExc_ValueError, "weights must be C-contiguous");
+		return NULL;
+    }
+
+    nseq = PyArray_DIM(seqs, 0);
+    L = PyArray_DIM(seqs, 1);
+    if(nseq != PyArray_DIM(weights,0)){
+		PyErr_SetString( PyExc_ValueError, 
+            "number of weights must equal number of sequences");
+		return NULL;
+    }
+
+    if(nseq == 0){
+		PyErr_SetString( PyExc_ValueError, "no seqs supplied");
+		return NULL;
+    }
+    
+    // transpose for optimal memory order (see below)
+    seqs = (PyArrayObject*)PyArray_Transpose(seqs, NULL);
+    seqs = (PyArrayObject*)PyArray_Copy(seqs);
+    seqdata = PyArray_DATA(seqs);
+    weights = PyArray_Copy(weights); //clobbered below
+    weightdata = PyArray_DATA(weights);
+
+    dim = nseq;
+    sumsim = PyArray_SimpleNew(1, &dim, NPY_FLOAT64);
+    sumsimdat = PyArray_DATA((PyArrayObject*)sumsim);
+    for(i = 0; i < nseq; i++){
+        sumsimdat[i] = 0;
+    }
+
+    hsim = malloc(sizeof(uint32)*nseq);
+    origindex = malloc(sizeof(uint32)*nseq);
+    newseq = malloc(L);
+    oldseq = malloc(L);
+    for(p = 0; p < L; p++){
+        oldseq[p] = 0xff;
+    }
+
+    for(j = 0; j < nseq; j++){
+        hsim[j] = 0;
+        origindex[j] = j;
+    }
+    
+    nextind = 0;
+    for(i = 0; i < nseq-1; i++){
+        
+        // record next seq and copy first seq to position of chosen seq
+        for(p = 0; p < L; p++){
+            newseq[p] = seqdata[nseq*p + nextind];
+            seqdata[nseq*p + nextind] = seqdata[nseq*p + i];
+        }
+        hsim[nextind] = hsim[i];
+        // swap originindex
+        uint32 tmp_originindex = origindex[i];
+        origindex[i] = origindex[nextind];
+        origindex[nextind] = tmp_originindex;
+        // swap sumsimdat
+        npy_uint64 tmp_sumsimdat = sumsimdat[i];
+        sumsimdat[i] = sumsimdat[nextind];
+        sumsimdat[nextind] = tmp_sumsimdat;
+        // update weightdata
+        npy_float64 w = weightdata[nextind];
+        weightdata[nextind] = weightdata[i];
+        
+        for(p = 0; p < L; p++){
+            uint8 newc = newseq[p];
+            uint8 oldc = oldseq[p];
+            uint8 *row = &seqdata[nseq*p];
+
+            // skip rows which didn't change
+            if(newc == oldc){
+                continue;
+            }
+            
+            // bottleneck of function, sequence transpose speeds this up
+            for(j = i+1; j < nseq; j++){
+                // using vectorizable arithmetic operations also speeds it up
+                hsim[j] += (row[j] == newc) - (row[j] == oldc);
+            }
+            // if this needs to be _really_ fast, could use pthreads
+            // (one thread per p)
+        }
+        
+        nextind = i+1;
+        uint32 biggesthsim = 0;
+        for(j = i+1; j < nseq; j++){
+            if(hsim[j] > biggesthsim){
+                nextind = j;
+                biggesthsim = hsim[j];
+            }
+
+            sumsimdat[j] += weightdata[j]*w*hsim[j];
+            sumsimdat[i] += weightdata[j]*w*hsim[j];
+        }
+        sumsimdat[i] += w*w*L; // self term
+
+
+        //swap sequence buffers
+        uint8 *tmp = oldseq;
+        oldseq = newseq;
+        newseq = tmp;
+    }
+
+    // put each element where it should go
+    for(i = 0; i < nseq; i++){ 
+        int ind = origindex[i];
+        npy_uint64 val = sumsimdat[i];
+        while(ind != i){
+            int newind = origindex[ind];
+
+            npy_uint64 tmpval = sumsimdat[ind];
+            sumsimdat[ind] = val;
+
+            origindex[ind] = ind;
+            ind = newind;
+
+            val = tmpval;
+        }
+        sumsimdat[i] = val;
+    }
+    
+    free(oldseq);
+    free(newseq);
+    free(hsim);
+    free(origindex);
+    Py_DECREF(seqs);
+    Py_DECREF(weights);
     return sumsim;
 }
 
@@ -950,6 +1118,8 @@ static PyMethodDef SeqtoolsMethods[] = {
             "compute most dissimilar sequences"},
 	{"sumsim", sumsim, METH_VARARGS, 
             "compute sum of similarity with other all sequences"},
+	{"sumsim_weighted", sumsim, METH_VARARGS, 
+           "compute sum of similarity with other all sequences, with weights"},
 	{"translateascii", translateascii, METH_VARARGS, 
             "translate sequence buffer from scii to integers"},
 	{NULL, NULL, 0, NULL}        /* Sentinel */
