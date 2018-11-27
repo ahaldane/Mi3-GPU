@@ -494,7 +494,7 @@ histsim_weighted(PyObject *self, PyObject *args){
     seqs = (PyArrayObject*)PyArray_Transpose(seqs, NULL);
     seqs = (PyArrayObject*)PyArray_Copy(seqs);
     seqdata = PyArray_DATA(seqs);
-    weights = PyArray_Copy(weights); //clobbered below
+    weights = (PyArrayObject*)PyArray_Copy(weights); //clobbered below
     weightdata = PyArray_DATA(weights);
 
     dim = L+1;
@@ -868,7 +868,7 @@ sumsim(PyObject *self, PyObject *args){
 
 static PyObject *
 sumsim_weighted(PyObject *self, PyObject *args){
-    PyArrayObject *seqs;
+    PyArrayObject *seqs, *weights;
     PyObject *sumsim;
     npy_float64 *sumsimdat;
     uint32 *hsim, *origindex;
@@ -920,7 +920,7 @@ sumsim_weighted(PyObject *self, PyObject *args){
     seqs = (PyArrayObject*)PyArray_Transpose(seqs, NULL);
     seqs = (PyArrayObject*)PyArray_Copy(seqs);
     seqdata = PyArray_DATA(seqs);
-    weights = PyArray_Copy(weights); //clobbered below
+    weights = (PyArrayObject*)PyArray_Copy(weights); //clobbered below
     weightdata = PyArray_DATA(weights);
 
     dim = nseq;
@@ -1118,7 +1118,7 @@ static PyMethodDef SeqtoolsMethods[] = {
             "compute most dissimilar sequences"},
     {"sumsim", sumsim, METH_VARARGS,
             "compute sum of similarity with other all sequences"},
-    {"sumsim_weighted", sumsim, METH_VARARGS,
+    {"sumsim_weighted", sumsim_weighted, METH_VARARGS,
            "compute sum of similarity with other all sequences, with weights"},
     {"translateascii", translateascii, METH_VARARGS,
             "translate sequence buffer from scii to integers"},
