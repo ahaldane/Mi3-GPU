@@ -558,7 +558,7 @@ histsim_weighted(PyObject *self, PyObject *args){
         oldseq = newseq;
         newseq = tmp;
     }
-    histdat[L]++;
+    histdat[L] += weightdata[nextind]*weightdata[nextind];
 
     free(oldseq);
     free(newseq);
@@ -832,13 +832,13 @@ sumsim(PyObject *self, PyObject *args){
             sumsimdat[j] += hsim[j];
             sumsimdat[i] += hsim[j];
         }
+        // note: self term is not included!
 
         //swap sequence buffers
         uint8 *tmp = oldseq;
         oldseq = newseq;
         newseq = tmp;
     }
-    sumsimdat[i] += L; // self term
 
     // put each element where it should go
     for(i = 0; i < nseq; i++){
@@ -957,7 +957,7 @@ sumsim_weighted(PyObject *self, PyObject *args){
         origindex[i] = origindex[nextind];
         origindex[nextind] = tmp_originindex;
         // swap sumsimdat
-        npy_uint64 tmp_sumsimdat = sumsimdat[i];
+        npy_float64 tmp_sumsimdat = sumsimdat[i];
         sumsimdat[i] = sumsimdat[nextind];
         sumsimdat[nextind] = tmp_sumsimdat;
         // update weightdata
@@ -994,8 +994,7 @@ sumsim_weighted(PyObject *self, PyObject *args){
             sumsimdat[j] += weightdata[j]*w*hsim[j];
             sumsimdat[i] += weightdata[j]*w*hsim[j];
         }
-        sumsimdat[i] += w*w*L; // self term
-
+        // note: self term is not included!
 
         //swap sequence buffers
         uint8 *tmp = oldseq;
@@ -1006,11 +1005,11 @@ sumsim_weighted(PyObject *self, PyObject *args){
     // put each element where it should go
     for(i = 0; i < nseq; i++){
         int ind = origindex[i];
-        npy_uint64 val = sumsimdat[i];
+        npy_float64 val = sumsimdat[i];
         while(ind != i){
             int newind = origindex[ind];
 
-            npy_uint64 tmpval = sumsimdat[ind];
+            npy_float64 tmpval = sumsimdat[ind];
             sumsimdat[ind] = val;
 
             origindex[ind] = ind;
