@@ -26,7 +26,12 @@ from numpy.random import randint
 import pyopencl as cl
 import pyopencl.array as cl_array
 import sys, os, errno, time, datetime, socket, signal, atexit
-import argparse, ConfigParser
+try:
+    import configargparse as argparse
+    have_configargparse = True
+except:
+    import argparse
+    have_configargparse = False
 from utils.seqload import loadSeqs, writeSeqs
 from utils.changeGauge import fieldlessGaugeEven
 from utils import printsome
@@ -102,6 +107,10 @@ def optionRegistry():
               "loads 'alpha', 'couplings', 'seedseq' and 'seqs', if not "
               "otherwise supplied.") )
     add('outdir', default='output', help='Output Directory')
+    add('finish', help='Dir. of an unfinished run to finish')
+    add('continue', help='Dir. of finished run, to start a new run from')
+    add('config', is_config_file_arg=True, 
+                  help='config file to load arguments from')
     add('rngseed', type=np.uint32, help='random seed')
 
     # GPU options
@@ -243,10 +252,14 @@ def inverseIsing(orig_args, args, log):
                                           'trackequil tempering nswaps_temp '
                                           'preequiltime')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'seqmodel outdir rngseed')
+    addopt(parser,  None,                 'seqmodel outdir rngseed config '
+                                          'finish continue')
 
     args = parser.parse_args(args)
     args.measurefperror = False
+
+    if args.config:
+        pass
 
     setup_node(log)
     log("")
@@ -259,6 +272,10 @@ def inverseIsing(orig_args, args, log):
 
     p = attrdict({'outdir': args.outdir})
     mkdir_p(args.outdir)
+
+    if have_configargparse:
+        fn = os.path.join(args.outdir, 'config.cfg')
+        parser.write_config_file(args, [fn])
     
     setup_seed(args, p, log)
 
@@ -1239,15 +1256,6 @@ class CLInfoAction(argparse.Action):
         printGPUs(print)
         parser.exit()
 
-def readConfig(fp, section):
-    config = ConfigParser.SafeConfigParser()
-    config.readfp(fp)
-    sections = config.sections()
-    if len(sections) != 1 or sections[0] != section:
-        raise Exception("Config input must have only one section with the "
-                        "same name as the specified actions")
-    return config.items(section)
-
 def main(args):
     actions = {
       'inverseIsing':   inverseIsing,
@@ -1287,6 +1295,8 @@ def main(args):
     #    config = readConfig(sys.stdin, known_args.action)
     #    configargs = [arg for opt,val in config for arg in ('--'+opt, val)]
     #    remaining_args = configargs + remaining_args
+    if have_configargparse:
+        parser.write_config_file(known_args, ['tmpconfig.cfg'])
 
     actions[known_args.action](args, remaining_args, print)
 

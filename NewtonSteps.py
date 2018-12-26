@@ -157,9 +157,12 @@ def singleNewton(bimarg, gamma, pc, gpus):
 
 def NewtonStatus(n, trialJ, weights, bimarg_model, bimarg_target, log):
     SSR = sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
-
+    
+    # not clear what best Neff measure is. sum(weights)?
+    nw = weights/sum(weights)
+    Neff = np.exp(-np.sum(nw*np.log(nw)))
     log(("{}  ssr: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
-         n, SSR, sum(weights), min(weights), max(weights)))
+         n, SSR, Neff, min(weights), max(weights)))
     log("    trialJ:", printsome(trialJ)), '...'
     log("    bimarg:", printsome(bimarg_model)), '...'
     log("   weights:", printsome(weights)), '...'
@@ -254,7 +257,7 @@ def iterNewton_singleGPU(param, bimarg_model, gpus, log):
         gpu0.renormalize_bimarg()
 
         # optinally output iteration status here
-        if 0: # XXX disabled for now
+        if 1: # XXX disabled for now
             bimarg_model, weights, trialJ = getNewtonBufs()
             NewtonStatus(i, trialJ, weights, bimarg_model, bimarg_target, log)
 
