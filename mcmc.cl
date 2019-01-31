@@ -334,8 +334,11 @@ void countBivariate(__global uint *bicount,
 
     //merge histograms
     for(n = 0; n < q*q; n++){
-        for(m = nhist/2; m > 0; m >>= 1){
-            if(li < m){
+        m = nhist;
+        while (m > 1) {
+            uint odd = m%2;
+            m = (m+1)>>1; //div by 2 rounded up
+            if(li < m - odd){
                 hist[nhist*n + li] = hist[nhist*n + li] + hist[nhist*n + li +m];
             }
             barrier(CLK_LOCAL_MEM_FENCE);
@@ -404,8 +407,11 @@ void countMarkedBivariate(__global uint *bicount,
     barrier(CLK_LOCAL_MEM_FENCE);
     //merge histograms
     for(n = 0; n < q*q; n++){
-        for(m = nhist/2; m > 0; m >>= 1){
-            if(li < m){
+        m = nhist;
+        while (m > 1) {
+            uint odd = m%2;
+            m = (m+1)>>1; //div by 2 rounded up
+            if(li < m - odd){
                 hist[nhist*n + li] = hist[nhist*n + li] + hist[nhist*n + li +m];
             }
             barrier(CLK_LOCAL_MEM_FENCE);
@@ -428,7 +434,7 @@ void perturbedWeights(__global float *J,
     weights[get_global_id(0)] = exp(-(energy - energies[get_global_id(0)]));
 }
 
-__kernel //simply sums a vector. Call with single group of size VSIZE
+__kernel //simply sums a vector. Call with single group of size VSIZE, which must be power of two
 void sumFloats(__global float *data,
                __global float *output,
                         uint  len,
@@ -443,7 +449,7 @@ void sumFloats(__global float *data,
         sums[li] += data[n];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
-    //reduce accumulated sums
+    //reduce accumulated sums (req power of two unlike elsewhere in this file)
     for(n = vsize/2; n > 0; n >>= 1){
         if(li < n){
             sums[li] = sums[li] + sums[li + n];
@@ -496,9 +502,12 @@ void weightedMarg(__global float *bimarg_new,
 
     //merge histograms
     for(n = 0; n < q*q; n++){
-        for(m = nhist/2; m > 0; m >>= 1){
-            if(li < m){
-                hist[nhist*n + li] = hist[nhist*n + li] + hist[nhist*n + li +m];
+        m = nhist;
+        while (m > 1) {
+            uint odd = m%2;
+            m = (m+1)>>1; //div by 2 rounded up
+            if(li < m - odd){
+                hist[nhist*n + li] = hist[nhist*n + li] + hist[nhist*n + li + m];
             }
             barrier(CLK_LOCAL_MEM_FENCE);
         }
@@ -624,28 +633,34 @@ void addBiBufs(__global float *dst, __global float *src){
 }
 
 // expects to be called with work-group size of q*q
-__kernel
-void renormalize_bimarg(__global float *bimarg){
-    //normalize rows of bimarg array
-    uint n = get_group_id(0);
-    uint li = get_local_id(0);
-    int m;
+// Local scratch memory must be provided:
+// sums is q*q elements
+float sumqq(float v, uint li, __local float *scratch){
+    uint m;
 
-    __local float scratch[q*q];
-    float bim = bimarg[q*q*n + li];
-
-    //add up rows
-    scratch[li] = bim;
+    scratch[li] = v;
     barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = q*q/2; m > 0; m >>= 1){
-        if(li%q < m){
+    
+    // reduction loop which accounts for odd vector sizes
+    m = q*q;
+    while (m > 1) {
+        uint odd = m%2;
+        m = (m+1)>>1; //div by 2 rounded up
+        if(li < m - odd){
             scratch[li] = scratch[li] + scratch[li + m];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
-    //normalize and write back
-    bimarg[q*q*n + li] = bim/scratch[0];
+    return scratch[0];
+}
+
+// expects to be called with work-group size of q*q
+__kernel
+void renormalize_bimarg(__global float *bimarg){
+    __local float scratch[q*q];
+    float bim = bimarg[get_global_id(0)];
+    bimarg[get_global_id(0)] = bim/sumqq(bim, get_local_id(0), scratch);
 }
 
 // expects to be called with work-group size of q*q
@@ -660,8 +675,11 @@ float zeroGauge(float J, uint li, __local float *scratch,
     //add up rows
     scratch[li] = J;
     barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = q/2; m > 0; m >>= 1){
-        if(li%q < m){
+    m = q;
+    while (m > 1) {
+        uint odd = m%2;
+        m = (m+1)>>1; //div by 2 rounded up
+        if(li%q < m - odd){
             scratch[li] = scratch[li] + scratch[li + m];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -673,8 +691,11 @@ float zeroGauge(float J, uint li, __local float *scratch,
     //add up columns
     scratch[q*(li%q) + li/q] = J;
     barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = q/2; m > 0; m >>= 1){
-        if(li%q < m){
+    m = q;
+    while (m > 1) {
+        uint odd = m%2;
+        m = (m+1)>>1; //div by 2 rounded up
+        if(li%q < m - odd){
             scratch[li] = scratch[li] + scratch[li + m];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -684,12 +705,16 @@ float zeroGauge(float J, uint li, __local float *scratch,
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     //get total sum
-    for(m = q/2; m > 0; m >>= 1){
-        if(li < m){
+    m = q;
+    while (m > 1) {
+        uint odd = m%2;
+        m = (m+1)>>1; //div by 2 rounded up
+        if(li < m - odd){
             scratch[q*li] = scratch[q*li] + scratch[q*(li + m)];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
+
     float mean = scratch[0]/q/q;
     barrier(CLK_LOCAL_MEM_FENCE);
 
@@ -701,38 +726,10 @@ float zeroGauge(float J, uint li, __local float *scratch,
     return J - (hi[li/q] + hj[li%q]) - mean;
 }
 
-// expects to be called with work-group size of q*q
-// Local scratch memory must be provided:
-// sums is q*q elements
 float fbnorm(float J, uint li, __local float *sums){
-    uint m;
-
-    sums[li] = J*J;
-    barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = q*q/2; m > 0; m >>= 1){
-        if(li < m){
-            sums[li] = sums[li] + sums[li + m];
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    return sqrt(sums[0]);
+    return sqrt(sumqq(J*J, li, sums));
 }
 
-float sumqq(float v, uint li, __local float *scratch){
-    uint m;
-
-    scratch[li] = v;
-    barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = q*q/2; m > 0; m >>= 1){
-        if(li < m){
-            scratch[li] = scratch[li] + scratch[li + m];
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    // XXX assumes q is even. Need to add last element if odd
-
-    return scratch[0];
-}
 
 __kernel
 void updatedJ(__global float *bimarg_target,

@@ -448,7 +448,7 @@ def getBimarg(orig_args, args, log):
 
     p = attrdict({'outdir': args.outdir})
     mkdir_p(args.outdir)
-    alpha = args.alpha
+    alpha = args.alpha.strip()
     p['alpha'] = alpha
     q = len(alpha)
     p['q'] = q
@@ -992,7 +992,7 @@ def process_potts_args(args, L, q, bimarg, log):
     # * from bivariate_target dimensions
     # * from coupling dimensions
 
-    alpha = args.alpha
+    alpha = args.alpha.strip()
     L, q = updateLq(args.L, len(alpha), L, q, 'bimarg')
 
     # next try to get couplings (may determine L, q)
@@ -1126,14 +1126,14 @@ def process_sequence_args(args, L, alpha, bimarg, log,
                 seedseq = array(map(alpha.index, args.seedseq), dtype='<u1')
                 seedseq_origin = 'supplied'
             except:
-                seedseq = loadseedseq(args.seedseq, args.alpha, log)
+                seedseq = loadseedseq(args.seedseq, args.alpha.strip(), log)
                 seedseq_origin = 'from file'
         elif args.seqmodel in ['uniform', 'independent']:
             seedseq = generateSequences(args.seqmodel, L, q, 1, bimarg, log)[0]
             seedseq_origin = args.seqmodel
         elif args.seqmodel is not None:
             seedseq = loadseedseq(os.path.join(args.seqmodel, 'seedseq'),
-                                  args.alpha, log)
+                                  args.alpha.strip(), log)
             seedseq_origin = 'from file'
 
         log("Seed seq ({}): {}".format(seedseq_origin,

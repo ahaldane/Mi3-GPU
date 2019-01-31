@@ -524,7 +524,7 @@ class MCMCGPU:
         self.saveEvt(evt, 'updateJ X')
         self.packedJ = None
 
-    def getBuf(self, bufname, truncateLarge=True):
+    def getBuf(self, bufname, truncateLarge=True, wait_for=None):
         """get buffer data. truncateLarge means only return the
         computed part of the large buffer (rest may be uninitialized)"""
 
@@ -533,7 +533,7 @@ class MCMCGPU:
         buftype, bufshape = bufspec[0], bufspec[1]
         mem = zeros(bufshape, dtype=buftype)
         evt = cl.enqueue_copy(self.queue, mem, self.bufs[bufname],
-                              is_blocking=False)
+                              is_blocking=False, wait_for=wait_for)
         self.saveEvt(evt, 'getBuf', mem.nbytes)
         if bufname.split()[0] == 'seq':
             if bufname in self.largebufs and truncateLarge:

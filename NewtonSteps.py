@@ -142,7 +142,9 @@ def meanarr(arrlist):
 ################################################################################
 #local optimization related code
 
-def singleNewton(bimarg, gamma, pc, gpus):
+def singleNewton(bimarg, gamma, param, gpus):
+    pc = param.pcdamping
+
     gpus[0].setBuf('bi', bimarg)
     # note: updateJ should give same result on all GPUs
     # overwrites J front using bi back and J back
@@ -257,7 +259,7 @@ def iterNewton_singleGPU(param, bimarg_model, gpus, log):
         gpu0.renormalize_bimarg()
 
         # optinally output iteration status here
-        if 1: # XXX disabled for now
+        if 0: # XXX disabled for now
             bimarg_model, weights, trialJ = getNewtonBufs()
             NewtonStatus(i, trialJ, weights, bimarg_model, bimarg_target, log)
 
@@ -335,7 +337,7 @@ def preOpt(param, gpus, log):
     else:
         log("Performing single newton update step")
         couplings = singleNewton(bimarg, param.gamma0,
-                                 param.pcdamping, gpus)
+                                 param, gpus)
 
     return couplings
 
@@ -655,7 +657,7 @@ def MCMCstep(runName, couplings, param, gpus, log):
     else:
         log("Performing single newton update step")
         newcouplings = singleNewton(bimarg_model, param.gamma0,
-                                    param.pcdamping, gpus)
+                                    param, gpus)
 
     return seqs, newcouplings
 
