@@ -153,6 +153,8 @@ def singleNewton(bimarg, gamma, param, gpus):
         gpus[0].updateJ_l2z(gamma, pc, lh, lJ)
     elif param.reg == 'X':
         gpus[0].updateJ_X(gamma, pc)
+    elif param.reg == 'Xself':
+        gpus[0].updateJ_Xself(gamma, pc)
     else:
         gpus[0].updateJ(gamma, pc)
     return gpus[0].getBuf('J').read()
@@ -182,6 +184,10 @@ def iterNewton_multiGPU(param, bimarg_model, gpus, log):
 
     if param.reg == 'l2z':
         updateJ = lambda gpu: gpu.updateJ_l2z(gamma, pc, *param.regarg)
+    elif param.reg == 'X':
+        updateJ = lambda gpu: gpu.updateJ_X(gamma, pc)
+    elif param.reg == 'Xself':
+        updateJ = lambda gpu: gpu.updateJ_Xself(gamma, pc)
     else:
         updateJ = lambda gpu: gpu.updateJ(gamma, pc)
 
@@ -238,8 +244,13 @@ def iterNewton_singleGPU(param, bimarg_model, gpus, log):
 
     if param.reg == 'l2z':
         updateJ = lambda gpu: gpu.updateJ_l2z(gamma, pc, *param.regarg)
+    elif param.reg == 'X':
+        updateJ = lambda gpu: gpu.updateJ_X(gamma, pc)
+    elif param.reg == 'Xself':
+        updateJ = lambda gpu: gpu.updateJ_Xself(gamma, pc)
     else:
         updateJ = lambda gpu: gpu.updateJ(gamma, pc)
+
     # copy all sequences into gpu-0's large seq buffer
     seq_large = concatenate(readGPUbufs(['seq main'], gpus)[0], axis=0)
     gpu0.clearLargeSeqs()
@@ -711,6 +722,9 @@ def newtonMCMC(param, gpus, log):
     if param.reg == 'X':
         for gpu in gpus:
             gpu.setBuf('Creg', param.regarg)
+    if param.reg == 'Xself':
+        for gpu in gpus:
+            gpu.setBuf('Xlambdas', param.regarg)
 
     # solve using newton-MCMC
     for i in range(param.mcmcsteps):
