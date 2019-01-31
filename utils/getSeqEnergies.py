@@ -30,7 +30,9 @@ def getLq(J):
 
 def energies(s, J):
     L, q = getLq(J)
-    pairenergy = zeros(s.shape[0])
+    if q > 16: # the x + q*y operation below may overflow for i1
+        s = s.astype('i4')
+    pairenergy = zeros(s.shape[0], dtype='f8')
     for n,(i,j) in enumerate([(i,j) for i in range(L-1) for j in range(i+1,L)]):
         pairenergy += J[n,s[:,j] + q*s[:,i]]
     return pairenergy
@@ -53,7 +55,7 @@ def main():
     except ValueError:
         letters = alphabets.get(args.alpha, args.alpha)
 
-    couplings = scipy.load(args.couplings)
+    couplings = scipy.load(args.couplings).astype('f8')
 
     def chunkE(seqs, param):
         return energies(seqs, couplings)

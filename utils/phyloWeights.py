@@ -67,7 +67,7 @@ def main():
     else:
         weights = ones(seqs.shape[0])
     M_eff = sum(weights)
-    print "M_eff:", M_eff
+    print M_eff
 
     save(args.outfile, weights)
 

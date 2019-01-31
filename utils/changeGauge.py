@@ -20,16 +20,20 @@
 from scipy import *
 import sys, argparse
 
+def getLq(J):
+    L = int(((1+sqrt(1+8*J.shape[0]))/2) + 0.5)
+    q = int(sqrt(J.shape[1]) + 0.5)
+    return L, q
+
 def getCouplingMatrix(couplings):
     #compute the blocks that make up Ciajb, that is, compute the block Cij
-    L = int( (1+sqrt(1+8*couplings.shape[0]))/2 + 0.5)
-    nB = int(sqrt(couplings.shape[1]) + 0.5)
+    L, q = getLq(couplings)
     coupleinds = [(a,b) for a in range(L-1) for b in range(a+1, L)]
 
-    C = empty((L,nB,L,nB))
+    C = empty((L,q,L,q))
     C.fill(nan)
     for n,(i,j) in enumerate(coupleinds): 
-        block = couplings[n].reshape(nB,nB)
+        block = couplings[n].reshape(q,q)
         C[i,:,j,:] = block
         C[j,:,i,:] = block.T
     return C
@@ -38,9 +42,9 @@ def weightedGauge(hs, Js, weights=None):
     if weights is None:
         raise Exception("weights must be supplied to get weighted gauge")
 
-    L, nB = hs.shape
-    weightsx = weights.reshape((L*(L-1)/2, nB, nB))
-    Jx = Js.reshape((L*(L-1)/2, nB, nB))
+    L, q = hs.shape
+    weightsx = weights.reshape((L*(L-1)/2, q, q))
+    Jx = Js.reshape((L*(L-1)/2, q, q))
     #weightsxC = nan_to_num(getCouplingMatrix(weights))
     #JxC = nan_to_num(getCouplingMatrix(Js))
 
@@ -50,7 +54,7 @@ def weightedGauge(hs, Js, weights=None):
     #computation of hs has not been checked.. probably wrong
     #h0 = hs + sum(average(JxC, weights=weightsxC, axis=1), axis=0)
     h0 = hs
-    J0 = J0.reshape((J0.shape[0], nB**2))
+    J0 = J0.reshape((J0.shape[0], q**2))
     return h0, J0
 
 def zeroGauge(hs, Js, weights=None):
@@ -60,8 +64,8 @@ def zeroGauge(hs, Js, weights=None):
         raise Exception("Error: Cannot convert to zero gauge because "
                         "of infinities")
 
-    L, nB = hs.shape
-    Jx = Js.reshape((L*(L-1)/2, nB, nB))
+    L, q = hs.shape
+    Jx = Js.reshape((L*(L-1)/2, q, q))
     JxC = nan_to_num(getCouplingMatrix(Js))
 
     J0 = (Jx - mean(Jx, axis=1)[:,newaxis,:] 
@@ -69,7 +73,7 @@ def zeroGauge(hs, Js, weights=None):
              + mean(Jx, axis=(1,2))[:,newaxis,newaxis])
     h0 = hs + sum(mean(JxC, axis=1), axis=0)
     h0 = h0 - mean(h0, axis=1)[:,newaxis]
-    J0 = J0.reshape((J0.shape[0], nB**2))
+    J0 = J0.reshape((J0.shape[0], q**2))
     return h0, J0
 
 def zeroJGauge(hs, Js, weights=None): 
@@ -79,8 +83,8 @@ def zeroJGauge(hs, Js, weights=None):
         raise Exception("Error: Cannot convert to zero gauge because "
                         "of infinities")
 
-    L, nB = hs.shape
-    Jx = Js.reshape((L*(L-1)/2, nB, nB))
+    L, q = hs.shape
+    Jx = Js.reshape((L*(L-1)/2, q, q))
 
     J0 = (Jx - mean(Jx, axis=1)[:,newaxis,:] 
              - mean(Jx, axis=2)[:,:,newaxis] 
@@ -89,19 +93,19 @@ def zeroJGauge(hs, Js, weights=None):
     JxC = nan_to_num(getCouplingMatrix(Js))
     h0 = hs+(sum(mean(JxC, axis=1), axis=0) - 
           (sum(mean(JxC, axis=(1,3)), axis=0)/2)[:,newaxis])
-    J0 = J0.reshape((J0.shape[0], nB**2))
+    J0 = J0.reshape((J0.shape[0], q**2))
     return h0, J0
 
 
 def fieldlessGaugeDistributed(hs, Js, weights=None): #convert to a fieldless gauge
     #This function tries to distribute the fields evenly
     #but does not first re-zero the fields/couplings
-    L, nB = hs.shape
+    L, q = hs.shape
     J0 = Js.copy()
     hd = hs/(L-1)
     for n,(i,j) in enumerate([(i,j) for i in range(L-1) for j in range(i+1,L)]):
-        J0[n,:] += repeat(hd[i,:], nB)
-        J0[n,:] += tile(hd[j,:], nB)
+        J0[n,:] += repeat(hd[i,:], q)
+        J0[n,:] += tile(hd[j,:], q)
     return zeros(hs.shape), J0
 
 def fieldlessGaugeEven(hs, Js, weights=None): #convert to a fieldless gauge
@@ -112,11 +116,11 @@ def fieldlessGaugeEven(hs, Js, weights=None): #convert to a fieldless gauge
 def fieldlessGauge(hs, Js, weights=None):
     #note: Fieldless gauge is not fully constrained: There are many possible 
     #choices that are fieldless, this just returns one of them
-    seqLen, nBases = hs.shape
+    seqLen, q = hs.shape
     J0 = Js.copy()
-    J0[0,:] += repeat(hs[0,:], nBases)
+    J0[0,:] += repeat(hs[0,:], q)
     for i in range(seqLen-1):
-        J0[i,:] += tile(hs[i+1,:], nBases)
+        J0[i,:] += tile(hs[i+1,:], q)
     return zeros(hs.shape), J0
 
 def tryload(fn):
@@ -141,28 +145,27 @@ def main():
 
     if args.hin is not None:
         h0 = tryload(args.hin)
-        hL,hnB = h0.shape
+        hL,hq = h0.shape
 
     if args.Jin is not None:
         J0 = tryload(args.Jin)
-        jL = int((1+sqrt(1+8*J0.shape[0]))/2 + 0.5)
-        jnB = int(sqrt(J0.shape[1]) + 0.5)
+        jL, jq = getLq(J0)
 
     if args.hin is None and args.Jin is None:
         parser.error("Must supply either hin or Jin (or both)")
 
     if args.hin is None:
         print "No h supplied, assuming h = 0"
-        L,nB = jL,jnB
-        h0 = zeros((L,nB))
+        L,q = jL,jq
+        h0 = zeros((L,q))
     elif args.Jin is None:
         print "No J supplied, assuming J = 0"
-        L,nB = hL,hnB
-        J0 = zeros((L*(L-1)/2,nB*nB))
+        L,q = hL,hq
+        J0 = zeros((L*(L-1)/2,q*q))
     else:
-        if hL != jL or hnB != jnB:
+        if hL != jL or hq != jq:
             raise Exception("Error: Size of h does not match size of J")
-        L,nB = jL,jnB
+        L,q = jL,jq
     weights = None
     if args.weights != None:
         weights = load(args.weights)
