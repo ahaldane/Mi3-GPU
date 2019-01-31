@@ -70,6 +70,7 @@ def getEnergiesMultiPrec(s, couplings):
     mp.dps = 32
     couplings = [[mpf(float(x)) for x in r] for r in couplings]
     pairenergy = [mpf(0) for n in range(s.shape[0])]
+    s = s.astype('i4')
     for n,(i,j) in enumerate([(i,j) for i in range(L-1) for j in range(i+1,L)]):
         r = couplings[n]
         cpl = (r[b] for b in (q*s[:,i] + s[:,j]))

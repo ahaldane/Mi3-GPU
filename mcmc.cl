@@ -158,7 +158,7 @@ inline float getEnergiesf(__global float *J,
 
     uint li = get_local_id(0);
 
-    uchar seqm, seqn, seqp;
+    uint seqm, seqn, seqp;
     uint cn, cm;
     uint sbn, sbm;
     uint n,m,k;
@@ -215,7 +215,7 @@ void initRNG2(__global mwc64xvec2_state_t *rngstates,
 
 inline float UpdateEnergy(__local float *lcouplings, __global float *J,
                           global uint *seqmem, uint nseqs,
-                          uint pos, uchar seqp, uchar mutres, float energy){
+                          uint pos, uint seqp, uchar mutres, float energy){
     uint m = 0;
     while(m < L){
         //loop through seq, changing energy by changed coupling with pos
@@ -238,7 +238,7 @@ inline float UpdateEnergy(__local float *lcouplings, __global float *J,
             if(m == pos){
                 continue;
             }
-            uchar seqm = getbyte(&sbm, n);
+            uint seqm = getbyte(&sbm, n);
             energy += lcouplings[q*q*n + q*mutres + seqm];
             energy -= lcouplings[q*q*n + q*seqp   + seqm];
         }
@@ -272,10 +272,10 @@ void metropolis(__global float *J,
     for(i = 0; i < nsteps; i++){
         uint pos = position_list[i];
         uint2 rng = MWC64XVEC2_NextUint2(&rstate);
-        uchar mutres = rng.x%q;  // small error here if MAX_INT%q != 0
+        uint mutres = rng.x%q;  // small error here if MAX_INT%q != 0
                                  // of order q/MAX_INT in marginals
         uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)];
-        uchar seqp = getbyte(&sbn, pos%4);
+        uint seqp = getbyte(&sbn, pos%4);
 
         float newenergy = UpdateEnergy(lcouplings, J, seqmem, nseqs,
                                        pos, seqp, mutres, energy);
@@ -330,9 +330,9 @@ void countBivariate(__global uint *bicount,
     // loop through all sequences
     for(n = li; n < nseq; n += nhist){
         tmp = seqmem[(i/4)*buflen + n];
-        uchar seqi = ((uchar*)&tmp)[i%4];
+        uint seqi = ((uchar*)&tmp)[i%4];
         tmp = seqmem[(j/4)*buflen + n];
-        uchar seqj = ((uchar*)&tmp)[j%4];
+        uint seqj = ((uchar*)&tmp)[j%4];
         hist[nhist*(q*seqi + seqj) + li]++;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -400,9 +400,9 @@ void countMarkedBivariate(__global uint *bicount,
     for(n = li; n < nseq; n += nhist){
         if(marks[n] != -1){
             tmp = seqmem[(i/4)*nseq+n];
-            uchar seqi = ((uchar*)&tmp)[i%4];
+            uint seqi = ((uchar*)&tmp)[i%4];
             tmp = seqmem[(j/4)*nseq+n];
-            uchar seqj = ((uchar*)&tmp)[j%4];
+            uint seqj = ((uchar*)&tmp)[j%4];
             hist[nhist*(q*seqi + seqj) + li]++;
         }
     }
@@ -492,9 +492,9 @@ void weightedMarg(__global float *bimarg_new,
     //loop through all sequences
     for(n = li; n < nseq; n += nhist){
         tmp = seqmem[(i/4)*buflen + n];
-        uchar seqi = ((uchar*)&tmp)[i%4];
+        uint seqi = ((uchar*)&tmp)[i%4];
         tmp = seqmem[(j/4)*buflen + n];
-        uchar seqj = ((uchar*)&tmp)[j%4];
+        uint seqj = ((uchar*)&tmp)[j%4];
         hist[nhist*(q*seqi + seqj) + li] += weights[n];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
