@@ -795,8 +795,11 @@ float getXC(float J, float bimarg, uint li, __local float *scratch,
     // add up bimarg rows
     scratch[li] = bimarg;
     barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = q/2; m > 0; m >>= 1){
-        if(li%q < m){
+    m = q;
+    while (m > 1) {
+        uint odd = m%2;
+        m = (m+1)>>1; //div by 2 rounded up
+        if(li%q < m - odd){
             scratch[li] = scratch[li] + scratch[li + m];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -805,11 +808,15 @@ float getXC(float J, float bimarg, uint li, __local float *scratch,
         fi[li] = scratch[q*li]/q;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
+
     //add up bimarg columns
     scratch[q*(li%q) + li/q] = bimarg;
     barrier(CLK_LOCAL_MEM_FENCE);
-    for(m = q/2; m > 0; m >>= 1){
-        if(li%q < m){
+    m = q;
+    while (m > 1) {
+        uint odd = m%2;
+        m = (m+1)>>1; //div by 2 rounded up
+        if(li%q < m - odd){
             scratch[li] = scratch[li] + scratch[li + m];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -821,10 +828,14 @@ float getXC(float J, float bimarg, uint li, __local float *scratch,
 
     // each work unit computes one of the Xijab terms
     scratch[li] = J*(bimarg - fi[li/q]*fj[li%q]);
+    barrier(CLK_LOCAL_MEM_FENCE);
 
     //sum up all terms over ab
-    for(m = q/2; m > 0; m >>= 1){
-        if(li < m){
+    m = q;
+    while (m > 1) {
+        uint odd = m%2;
+        m = (m+1)>>1; //div by 2 rounded up
+        if(li < m - odd){
             scratch[q*li] = scratch[q*li] + scratch[q*(li + m)];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -832,6 +843,7 @@ float getXC(float J, float bimarg, uint li, __local float *scratch,
 
     // write out C and return X
     scratch[li] = bimarg - fi[li/q]*fj[li%q];
+    barrier(CLK_LOCAL_MEM_FENCE);
     return scratch[0]
 }
 
