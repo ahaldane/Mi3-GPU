@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 #
 #Copyright 2018 Allan Haldane.
 
@@ -62,12 +62,12 @@ def main():
 
     if sim != 1.0:
         similarityCutoff = int(ceil((1-sim)*seqLen))
-        print >>sys.stderr, "Identity cutoff:", similarityCutoff
+        print("Identity cutoff:", similarityCutoff, file=sys.stderr)
         weights = 1.0/seqtools.nsim(seqs, similarityCutoff)
     else:
         weights = ones(seqs.shape[0])
     M_eff = sum(weights)
-    print M_eff
+    print(M_eff)
 
     save(args.outfile, weights)
 

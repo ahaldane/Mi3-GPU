@@ -844,7 +844,7 @@ float getXC(float J, float bimarg, uint li, __local float *scratch,
     // write out C and return X
     scratch[li] = bimarg - fi[li/q]*fj[li%q];
     barrier(CLK_LOCAL_MEM_FENCE);
-    return scratch[0]
+    return scratch[0];
 }
 
 __kernel
@@ -862,7 +862,7 @@ void updatedJ_Xself(__global float *bimarg_target,
     __local float hi[q], hj[q];
     __local float C[q*q];
 
-    float X = getXC(Ji[n], li, C, hi, hj);
+    float X = getXC(Ji[n], bimarg[n], li, C, hi, hj);
     float bias = lambdas[gi]*C[li]*sign(X);
 
     Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n]+pc);

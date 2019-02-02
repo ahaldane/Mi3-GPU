@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 #
 #Copyright 2018 Allan Haldane.
 
@@ -17,12 +17,9 @@
 #along with IvoGPU.  If not, see <http://www.gnu.org/licenses/>.
 
 #Contact: allan.haldane _AT_ gmail.com
-from __future__ import print_function
-import scipy
-from scipy import *
-from scipy.misc import logsumexp
 import numpy as np
-from numpy.random import randint 
+from numpy.random import randint , rand
+from scipy.misc import logsumexp
 import pyopencl as cl
 import pyopencl.array as cl_array
 import sys, os, errno, time, datetime, socket, signal, atexit
@@ -34,7 +31,7 @@ except:
     have_configargparse = False
 from utils.seqload import loadSeqs, writeSeqs
 from utils.changeGauge import fieldlessGaugeEven
-from utils import printsome
+from utils import printsome, getLq, unimarg
 
 from mcmcGPU import setupGPUs, initGPU, divideWalkers, printGPUs, \
                     readGPUbufs, merge_device_bimarg
@@ -65,11 +62,6 @@ class attrdict(dict):
         except KeyError:
             return None
 
-def seqsize_from_param_shape(shape):
-    L = int(((1+sqrt(1+8*shape[0]))/2) + 0.5)
-    q = int(sqrt(shape[1]) + 0.5)
-    return L, q
-
 #identical calculation as CL kernel, but with high precision (to check fp error)
 def getEnergiesMultiPrec(s, couplings):
     from mpmath import mpf, mp
@@ -82,18 +74,6 @@ def getEnergiesMultiPrec(s, couplings):
         cpl = (r[b] for b in (q*s[:,i] + s[:,j]))
         pairenergy = [x+n for x,n in zip(pairenergy, cpl)]
     return pairenergy
-
-def unimarg(bimarg):
-    L, q = seqsize_from_param_shape(bimarg.shape)
-    ff = bimarg.reshape((L*(L-1)/2,q,q))
-    f = (array([sum(ff[0],axis=1)] + [sum(ff[n],axis=0) for n in range(L-1)]))
-    return f/(sum(f,axis=1)[:,newaxis]) # correct any fp errors
-
-def indep_bimarg(bimarg):
-    f = unimarg(bimarg)
-    L = f.shape[0]
-    return array([outer(f[i], f[j]).flatten() for i in range(L-1)
-                                    for j in range(i+1,L)])
 
 ################################################################################
 
@@ -110,14 +90,14 @@ def optionRegistry():
     add('outdir', default='output', help='Output Directory')
     add('finish', help='Dir. of an unfinished run to finish')
     add('continue', help='Dir. of finished run, to start a new run from')
-    add('config', is_config_file_arg=True, 
+    add('config', #is_config_file_arg=True, 
                   help='config file to load arguments from')
     add('rngseed', type=np.uint32, help='random seed')
 
     # GPU options
-    add('nwalkers', type=uint32,
+    add('nwalkers', type=np.uint32,
         help="Number of MC walkers")
-    add('nsteps', type=uint32, default=2048,
+    add('nsteps', type=np.uint32, default=2048,
         help="number of MC steps per kernel call")
     add('wgsize', type=int, default=256,
         help="GPU workgroup size")
@@ -125,7 +105,7 @@ def optionRegistry():
         help="GPUs to use (comma-sep list of platforms #s, eg '0,0')")
     add('profile', action='store_true',
         help="enable OpenCL profiling")
-    add('nlargebuf', type=uint32, default=1,
+    add('nlargebuf', type=np.uint32, default=1,
         help='size of large seq buffer, in multiples of nwalkers')
     add('measurefperror', action='store_true',
         help="enable fp error calculation")
@@ -133,13 +113,13 @@ def optionRegistry():
     # Newton options
     add('bimarg', required=True,
         help="Target bivariate marginals (npy file)")
-    add('mcsteps', type=uint32, required=True,
+    add('mcsteps', type=np.uint32, required=True,
         help="Number of rounds of MCMC generation")
-    add('newtonsteps', default='128', type=uint32,
+    add('newtonsteps', default='128', type=np.uint32,
         help="Number of newton steps per round.")
-    add('gamma', type=float32, required=True,
+    add('gamma', type=np.float32, required=True,
         help="Initial step size")
-    add('damping', default=0.001, type=float32,
+    add('damping', default=0.001, type=np.float32,
         help="Damping parameter")
     add('noiseN', default=None,
         help="effective MSA size for anti-overfitting noise")
@@ -170,15 +150,15 @@ def optionRegistry():
         help="bimarg used to generate independent model sequences")
 
     # Sampling Param
-    add('preequiltime', type=uint32, default=0,
+    add('preequiltime', type=np.uint32, default=0,
         help="Number of MC kernel calls to run before newton steps")
     add('equiltime', default='auto',
         help="Number of MC kernel calls to equilibrate")
-    add('trackequil', type=uint32, default=0,
+    add('trackequil', type=np.uint32, default=0,
         help='Save bimarg every TRACKEQUIL steps during equilibration')
     add('tempering',
         help='optional inverse Temperature schedule')
-    add('nswaps_temp', type=uint32, default=128,
+    add('nswaps_temp', type=np.uint32, default=128,
         help='optional number of pt swaps')
 
     return dict(options)
@@ -282,7 +262,7 @@ def inverseIsing(orig_args, args, log):
 
     p.update(process_newton_args(args, log))
     if p.bimarg is not None:
-        p['L'], p['q'] = seqsize_from_param_shape(p.bimarg.shape)
+        p['L'], p['q'] = getLq(p.bimarg)
 
     p.update(process_potts_args(args, p.L, p.q, p.bimarg, log))
     L, q, alpha = p.L, p.q, p.alpha
@@ -310,14 +290,14 @@ def inverseIsing(orig_args, args, log):
 
     nseqs, npreopt_seqs = None, None
     if not p.reseed.startswith('single'):
-        nseqs = sum([g.nseq['main'] for g in gpus])
+        nseqs = np.sum([g.nseq['main'] for g in gpus])
     if p.preopt:
         if p.tempering is not None:
             B0 = np.max(p.tempering)
-            npreopt_seqs = sum(p.tempering == B0)
+            npreopt_seqs = np.sum(p.tempering == B0)
         else:
             if p.multigpu:
-                nseqs = sum([g.nseq['main'] for g in gpus])
+                nseqs = np.sum([g.nseq['main'] for g in gpus])
             else:
                 npreopt_seqs = gpus[0].nseq['large']
     p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
@@ -357,7 +337,7 @@ def inverseIsing(orig_args, args, log):
              "with {} MC steps per loop (Each walker equilibrated a total of "
              "{} MC steps, or {:.1f} steps per position)."
              ).format(p.nwalkers, p.equiltime, p.nsteps, p.nsteps*p.equiltime,
-                    p.nsteps*p.equiltime/float(p.L)))
+                    p.nsteps*p.equiltime/p.L))
 
     describe_tempering(args, p, log)
 
@@ -497,7 +477,7 @@ def MCMCbenchmark(orig_args, args, log):
     parser = argparse.ArgumentParser(prog=progname + ' benchmark',
                                      description=descr)
     add = parser.add_argument
-    add('--nloop', type=uint32, required=True,
+    add('--nloop', type=np.uint32, required=True,
         help="Number of kernel calls to benchmark")
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gpus profile')
@@ -535,7 +515,7 @@ def MCMCbenchmark(orig_args, args, log):
     nseqs = None
     needseed = False
     if args.seqs is not None:
-        nseqs = sum([g.nseq['main'] for g in gpus])
+        nseqs = np.sum([g.nseq['main'] for g in gpus])
     if args.seedseq is not None:
         needseed = True
     else:
@@ -636,7 +616,7 @@ def equilibrate(orig_args, args, log):
     nseqs = None
     needseed = False
     if args.seqs is not None:
-        nseqs = sum([g.nseq['main'] for g in gpus])
+        nseqs = np.sum([g.nseq['main'] for g in gpus])
     if args.seedseq is not None:
         needseed = True
     else:
@@ -655,7 +635,7 @@ def equilibrate(orig_args, args, log):
              "with {} MC steps per loop (Each walker equilibrated a total of "
              "{} MC steps, or {:.1f} steps per position)."
              ).format(p.nwalkers, p.equiltime, p.nsteps, p.nsteps*p.equiltime,
-                    p.nsteps*p.equiltime/float(p.L)))
+                      p.nsteps*p.equiltime/p.L))
 
     describe_tempering(args, p, log)
 
@@ -709,7 +689,7 @@ def equilibrate(orig_args, args, log):
         save(os.path.join(outdir, 'walker_Es'), concatenate(e))
         log("Final PT swap rate: {}".format(ptinfo[1]))
 
-    log("Mean energy:", mean(energies))
+    log("Mean energy:", np.mean(energies))
 
     log("Done!")
 
@@ -754,12 +734,12 @@ def subseqFreq(orig_args, args, log):
             for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
 
     #fix positions
-    fixedpos = array([int(x) for x in args.fixpos.split(',')])
-    fixedmarks = zeros(L, dtype='u1')
+    fixedpos = np.array([int(x) for x in args.fixpos.split(',')])
+    fixedmarks = np.zeros(L, dtype='u1')
     fixedmarks[fixedpos] = 1
 
     #load buffers
-    gpubseqs = split(bseqs, cumsum(gpuwalkers)[:-1])
+    gpubseqs = split(bseqs, np.cumsum(gpuwalkers)[:-1])
     for gpu,bs in zip(gpus, gpubseqs):
         gpu.setBuf('seq main', sseqs)
         gpu.setBuf('seq large', bs)
@@ -778,7 +758,7 @@ def subseqFreq(orig_args, args, log):
 
     log("Getting substituted energies...")
     subseqE = []
-    logf = zeros(len(sseqs))
+    logf = np.zeros(len(sseqs))
     for n in range(len(sseqs)):
         # replaced fixed positions by subsequence, and calc energies
         for gpu in gpus:
@@ -831,8 +811,8 @@ def testing(orig_args, args, log):
     mkdir_p(args.outdir)
     outdir = p.outdir
 
-    p['bimarg'] = scipy.load(args.bimarg)
-    p['L'], p['q'] = seqsize_from_param_shape(p.bimarg.shape)
+    p['bimarg'] = np.load(args.bimarg)
+    p['L'], p['q'] = getLq(p.bimarg)
     L, q = p.L, p.q
     args.nsteps = 1
     args.profile = None
@@ -856,7 +836,7 @@ def testing(orig_args, args, log):
     L, q, alpha = p.L, p.q, p.alpha
 
     rbim = p.bimarg + 0.1*rand(*(p.bimarg.shape))
-    rbim = (rbim/sum(rbim, axis=1)[:,newaxis]).astype('f4')
+    rbim = (rbim/np.sum(rbim, axis=1, keepdims=True)).astype('f4')
     for g in gpus:
         g.setBuf('bi target', rbim)
         g.setBuf('bi back', p.bimarg)
@@ -932,8 +912,8 @@ def process_newton_args(args, log):
         'multi' if p.multigpu else 'single'))
 
     log("Reading target marginals from file {}".format(args.bimarg))
-    bimarg = scipy.load(args.bimarg)
-    if bimarg.dtype != dtype('<f4'):
+    bimarg = np.load(args.bimarg)
+    if bimarg.dtype != np.dtype('<f4'):
         raise Exception("Bimarg must be in 'f4' format")
         #could convert, but this helps warn that something may be wrong
     if any(~((bimarg.flatten() >= 0) & (bimarg.flatten() <= 1))):
@@ -950,12 +930,12 @@ def process_newton_args(args, log):
         rargs = rarg.split(',')
         if rtype == 'X':
             log("Regularizing with X from file {}".format(rargs[0]))
-            p['regarg'] = scipy.load(rargs[0])
+            p['regarg'] = np.load(rargs[0])
             if p['regarg'].shape != bimarg.shape:
                 raise Exception("X in wrong format")
         elif rtype == 'Xself':
             log("Regularizing with X-lambdas from file {}".format(rargs[0]))
-            p['regarg'] = scipy.load(rargs[0])
+            p['regarg'] = np.load(rargs[0])
             if p['regarg'].shape != (bimarg.shape[0],):
                 raise Exception("X in wrong format")
         elif rtype == 'l2z':
@@ -1027,7 +1007,7 @@ def getCouplings(args, L, q, bimarg, log):
         if args.couplings == 'uniform':
             log("Setting Initial couplings to uniform frequencies")
             h = -log(1.0/q)
-            J = zeros((L*(L-1)/2,q*q), dtype='<f4')
+            J = np.zeros((L*(L-1)//2,q*q), dtype='<f4')
             couplings = fieldlessGaugeEven(h, J)[1]
         elif args.couplings == 'independent':
             log("Setting Initial couplings to independent model")
@@ -1035,26 +1015,26 @@ def getCouplings(args, L, q, bimarg, log):
                 raise Exception("Need bivariate marginals to generate "
                                 "independent model couplings")
             h = -np.log(unimarg(bimarg))
-            J = zeros((L*(L-1)/2,q*q), dtype='<f4')
+            J = np.zeros((L*(L-1)//2,q*q), dtype='<f4')
             couplings = fieldlessGaugeEven(h, J)[1]
         else: #otherwise load them from file
             log("Reading couplings from file {}".format(args.couplings))
-            couplings = scipy.load(args.couplings)
-            if couplings.dtype != dtype('<f4'):
+            couplings = np.load(args.couplings)
+            if couplings.dtype != np.dtype('<f4'):
                 raise Exception("Couplings must be in 'f4' format")
     elif args.seqmodel and args.seqmodel not in ['uniform', 'independent']:
         # and otherwise try to load them from model directory
         fn = os.path.join(args.seqmodel, 'J.npy')
         if os.path.isfile(fn):
             log("Reading couplings from file {}".format(fn))
-            couplings = scipy.load(fn)
-            if couplings.dtype != dtype('<f4'):
+            couplings = np.load(fn)
+            if couplings.dtype != np.dtype('<f4'):
                 raise Exception("Couplings must be in 'f4' format")
         else:
             raise Exception("could not find file {}".format(fn))
     else:
         raise Exception("didn't get couplings or seqmodel")
-    L2, q2 = seqsize_from_param_shape(couplings.shape)
+    L2, q2 = getLq(couplings)
     L, q = updateLq(L, q, L2, q2, 'couplings')
 
     if couplings is None:
@@ -1064,7 +1044,7 @@ def getCouplings(args, L, q, bimarg, log):
     return couplings, L, q
 
 def repeatseqs(seqs, n):
-    return repeat(seqs, (n-1)/seqs.shape[0] + 1, axis=0)[:n,:]
+    return repeat(seqs, (n-1)//seqs.shape[0] + 1, axis=0)[:n,:]
 
 def process_sequence_args(args, L, alpha, bimarg, log,
                           nseqs=None, nlargeseqs=None, needseed=False):
@@ -1097,8 +1077,8 @@ def process_sequence_args(args, L, alpha, bimarg, log,
         if nseqs is not None and seqs is None:
             raise Exception("Did not find requested {} sequences".format(nseqs))
 
-        if sum(nseqs) != sum([s.shape[0] for s in seqs]):
-            n, s = sum(nseqs), concatenate(seqs)
+        if np.sum(nseqs) != np.sum([s.shape[0] for s in seqs]):
+            n, s = np.sum(nseqs), concatenate(seqs)
             log("Repeating {} sequences to make {}".format(s.shape[0], n))
             seqs = [repeatseqs(s, n)]
 
@@ -1117,8 +1097,8 @@ def process_sequence_args(args, L, alpha, bimarg, log,
             raise Exception("Did not find requested {} sequences".format(
                                                             nlargeseqs))
 
-        if sum(nlargeseqs) != sum([s.shape[0] for s in seqs_large]):
-            n, s = sum(nlargeseqs), concatenate(seqs_large)
+        if np.sum(nlargeseqs) != np.sum([s.shape[0] for s in seqs_large]):
+            n, s = np.sum(nlargeseqs), concatenate(seqs_large)
             log("Repeating {} sequences to make {}".format(s.shape[0], n))
             seqs_large = [repeatseqs(s, n)]
 
@@ -1129,7 +1109,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
             seedseq_origin = args.seedseq
         elif args.seedseq is not None: # given string
             try:
-                seedseq = array(map(alpha.index, args.seedseq), dtype='<u1')
+                seedseq = np.array(map(alpha.index, args.seedseq), dtype='<u1')
                 seedseq_origin = 'supplied'
             except:
                 seedseq = loadseedseq(args.seedseq, args.alpha.strip(), log)
@@ -1146,7 +1126,9 @@ def process_sequence_args(args, L, alpha, bimarg, log,
                                        "".join(alpha[x] for x in seedseq)))
 
     log("")
-    return attrdict({'seedseq': seedseq, 'seqs': seqs, 'seqs_large': seqs_large})
+    return attrdict({'seedseq': seedseq,
+                     'seqs': seqs,
+                     'seqs_large': seqs_large})
 
 def generateSequences(gentype, L, q, nseqs, bimarg, log):
     if gentype == 'zero' or gentype == 'uniform':
@@ -1156,9 +1138,9 @@ def generateSequences(gentype, L, q, nseqs, bimarg, log):
         log("Generating {} independent-model sequences...".format(nseqs))
         if bimarg is None:
             raise Exception("Bimarg must be provided to generate sequences")
-        cumprob = cumsum(unimarg(bimarg), axis=1)
-        cumprob = cumprob/(cumprob[:,-1][:,newaxis]) #correct fp errors?
-        return array([searchsorted(cp, rand(nseqs)) for cp in cumprob],
+        cumprob = np.cumsum(unimarg(bimarg), axis=1)
+        cumprob = cumprob/(cumprob[:,-1][:,None]) #correct fp errors?
+        return np.array([np.searchsorted(cp, rand(nseqs)) for cp in cumprob],
                      dtype='<u1').T
     raise Exception("Unknown sequence generation mode '{}'".format(gentype))
 
@@ -1166,7 +1148,7 @@ def loadseedseq(fn, alpha, log):
     log("Reading seedseq from file {}".format(fn))
     with open(fn) as f:
         seedseq = f.readline().strip()
-        seedseq = array(map(alpha.index, seedseq), dtype='<u1')
+        seedseq = np.array(map(alpha.index, seedseq), dtype='<u1')
     return seedseq
 
 def loadSequenceFile(sfile, alpha, log):
@@ -1197,7 +1179,7 @@ def transferSeqsToGPU(gpus, bufname, seqs, log):
         sizes = [g.nseq[bufname] for g in gpus]
 
         if len(seqs) == sum(sizes):
-            seqs = split(seqs, cumsum(sizes)[:-1])
+            seqs = split(seqs, np.cumsum(sizes)[:-1])
         else:
             raise Exception(("Expected {} total sequences, got {}").format(
                              sum(sizes), len(seqs)))
@@ -1222,7 +1204,7 @@ def process_sample_args(args, log):
         try:
             Bs = np.load(args.tempering)
         except:
-            Bs = array([x for x in args.tempering.split(",")], dtype='f4')
+            Bs = np.array([x for x in args.tempering.split(",")], dtype='f4')
         p['tempering'] = Bs
         p['nswaps'] = args.nswaps_temp
     if 'preequiltime' in args:

@@ -6,14 +6,14 @@ echo "--> Downloading SH3 MSA from Pfam..."
 wget 'https://pfam.xfam.org/family/PF00018/alignment/full/format?format=fasta&alnType=full&order=t&case=l&gaps=default&download=1' -O PF00018_full.txt
 
 echo "--> convert FASTA to flat MSA format"
-python2 <<EOF
+python <<EOF
 from Bio import SeqIO
 from Bio.Alphabet import IUPAC
 import re
 
 alpha = '-' + IUPAC.protein.letters
 
-with open("PF00018_full.txt", "rU") as fin:
+with open("PF00018_full.txt", "r") as fin:
     seqs = [re.sub('[a-z.]', '', str(r.seq))
             for r in SeqIO.parse(fin, "fasta")]
 
@@ -25,7 +25,7 @@ with open("seqs21_raw", "wt") as fout:
 EOF
 
 echo "--> remove gapped columns and sequences"
-python2 <<EOF
+python <<EOF
 import seqload
 import numpy as np
 
@@ -39,7 +39,7 @@ seqs = seqs[:, col_gap_pct < 0.1]
 # only keep sequences with < 10% gaps
 seq_gap_pct = np.sum(seqs == 0, axis=1)/float(L)
 seqs = seqs[seq_gap_pct < 0.1, :]
-print "N: {}   L: {}".format(*seqs.shape)
+print("N: {}   L: {}".format(*seqs.shape))
 
 seqload.writeSeqs('seqs21', seqs)
 EOF
@@ -52,7 +52,7 @@ alpha=${alpha:0:$q}
 echo "--> get phylogenetic weights and 21-letter bivariate marginals"
 phyloWeights.py $phy seqs21 weights$phy >Neff$phy
 getSeqBimarg.py --weights weights${phy}.npy seqs21 bim21
-pseudocount.py bim21.npy $(cat Neff$phy) --mode Jeffreys -o bim21Jeff.npy
+pseudocount.py bim21.npy $(cat Neff$phy) --mode jeffreys -o bim21Jeff.npy
 
 echo "--> reduce alphabet (takes a minute)"
 alphabet_reduction.py bim21Jeff.npy >alphamaps

@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 #
 #Copyright 2018 Allan Haldane.
 
@@ -17,7 +17,6 @@
 #along with IvoGPU.  If not, see <http://www.gnu.org/licenses/>.
 
 #Contact: allan.haldane _AT_ gmail.com
-from scipy import *
 import sys, os, argparse
 from Bio.Alphabet import IUPAC
 import seqload
@@ -35,9 +34,9 @@ def reduceSeqAlphaPerpos(seqs, newalphas, oldalpha):
                 return i
         return 0
     
-    rseqs = empty(seqs.shape, dtype=int)
+    rseqs = np.empty(seqs.shape, dtype=int)
     for n,a in enumerate(newalphas):
-        conv = array([ind(let,a) for let in oldalpha])
+        conv = np.array([ind(let,a) for let in oldalpha])
         rseqs[:,n] = conv[seqs[:,n]]
             
     seqload.writeSeqs(sys.stdout, rseqs, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", noheader=True)

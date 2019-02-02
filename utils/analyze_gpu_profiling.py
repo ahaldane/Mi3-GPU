@@ -1,7 +1,5 @@
-#!/usr/bin/env python2
-from __future__ import print_function
+#!/usr/bin/env python
 import sys
-
 
 with open(sys.argv[1]) as f:
     lines = [l.strip().split() for l in f.readlines()]

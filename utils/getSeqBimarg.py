@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 #
 #Copyright 2018 Allan Haldane.
 
@@ -17,23 +17,22 @@
 #along with IvoGPU.  If not, see <http://www.gnu.org/licenses/>.
 
 #Contact: allan.haldane _AT_ gmail.com
-from scipy import *
 import numpy as np
 import seqload
 import sys
 import argparse
 from Bio.Alphabet import IUPAC
 
-def getMarginals(seqs, nBases): 
+def getMarginals(seqs, q): 
     nSeq, seqLen = seqs.shape
-    nrmlz = lambda x: x/sum(x,axis=1)[:,newaxis]
-    freqs = lambda s,bins: histogram(s, bins)[0].astype(float64)
+    nrmlz = lambda x: x/np.sum(x,axis=1)[:,newaxis]
+    freqs = lambda s,bins: np.histogram(s, bins)[0].astype(np.float64)
 
-    bins = arange(nBases+1, dtype='int')
+    bins = np.arange(q+1, dtype='int')
     f = nrmlz(array([freqs(seqs[:,i], bins) for i in range(seqLen)]))
 
-    bins = arange(nBases*nBases+1, dtype='int')
-    ff = nrmlz(array([ freqs(seqs[:,j] + nBases*seqs[:,i], bins)
+    bins = np.arange(q*q+1, dtype='int')
+    ff = nrmlz(np.array([ freqs(seqs[:,j] + q*seqs[:,i], bins)
                                              for i in range(seqLen) 
                                              for j in range(i+1, seqLen)]))
     return f, ff
@@ -43,7 +42,9 @@ class Counter:
         self.weights = weights
         self.pos = 0
 
-    def __call__(self, counts, seqs, (param, headers)): 
+    def __call__(self, counts, seqs, info): 
+        param, headers = info
+
         nSeq, L = seqs.shape
         nB = len(param['alpha'])
         nbins = nB*nB
@@ -51,12 +52,12 @@ class Counter:
         
         if self.weights is not None:
             if counts is 0:
-                counts = zeros((L*(L-1)/2, nB*nB), dtype='f8')
+                counts = np.zeros((L*(L-1)//2, nB*nB), dtype='f8')
             w = self.weights[self.pos:self.pos+nSeq]
             self.pos += nSeq
         else:
             if counts is 0:
-                counts = zeros((L*(L-1)/2, nB*nB), dtype='i4')
+                counts = np.zeros((L*(L-1)//2, nB*nB), dtype='i4')
             w = None
 
         n = 0
@@ -64,7 +65,7 @@ class Counter:
             nsi = nB*seqs[:,i].astype('i8')
             for j in range(i+1, L):
                 sj = seqs[:,j].astype('i8')
-                counts[n,:] += bincount(sj + nsi, minlength=nbins, weights=w)
+                counts[n,:] += np.bincount(sj + nsi, minlength=nbins, weights=w)
                 n += 1
         return counts
 
@@ -87,9 +88,9 @@ def main():
 
     if args.weights:
         try:
-            weights = load(args.weights)
+            weights = np.load(args.weights)
         except:
-            weights = loadtxt(args.weights)
+            weights = np.loadtxt(args.weights)
     else:
         weights = None
 
@@ -97,10 +98,10 @@ def main():
 
     counts = seqload.reduceSeqs(args.seqfile, counter, 0, letters)[0]
     if args.counts:
-        save(args.outfile, counts)
+        np.save(args.outfile, counts)
     else:
         ff = counts.astype('f4')/np.float32(sum(counts[0,:]))
-        save(args.outfile, ff)
+        np.save(args.outfile, ff)
 
 if __name__ == '__main__':
     main()

@@ -22,7 +22,7 @@
 #include "numpy/arrayobject.h"
 
 // compile me with
-// python2 ./setup.py build_ext --inplace
+// python ./setup.py build_ext --inplace
 
 typedef unsigned int uint;
 typedef unsigned char uint8;
@@ -1043,10 +1043,10 @@ translateascii(PyObject *self, PyObject *args){
     uint8 *seqdata;
     npy_intp nseq, L;
     uint8 *alpha;
-    int i, j, offset;
+    unsigned int i, j, offset;
     uint8 translationtable[256];
 
-    if(!PyArg_ParseTuple(args, "O!si", &PyArray_Type, &seqs, &alpha, &offset)){
+    if(!PyArg_ParseTuple(args, "O!yi", &PyArray_Type, &seqs, &alpha, &offset)){
         return NULL;
     }
 
@@ -1124,8 +1124,18 @@ static PyMethodDef SeqtoolsMethods[] = {
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
+static struct PyModuleDef seqtoolsmodule = {
+    PyModuleDef_HEAD_INIT,
+    "seqtools",   /* name of module */
+    NULL, /* module documentation, may be NULL */
+    -1,       /* size of per-interpreter state of the module,
+                 or -1 if the module keeps state in global variables. */
+    SeqtoolsMethods
+};
+
 PyMODINIT_FUNC
-initseqtools(void){
-    Py_InitModule("seqtools", SeqtoolsMethods);
+PyInit_seqtools(void)
+{
     import_array();
+    return PyModule_Create(&seqtoolsmodule);
 }

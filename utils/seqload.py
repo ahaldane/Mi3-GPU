@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 #
 #Copyright 2018 Allan Haldane.
 
@@ -17,30 +17,28 @@
 #along with IvoGPU.  If not, see <http://www.gnu.org/licenses/>.
 
 #Contact: allan.haldane _AT_ gmail.com
-from __future__ import with_statement
-from scipy import *
 import numpy as np
 import sys
 import json, bz2, io
 
 def translateascii_python(seqmat, names, pos):
     #set up translation table
-    nucNums = 255*ones(256, uint8) #nucNums maps from ascii to base number
-    nucNums[frombuffer(names, uint8)] = arange(len(names))
+    nucNums = np.full(256, 255, np.uint8)  #maps from ascii to base number
+    nucNums[np.frombuffer(names, np.uint8)] = np.arange(len(names))
     
     #sanity checks on the sequences
     if any(seqmat[:,-1] != ord('\n')):
-        badline = pos + argwhere(seqmat[:,-1] != ord('\n'))[0] 
+        badline = pos + np.argwhere(seqmat[:,-1] != ord('\n'))[0] 
         raise Exception("Sequence {} has different length".format(badline))
 
     #fancy indexing casts indices to intp.... annoying slowdown
     seqs = nucNums[seqmat[:,:-1]] 
 
     if np.any(seqs == 255):
-        badpos = argwhere(seqs.flatten() == 255)[0]
+        badpos = np.argwhere(seqs.flatten() == 255)[0]
         badchar = chr(seqmat[:,:-1].flatten()[badpos])
         if badchar == '\n':
-            badline = pos + badpos/L
+            badline = pos + badpos//L
             raise Exception("Sequence {} has wrong length".format(badline))
         else:
             raise Exception("Invalid residue: {0}".format(badchar))
@@ -57,8 +55,8 @@ except:
 
 try:
     from Bio.Alphabet import IUPAC
-    prot_alpha = '-' + IUPAC.protein.letters
-except:
+    prot_alpha = ('-' + IUPAC.protein.letters).encode('ascii')
+except KeyError:
     prot_alpha = None
 
 class Opener:
@@ -91,7 +89,7 @@ class Opener:
         self.zipf = zipf
     
     def __enter__(self):
-        if isinstance(self.fileobj, basestring):
+        if isinstance(self.fileobj, str):
             if self.rw in 'ra' and self.zipf is not False:
                 magic = "\x42\x5a\x68"  # for bz2
                 f = open(self.fileobj, self.rw + 'b')
@@ -114,6 +112,8 @@ class Opener:
                 raise Exception(("File is already open ({}), but in wrong mode "
                                 "({})").format(self.fileobj.mode, self.rw))
             return self.fileobj
+        else:
+            raise ValueError("invalid filename or file object")
 
     def __exit__(self, e, fileobj, t):
         if self.f != None:
@@ -152,8 +152,8 @@ def loadSeqs(fn, names=prot_alpha, zipf=None):
     """
     with Opener(fn, zipf=zipf) as f:
         gen = loadSeqsChunked(f, names)
-        param, headers = gen.next()
-        seqs = concatenate([s for s in gen])
+        param, headers = next(gen)
+        seqs = np.concatenate([s for s in gen])
     return seqs, param, headers
 
 def mapSeqs(fn, mapper, names=prot_alpha, zipf=None):
@@ -181,8 +181,8 @@ def mapSeqs(fn, mapper, names=prot_alpha, zipf=None):
     
     with Opener(fn) as f:
         gen = loadSeqsChunked(f, names)
-        param, headers = gen.next()
-        seqs = concatenate([mapper(s, (param, headers)) for s in gen])
+        param, headers = next(gen)
+        seqs = np.concatenate([mapper(s, (param, headers)) for s in gen])
     return seqs, param, headers
 
 def reduceSeqs(fn, reduc, startval=None, names=prot_alpha):
@@ -191,8 +191,8 @@ def reduceSeqs(fn, reduc, startval=None, names=prot_alpha):
     """
     with Opener(fn) as f:
         gen = loadSeqsChunked(f, names)
-        param, headers = gen.next()
-        val = startval if startval != None else gen.next()
+        param, headers = next(gen)
+        val = startval if startval != None else next(gen)
         for s in gen:
             val = reduc(val, s, (param, headers))
     return val, param, headers
@@ -218,10 +218,10 @@ def parseHeader(hd):
     return param, headers
 
 def readbytes(f, count):
-    if isinstance(f, file):
-        dat = np.fromfile(f, dtype=uint8, count=count)
+    if isinstance(f, io.IOBase):
+        dat = np.fromfile(f, dtype=np.uint8, count=count)
     else:
-        dat = frombuffer(f.read(count), dtype=uint8)
+        dat = np.frombuffer(f.read(count), dtype=np.uint8)
         dat.flags.writeable = True
     return dat
 
@@ -230,33 +230,35 @@ def loadSeqsChunked(f, names=None, chunksize=None):
     pos = f.tell()
     header = []
     l = f.readline()
-    while l.startswith('#'):
-        header.append(l)
+    while l.startswith(b'#'):
+        header.append(l.decode('utf-8'))
         pos = f.tell()
         l = f.readline()
-    L = len(l[:-1]) + (1 if l[-1] != '\n' else 0)
+    L = len(l[:-1]) - (0 if l[-1] != '\n' else 1)
     f.seek(pos)
     
     #get alphabet
     param, headers = parseHeader(header)
-    if names == None:
-        if param == {} or 'alpha' not in param:
+    if names is None:
+        if (param is {}) or ('alpha' not in param):
             raise Exception("Could not determine names of alphabet")
         names = param['alpha']
+    if isinstance(names, str):
+        names = names.encode('ascii')
     param['alpha'] = names
 
     yield param, headers
     
     #load in chunks
     if chunksize is None:
-        chunksize = 4*1024*1024/(L+1)
+        chunksize = 4*1024*1024//(L+1)  # about 4MB
 
     pos = 0
     while True:
         dat = readbytes(f, chunksize*(L+1))
         if dat.size != chunksize*(L+1):
             break
-        seqmat = dat.reshape(dat.size/(L+1), L+1)
+        seqmat = dat.reshape(dat.size//(L+1), L+1)
         seqs = translateascii(seqmat, names, pos)
         pos += seqmat.shape[0]
         yield seqs
@@ -270,10 +272,10 @@ def loadSeqsChunked(f, names=None, chunksize=None):
         if dat[-1] == ord("\n") and ((dat.size-1) % (L+1)) == 0:
             dat = dat[:-1] #account for newline at eof
         elif ((dat.size+1) % (L+1)) == 0:
-            dat = concatenate([dat, [uint8(ord("\n"))]])
+            dat = np.concatenate([dat, [np.uint8(ord("\n"))]])
         else:
             raise Exception("Unexpected characters at eof") 
-    seqmat = dat.reshape(dat.size/(L+1), L+1)
+    seqmat = dat.reshape(dat.size//(L+1), L+1)
     seqs = translateascii(seqmat, names, pos)
     yield seqs
 
@@ -301,41 +303,48 @@ def writeSeqs(fn, seqs, names=prot_alpha, param={'alpha': prot_alpha},
     zipf : boolean or None
         Whether to compress the file using bzip2
     """
+    if isinstance(names, str):
+        names = names.encode('ascii')
+
     with Opener(fn, 'w', zipf) as f:
         if not noheader:
             param = param if param != None else {}
-            param['alpha'] = names
-            f.write('#PARAM {0}\n'.format(json.dumps(param)))
+            param['alpha'] = names.decode('utf-8')
+            f.write('#PARAM {0}\n'.format(json.dumps(param)).encode('utf-8'))
             headers = headers if headers != None else []
             for head in headers:
                 for line in headers[head]:
-                    f.write('#{} {0}\n'.format(head, line))
+                    f.write('#{} {0}\n'.format(head, line).encode('utf-8'))
 
-        chunksize = 4*1024*1024/(seqs.shape[1]+1)
-        alphabet = array([ord(c) for c in names] + [ord('\n')], dtype='<u1')
-        s = empty((chunksize, seqs.shape[1]+1), dtype=intp)
+        chunksize = 4*1024*1024//(seqs.shape[1]+1)
+        alphabet = np.array([c for c in names] + [ord('\n')], dtype='<u1')
+        s = np.empty((chunksize, seqs.shape[1]+1), dtype=np.intp)
         s[:,-1] = len(names)
         i = -chunksize # in case len(seqs) < chunksize
         for i in range(0,seqs.shape[0]-chunksize, chunksize):
             s[:,:-1] = seqs[i:i+chunksize,:]
             # could be sped up: s is uneccesarily cast to int32/64
-            f.write(alphabet[s])
+            f.buffer.write(alphabet[s])
         s[:seqs.shape[0]-i-chunksize,:-1] = seqs[i+chunksize:,:]
-        f.write(alphabet[s[:seqs.shape[0]-i-chunksize,:]])
 
-def getCounts(seqs, nBases):
+        if hasattr(f, 'buffer'):
+            f.buffer.write(alphabet[s[:seqs.shape[0]-i-chunksize,:]])
+        else:
+            f.write(alphabet[s[:seqs.shape[0]-i-chunksize,:]])
+
+def getCounts(seqs, q):
     """
     Helper function which computes the counts of each letter at each position.
     """
     nSeq, seqLen = seqs.shape
-    bins = arange(nBases+1, dtype='int')
-    counts = zeros((seqLen, nBases), dtype='int')
+    bins = np.arange(q+1, dtype='int')
+    counts = np.zeros((seqLen, q), dtype='int')
     for i in range(seqLen):
         counts[i,:] = histogram(seqs[:,i], bins)[0]
     return counts # index as [pos, res]
 
-def getFreqs(seq, nBases):
+def getFreqs(seq, q):
     """
     Helper function which computes the univariate marginals of an MSA
     """
-    return getCounts(seq, nBases).astype('float')/seq.shape[0]
+    return getCounts(seq, q).astype('float')//seq.shape[0]

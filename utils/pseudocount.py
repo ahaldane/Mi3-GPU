@@ -1,14 +1,12 @@
-#!/usr/bin/env python2
-from __future__ import print_function
-from scipy import *
+#!/usr/bin/env python
 import numpy as np
 import argparse, sys
 
-nrmlz = lambda x: x/sum(x,axis=1)[:,newaxis]
+nrmlz = lambda x: x/np.sum(x,axis=1)[:,None]
 
 def getLq(J):
-    L = int(((1+sqrt(1+8*J.shape[0]))/2) + 0.5)
-    q = int(sqrt(J.shape[1]) + 0.5)
+    L = int(((1+np.sqrt(1+8*J.shape[0]))//2) + 0.5)
+    q = int(np.sqrt(J.shape[1]) + 0.5)
     return L, q
 
 def main():
@@ -25,7 +23,7 @@ def main():
     parser.add_argument('-o', '--out', default='outpc', help="Output file")
 
     args = parser.parse_args(sys.argv[1:])
-    ff = load(args.margfile)
+    ff = np.load(args.margfile)
     L, q = getLq(ff)
 
     pc = args.pc
@@ -35,12 +33,12 @@ def main():
     elif args.mode in ['jeffreys', 'bayes'] :
 
         ffs = ff.reshape(ff.shape[0], q, q)
-        f = array([sum(ffs[0],axis=1)] + 
-                  [sum(ffs[n],axis=0) for n in range(L-1)])
-        f = f/(sum(f,axis=1)[:,newaxis]) # correct any fp errors
+        f = np.array([np.sum(ffs[0],axis=1)] + 
+                     [np.sum(ffs[n],axis=0) for n in range(L-1)])
+        f = f/(np.sum(f,axis=1)[:,None]) # correct any fp errors
 
-        fifj = array([np.add.outer(f[i],f[j]).flatten() 
-                      for i in range(L-1) for j in range(i+1,L)])
+        fifj = np.array([np.add.outer(f[i],f[j]).flatten() 
+                         for i in range(L-1) for j in range(i+1,L)])
         
         if args.mode == 'jeffreys':
             print("Using C-preserving Jeffreys pseudocount", file=sys.stderr)
@@ -59,7 +57,7 @@ def main():
         pc = pc/(1-pc)
         ff = nrmlz(ff + pc/(q*q))
 
-    save(args.out, ff.astype('<f4'))
+    np.save(args.out, ff.astype('<f4'))
 
 if __name__ == '__main__':
     main()
