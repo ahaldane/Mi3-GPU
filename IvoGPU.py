@@ -98,7 +98,7 @@ def optionRegistry():
     add('nwalkers', type=np.uint32,
         help="Number of MC walkers")
     add('nsteps', type=np.uint32, default=2048,
-        help="number of MC steps per kernel call")
+        help="number of mc steps per kernel call")
     add('wgsize', type=int, default=256,
         help="GPU workgroup size")
     add('gpus',
@@ -115,8 +115,10 @@ def optionRegistry():
         help="Target bivariate marginals (npy file)")
     add('mcsteps', type=np.uint32, required=True,
         help="Number of rounds of MCMC generation")
-    add('newtonsteps', default='128', type=np.uint32,
+    add('newtonsteps', default=2048, type=np.uint32,
         help="Number of newton steps per round.")
+    add('fracNeff', type=np.float32, default=0.75,
+        help="stop coupling updates after Neff/N = fracNeff")
     add('gamma', type=np.float32, required=True,
         help="Initial step size")
     add('damping', default=0.001, type=np.float32,
@@ -226,8 +228,8 @@ def inverseIsing(orig_args, args, log):
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs seqs_large')
-    addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps gamma '
-                                          'damping reg noiseN multigpu '
+    addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps fracNeff '
+                                          'damping reg noiseN multigpu gamma '
                                           'preopt reseed')
     addopt(parser, 'Sampling Options',    'equiltime '
                                           'trackequil tempering nswaps_temp '
@@ -402,14 +404,14 @@ def getEnergies(orig_args, args, log):
 
     for gpu in gpus:
         gpu.calcEnergies('main')
-    es = concatenate(readGPUbufs(['E main'], gpus)[0])
+    es = np.concatenate(readGPUbufs(['E main'], gpus)[0])
 
     log("Saving results to file '{}'".format(args.out))
-    save(args.out, es)
+    np.save(args.out, es)
 
 def getBimarg(orig_args, args, log):
     descr = ('Compute bimarg of a set of sequences')
-    parser = argparse.ArgumentParser(prog=progname + ' getEnergies',
+    parser = argparse.ArgumentParser(prog=progname + ' getBimarg',
                                      description=descr)
     add = parser.add_argument
     add('out', default='output', help='Output File')
@@ -466,10 +468,10 @@ def getBimarg(orig_args, args, log):
 
     log("Saving results to file '{}'".format(args.out))
     for n,b in enumerate(bicounts):
-        save(os.path.join(p.outdir, 'bicount-{}'.format(n)), b)
+        np.save(os.path.join(p.outdir, 'bicount-{}'.format(n)), b)
     for n,b in enumerate(bbb):
-        save(os.path.join(p.outdir, 'bimarg-{}'.format(n)), b)
-    save(args.out, bimarg)
+        np.save(os.path.join(p.outdir, 'bimarg-{}'.format(n)), b)
+    np.save(args.out, bimarg)
 
 
 def MCMCbenchmark(orig_args, args, log):
@@ -658,7 +660,7 @@ def equilibrate(orig_args, args, log):
 
         if p.nwalkers % len(p.tempering) != 0:
             raise Exception("# of temperatures must evenly divide # walkers")
-        Bs = concatenate([full(p.nwalkers/len(p.tempering), b, dtype='f4')
+        Bs = np.concatenate([full(p.nwalkers/len(p.tempering), b, dtype='f4')
                           for b in p.tempering])
         Bs = split(Bs, len(gpus))
         for B,gpu in zip(Bs, gpus):
@@ -675,8 +677,8 @@ def equilibrate(orig_args, args, log):
 
     outdir = p.outdir
     savetxt(os.path.join(outdir, 'bicounts'), bicount, fmt='%d')
-    save(os.path.join(outdir, 'bimarg'), bimarg_model)
-    save(os.path.join(outdir, 'energies'), energies)
+    np.save(os.path.join(outdir, 'bimarg'), bimarg_model)
+    np.save(os.path.join(outdir, 'energies'), energies)
     for n,seqbuf in enumerate(seqs):
         writeSeqs(os.path.join(outdir, 'seqs-{}'.format(n)), seqbuf, alpha)
     for n,seqbuf in enumerate(seq_large):
@@ -685,8 +687,8 @@ def equilibrate(orig_args, args, log):
 
     if p.tempering is not None:
         e, b = readGPUbufs(['E main', 'Bs'], gpus)
-        save(os.path.join(outdir, 'walker_Bs'), concatenate(b))
-        save(os.path.join(outdir, 'walker_Es'), concatenate(e))
+        np.save(os.path.join(outdir, 'walker_Bs'), np.concatenate(b))
+        np.save(os.path.join(outdir, 'walker_Es'), np.concatenate(e))
         log("Final PT swap rate: {}".format(ptinfo[1]))
 
     log("Mean energy:", np.mean(energies))
@@ -754,7 +756,7 @@ def subseqFreq(orig_args, args, log):
 
     for gpu in gpus:
         gpu.calcEnergies('large')
-    origEs = concatenate(readGPUbufs(['E large'], gpus)[0])
+    origEs = np.concatenate(readGPUbufs(['E large'], gpus)[0])
 
     log("Getting substituted energies...")
     subseqE = []
@@ -764,12 +766,12 @@ def subseqFreq(orig_args, args, log):
         for gpu in gpus:
             gpu.copySubseq(n)
             gpu.calcEnergies('large')
-        energies = concatenate(readGPUbufs(['E large'], gpus)[0])
+        energies = np.concatenate(readGPUbufs(['E large'], gpus)[0])
         logf[n] = logsumexp(origEs - energies)
 
     #save result
     log("Saving result (log frequency) to file {}".format(args.out))
-    save(args.out, logf)
+    np.save(args.out, logf)
 
 def nestedZ(args, log):
     raise Exception("Not implemented yet")
@@ -795,6 +797,17 @@ def ExactZS(args, log):
     # would be similar to energy calculation kernel, except the actual
     # sequences would not need to be loaded from memory, but could
     # be computed on the fly. Z = sum(exp(-E)), and S = -sum(p*log(p))
+    #
+    # For q=8, probably limited to about L=16: Would precompute partial E
+    # for positions 1-10 to a buffer, then have GPU kernel iterate over
+    # positions 11-16, one wu per subsequence, with knl looping over 
+    # precomputed part. Precomputed part would be 4G. 
+    #
+    # Or maybe, would do it in chunks of 8 positions, storing the partial
+    # energies recursively. So first do 1-8, storing all E to buf (64M). Then 
+    # for each E, compute 9-16, storing these in next row of E (64M). 
+    # Total memory neededwould be 64M * L/8 or 8*L Mb. Kernel would need to
+    # do > (8**8)**(L/8) of these E loops.
 
 def testing(orig_args, args, log):
     parser = argparse.ArgumentParser(prog=progname + ' test',
@@ -820,7 +833,6 @@ def testing(orig_args, args, log):
     args.seqmodel = None
     p['damping'] = args.damping
     p['gamma'] = args.gamma
-
 
     gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
@@ -857,7 +869,139 @@ def testing(orig_args, args, log):
         g.setBuf('J back', p.couplings)
 
     gpus[0].updateJ_l2z(0.004, 0.1, 0.01, 140)
-    save(os.path.join(outdir, 'J0'), gpus[0].getBuf('J front').read())
+    np.save(os.path.join(outdir, 'J0'), gpus[0].getBuf('J front').read())
+
+def testing(orig_args, args, log):
+    descr = ('Compute bimarg of a set of sequences')
+    parser = argparse.ArgumentParser(prog=progname + ' getBimarg',
+                                     description=descr)
+    add = parser.add_argument
+    addopt(parser, 'GPU Options',         'wgsize gpus profile')
+    addopt(parser, 'Potts Model Options', 'alpha')
+    addopt(parser, 'Sequence Options',    'seqs')
+    addopt(parser,  None,                 'outdir')
+
+    args = parser.parse_args(args)
+    args.measurefperror = False
+
+    requireargs(args, 'alpha seqs')
+
+    log("Initialization")
+    log("===============")
+    log("")
+
+    p = attrdict({'outdir': args.outdir})
+    mkdir_p(args.outdir)
+    alpha = args.alpha.strip()
+    p['alpha'] = alpha
+    q = len(alpha)
+    p['q'] = q
+    log("Sequence Setup")
+    log("--------------")
+    seqs = loadSequenceFile(args.seqs, alpha, log)
+    L = seqs.shape[1]
+    p['L'] = L
+    if seqs is None:
+        raise Exception("seqs must be supplied")
+    log("")
+
+    args.nwalkers = len(seqs)
+    args.nsteps = 1
+    args.nlargebuf = 1
+    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
+    p.update(gpup)
+
+    gpu0 = initGPU(0, cldat, gdevs[0], args.nwalkers, p, log)
+    gpu0.initLargeBufs(len(seqs))
+    gpu0.initJstep()
+    transferSeqsToGPU([gpu0], 'large', [seqs], log)
+    gpu0.packseqs1('large')
+    seqsT = gpu0.getBuf('seqL large').read()
+    log(seqs.shape, seqsT.view('u1').shape, 
+        np.all(seqs == seqsT.view('u1').T))
+    np.random.seed(12345)
+    gpu0.setBuf('weights large', np.random.rand(len(seqs)).astype('f4'))
+    ##gpu0.setBuf('weights large', , dtype='f4'))
+    ##gpu0.setBuf('weights large', np.arange(len(seqs), dtype='f4'))
+    #d = np.zeros(len(seqs), dtype='f4')
+    #d[60] = 1
+    #d[140] = 1
+    #gpu0.setBuf('weights large', d)
+    
+    t1 = time.time()
+    for i in range(10):
+        gpu0.weightedMarg('large')
+    bimarg1 = gpu0.getBuf('bi').read()
+    print("Time 1", time.time() - t1)
+    np.save('b1', bimarg1)
+    #log(str(bimarg1[:4,:]))
+    #log(str(bimarg1[0,:]))
+    log(np.sum(bimarg1))
+    #log(np.nonzero(bimarg1[0,:]))
+
+def testing(orig_args, args, log):
+    descr = ('Compute Potts Energy of a set of sequences')
+    parser = argparse.ArgumentParser(prog=progname + ' getEnergies',
+                                     description=descr)
+    add = parser.add_argument
+    add('out', default='output', help='Output File')
+    addopt(parser, 'GPU Options',         'wgsize gpus profile')
+    addopt(parser, 'Potts Model Options', 'alpha couplings')
+    addopt(parser, 'Sequence Options',    'seqs')
+    addopt(parser,  None,                 'outdir')
+
+    #genenergies uses a subset of the full inverse ising parameters,
+    #so use custom set of params here
+
+    args = parser.parse_args(args)
+    args.measurefperror = False
+
+    requireargs(args, 'couplings alpha seqs')
+
+    log("Initialization")
+    log("===============")
+    log("")
+
+    p = attrdict({'outdir': args.outdir})
+    mkdir_p(args.outdir)
+    p.update(process_potts_args(args, None, None, None, log))
+    L, q, alpha = p.L, p.q, p.alpha
+    log("Sequence Setup")
+    log("--------------")
+    seqs = loadSequenceFile(args.seqs, alpha, log)
+    if seqs is None:
+        raise Exception("seqs must be supplied")
+    log("")
+
+    args.nwalkers = len(seqs)
+    args.nsteps = 1
+    args.nlargebuf = 1
+    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
+    p.update(gpup)
+    gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), p.wgsize, log)
+    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
+            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
+    transferSeqsToGPU(gpus, 'main', [seqs], log)
+    log("")
+
+
+    log("Computing Energies")
+    log("==================")
+
+    for gpu in gpus:
+        gpu.setBuf('J', p.couplings)
+    
+
+    t1 = time.time()
+    for i in range(1000):
+        for gpu in gpus:
+            gpu.calcEnergies('main')
+    es = np.concatenate(readGPUbufs(['E main'], gpus)[0])
+    print("Time", time.time() - t1)
+    log(printsome(es))
+
+    log("Saving results to file '{}'".format(args.out))
+    np.save(args.out, es)
 
 ################################################################################
 
@@ -896,6 +1040,7 @@ def process_newton_args(args, log):
 
     param = {'mcmcsteps': args.mcsteps,
              'newtonSteps': args.newtonsteps,
+             'fracNeff': args.fracNeff,
              'gamma0': args.gamma,
              'pcdamping': args.damping,
              'reseed': args.reseed,
@@ -979,7 +1124,8 @@ def process_potts_args(args, L, q, bimarg, log):
     # * from coupling dimensions
 
     alpha = args.alpha.strip()
-    L, q = updateLq(args.L, len(alpha), L, q, 'bimarg')
+    argL = args.L if hasattr(args, 'L') else None
+    L, q = updateLq(argL, len(alpha), L, q, 'bimarg')
 
     # next try to get couplings (may determine L, q)
     couplings, L, q = getCouplings(args, L, q, bimarg, log)
@@ -1078,7 +1224,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
             raise Exception("Did not find requested {} sequences".format(nseqs))
 
         if np.sum(nseqs) != np.sum([s.shape[0] for s in seqs]):
-            n, s = np.sum(nseqs), concatenate(seqs)
+            n, s = np.sum(nseqs), np.concatenate(seqs)
             log("Repeating {} sequences to make {}".format(s.shape[0], n))
             seqs = [repeatseqs(s, n)]
 
@@ -1098,7 +1244,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
                                                             nlargeseqs))
 
         if np.sum(nlargeseqs) != np.sum([s.shape[0] for s in seqs_large]):
-            n, s = np.sum(nlargeseqs), concatenate(seqs_large)
+            n, s = np.sum(nlargeseqs), np.concatenate(seqs_large)
             log("Repeating {} sequences to make {}".format(s.shape[0], n))
             seqs_large = [repeatseqs(s, n)]
 
@@ -1179,7 +1325,7 @@ def transferSeqsToGPU(gpus, bufname, seqs, log):
         sizes = [g.nseq[bufname] for g in gpus]
 
         if len(seqs) == sum(sizes):
-            seqs = split(seqs, np.cumsum(sizes)[:-1])
+            seqs = np.split(seqs, np.cumsum(sizes)[:-1])
         else:
             raise Exception(("Expected {} total sequences, got {}").format(
                              sum(sizes), len(seqs)))

@@ -139,12 +139,17 @@ def singleNewton(bimarg, gamma, param, gpus):
         gpus[0].updateJ(gamma, pc)
     return gpus[0].getBuf('J').read()
 
+def getNeff(w):
+    # This corresponds to an effective N for the weighted average of N
+    # bernoulli trials, eg X = (w1 X1 + w2 X2 + ...)/sum(w) for which we find
+    # var(X) = p(1-p)/Neff, with Neff = N in the unweighted case.
+    return (np.sum(w)**2)/np.sum(w**2)
+
 def NewtonStatus(n, trialJ, weights, bimarg_model, bimarg_target, log):
     SSR = np.sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
     
     # not clear what best Neff measure is. sum(weights)?
-    nw = weights/np.sum(weights)
-    Neff = np.exp(-np.sum(nw*np.log(nw)))
+    Neff = getNeff(weights)
     log(("{}  ssr: {}  Neff: {:.1f} wspan: {:.3g}:{:.3g}").format(
          n, SSR, Neff, min(weights), max(weights)))
     log("    trialJ:", printsome(trialJ)), '...'
@@ -156,6 +161,8 @@ def iterNewton_multiGPU(param, bimarg_model, gpus, log):
     gamma = param.gamma0
     newtonSteps = param.newtonSteps
     pc = param.pcdamping
+    Nfrac = param.fracNeff
+    N = param.nwalkers
 
     log("")
     log("Local optimization for {} steps:".format(newtonSteps))
@@ -183,16 +190,23 @@ def iterNewton_multiGPU(param, bimarg_model, gpus, log):
         return bi[0], weights, J[0]
 
     # perform the newton update steps
+    lastNeff = 2*N
     for i in range(newtonSteps):
         for gpu in gpus:
             updateJ(gpu) # should be the identical calculation on all gpus
-            gpu.perturbMarg('main') # will be different on each gpu
+            gpu.calcWeights('main')
+            gpu.weightedMarg('main')
         merge_device_bimarg(gpus)
 
-        # optinally output iteration status here
-        if 0: # XXX disabled for now
-            bimarg_model, weights, trialJ = getNewtonBufs()
-            NewtonStatus(i, trialJ, weights, bimarg_model, bimarg_target, log)
+        weights = np.concatenate(readGPUbufs(['weights'], gpus)[0])
+        Neff = getNeff(weights)
+        if i%64 == 0 or abs(lastNeff - Neff)/N > 0.05 or Neff < Nfrac*N:
+            log("J-step {: 5d}   Neff: {:.1f}   ({:.1f}% of {})".format(
+                 i, Neff, Neff/N*100, N))
+            lastNeff = Neff
+        if Neff < Nfrac*N:
+            log("Ending coupling updates because Neff/N < {:.2f}".format(Nfrac))
+            break
 
     bimarg_model, weights, trialJ = getNewtonBufs()
     NewtonStatus(i, trialJ, weights, bimarg_model, bimarg_target, log)
@@ -216,6 +230,8 @@ def iterNewton_singleGPU(param, bimarg_model, gpus, log):
     newtonSteps = param.newtonSteps
     pc = param.pcdamping
     gpu0 = gpus[0]
+    Nfrac = param.fracNeff
+    N = param.nwalkers
 
     log("")
     log("Local optimization for {} steps:".format(newtonSteps))
@@ -244,15 +260,23 @@ def iterNewton_singleGPU(param, bimarg_model, gpus, log):
         return bi[0], weights[0], J[0]
 
     # actually do coupling updates
+    lastNeff = 2*N
+    Ncutoff = 0.5
     for i in range(newtonSteps):
         updateJ(gpu0)
-        gpu0.perturbMarg('large')
+        gpu0.calcWeights('large')
+        gpu0.weightedMarg('large')
         gpu0.renormalize_bimarg()
 
-        # optinally output iteration status here
-        if 0: # XXX disabled for now
-            bimarg_model, weights, trialJ = getNewtonBufs()
-            NewtonStatus(i, trialJ, weights, bimarg_model, bimarg_target, log)
+        weights = gpu0.getBuf('weights large').read()
+        Neff = getNeff(weights)
+        if i%64 == 0 or abs(lastNeff - Neff)/N > 0.05 or Neff < Nfrac*N:
+            log("J-step {: 5d}   Neff: {:.1f}   ({:.1f}% of {})".format(
+                 i, Neff, Neff/N*100, N))
+            lastNeff = Neff
+        if Neff < Nfrac*N:
+            log("Ending coupling updates because Neff/N < {:.2f}".format(Nfrac))
+            break
 
     bimarg_model, weights, trialJ = getNewtonBufs()
     NewtonStatus(i, trialJ, weights, bimarg_model, bimarg_target, log)
@@ -278,7 +302,7 @@ def iterNewton(param, bimarg_model, gpus, log):
     else:
         ret = iterNewton_singleGPU(param, bimarg_model, gpus, log)
     e = time.time()
-    log("Total Newton-step running time: {} s".format(e-s))
+    log("Total Newton-step running time: {:.1f} s".format(e-s))
     return ret
 
 
@@ -511,7 +535,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
         equil_dir = os.path.join(outdir, runName, 'equilibration')
         mkdir_p(equil_dir)
 
-        loops = 32
+        loops = 16
         for i in range(loops):
             for gpu in gpus:
                 gpu.runMCMC()
@@ -633,7 +657,7 @@ def MCMCstep(runName, couplings, param, gpus, log):
     writeStatus(runName, bimarg_target, bicount, bimarg_model,
                 couplings, seqs, sampledenergies,
                 alpha, e_rho, ptinfo, outdir, log)
-    log("Total MCMC running time: {} s".format(end_time - start_time))
+    log("Total MCMC running time: {:.1f} s".format(end_time - start_time))
 
     if param.tempering is not None:
         e, b = readGPUbufs(['E main', 'Bs'], gpus)

@@ -1,6 +1,6 @@
 import numpy as np
 
-def printsome(a, prec=6):
+def printsome(a, prec=4):
     return np.array2string(a.flatten()[:5], precision=prec, sign=' ')[1:-1]
 
 def getLq(x):
