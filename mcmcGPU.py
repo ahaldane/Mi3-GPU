@@ -483,8 +483,9 @@ class MCMCGPU:
             nseq = self.nstoredseqs
             buflen = self.nseq[seqbufname]//4
             weights_dev = self.bufs['weights large']
-            # pad to be a multiple of wgsize (uses dummy seqs at end)
-            nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
+            # pad to be a multiple of 512 (uses dummy seqs at end)
+            nseq = nseq + ((512 - nseq) % 512)
+            # XXX find correct padding here
 
         if not self.repackedSeqT[seqbufname]:
             wait_for = self.repackseqs_T(seqbufname,

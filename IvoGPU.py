@@ -115,16 +115,14 @@ def optionRegistry():
         help="Target bivariate marginals (npy file)")
     add('mcsteps', type=np.uint32, required=True,
         help="Number of rounds of MCMC generation")
-    add('newtonsteps', default=2048, type=np.uint32,
+    add('newtonsteps', default=512, type=np.uint32,
         help="Number of newton steps per round.")
-    add('fracNeff', type=np.float32, default=0.75,
+    add('fracNeff', type=np.float32, default=0.8,
         help="stop coupling updates after Neff/N = fracNeff")
     add('gamma', type=np.float32, required=True,
         help="Initial step size")
     add('damping', default=0.001, type=np.float32,
         help="Damping parameter")
-    add('noiseN', default=None,
-        help="effective MSA size for anti-overfitting noise")
     add('reg', default=None,
         help="regularization format")
     add('preopt', action='store_true',
@@ -229,7 +227,7 @@ def inverseIsing(orig_args, args, log):
                                           'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs seqs_large')
     addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps fracNeff '
-                                          'damping reg noiseN multigpu gamma '
+                                          'damping reg multigpu gamma '
                                           'preopt reseed')
     addopt(parser, 'Sampling Options',    'equiltime '
                                           'trackequil tempering nswaps_temp '
@@ -342,6 +340,14 @@ def inverseIsing(orig_args, args, log):
                     p.nsteps*p.equiltime/p.L))
 
     describe_tempering(args, p, log)
+    
+    f = p.bimarg
+    expected_SSR = np.sum(f*(1-f))/p.nwalkers
+    absexp = np.sqrt(2/np.pi)*np.sqrt(f*(1-f)/p.nwalkers)/f
+    expected_Ferr = np.mean(absexp[f>0.01])
+    log("\nEstimated lowest achievable error for this nwalkers and bimarg is:"
+        "\nSSR = {:.4f}   Ferr = {:.3f}".format(expected_SSR, expected_Ferr))
+    log("(Statistical error only. Error may be higher due to other effects)")
 
     log("")
     log("")
@@ -1045,8 +1051,7 @@ def process_newton_args(args, log):
              'pcdamping': args.damping,
              'reseed': args.reseed,
              'preopt': args.preopt,
-             'multigpu': args.multigpu,
-             'noiseN': args.noiseN if not args.noiseN else int(args.noiseN)}
+             'multigpu': args.multigpu}
 
     p = attrdict(param)
 
@@ -1092,9 +1097,6 @@ def process_newton_args(args, log):
                 raise Exception("l2z specifier must be of form 'l2z:lh,lJ', eg "
                                 "'l2z:0.01,0.01'. Got '{}'".format(args.reg))
             p['regarg'] = (lh, lJ)
-
-    if p.noiseN:
-        log("Adding MSA noise of size {} to step direction".format(p.noiseN))
 
     log("")
     return p
@@ -1255,7 +1257,8 @@ def process_sequence_args(args, L, alpha, bimarg, log,
             seedseq_origin = args.seedseq
         elif args.seedseq is not None: # given string
             try:
-                seedseq = np.array(map(alpha.index, args.seedseq), dtype='<u1')
+                seedseq = np.array([alpha.index.index(c) for c in args.seedseq],
+                                   dtype='<u1')
                 seedseq_origin = 'supplied'
             except:
                 seedseq = loadseedseq(args.seedseq, args.alpha.strip(), log)
@@ -1294,7 +1297,7 @@ def loadseedseq(fn, alpha, log):
     log("Reading seedseq from file {}".format(fn))
     with open(fn) as f:
         seedseq = f.readline().strip()
-        seedseq = np.array(map(alpha.index, seedseq), dtype='<u1')
+        seedseq = np.array([alpha.index(c) for c in seedseq], dtype='<u1')
     return seedseq
 
 def loadSequenceFile(sfile, alpha, log):

@@ -143,7 +143,8 @@ void copySubseq(__global uint *smallbuf,
 // sequences are stored in SWORDS rows (nseq columns) as:
 //         row1:   a1 a2 a3 a4 b1 b2 b3 b4 c1 c2 c3 c4 ...
 //         row2:   a5 a6 a7 a8 b5 b6 b7 b8 c5 c6 c7 c8 ...
-// where a1 is byte 1 of sequence a. This reformats to L rows ((nseq-1)//4+1 cols) as:
+// where a1 is byte 1 of sequence a. This reformats to L rows 
+// and ((nseq-1)//4+1 cols) as:
 //         row1:   a1 b1 c1 d1 e1 f1 ...
 //         row2:   a2 b2 c2 d2 e2 f2 ...
 //  (which is the transpose of seq array in CPU)
@@ -272,14 +273,6 @@ inline float getEnergiesfX(__global float *J,
             while(m < L){
                 uint sbm = seqmem[(m/4)*buflen + get_global_id(0)];
                 
-                // XXX replace lcoupling load below with this? 
-                // may better coalesce, but needs more local mem
-                // maybe loop further below is best but should use prefetch.
-                //for(k = li; k < 4*q*q; k += get_local_size(0)){
-                //    lcouplings[k] = J[(n*L + m)*q*q + k];
-                //}
-                //barrier(CLK_LOCAL_MEM_FENCE);
-
                 #pragma unroll
                 for(cm = m%4; cm < 4 && m < L; cm++, m++){
                     for(k = li; k < q*q; k += get_local_size(0)){
@@ -403,6 +396,8 @@ void metropolis(__global float *J,
 
 // ****************************** Histogram Code **************************
 
+// Note: This could be updated to use the faster algorithm in 
+// weightedMarg.
 __kernel
 void countBivariate(__global uint *bicount,
                              uint  nseq,
@@ -413,10 +408,6 @@ void countBivariate(__global uint *bicount,
     uint gi = get_group_id(0);
     uint nhist = get_local_size(0);
     uint i,j,n,m;
-
-    //once we get to use atomic operations in openCL 2.0,
-    //this might be sped up by having a single shared histogram,
-    //with a much larger work group size.
 
     //figure out which i,j pair we are
     i = 0;
@@ -485,10 +476,6 @@ void countMarkedBivariate(__global uint *bicount,
     uint i,j,n,m;
 
     // only meant to be called for small buffer so nseq == buflen
-
-    //once we get to use atomic operations in openCL 2.0,
-    //this might be sped up by having a single shared histogram,
-    //with a much larger work group size.
 
     //figure out which i,j pair we are
     i = 0;
@@ -630,7 +617,7 @@ void weightedMarg(__global float *bimarg_new,
         }
     }
 
-    //merge histograms. Each wg of nhist/2 wu does a reduce over nhist elements
+    //merge histograms. Every nhist/2 wu does a reduce over nhist elements
     uint x = li%(NHIST/2);
     for(n = li/(NHIST/2); n < q*q; n += HISTWS/(NHIST/2)){
         // since NHIST is pow of two we can use simpler reduction code (no odd)

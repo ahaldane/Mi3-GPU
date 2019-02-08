@@ -324,7 +324,10 @@ def writeSeqs(fn, seqs, names=prot_alpha, param={'alpha': prot_alpha},
         for i in range(0,seqs.shape[0]-chunksize, chunksize):
             s[:,:-1] = seqs[i:i+chunksize,:]
             # could be sped up: s is uneccesarily cast to int32/64
-            f.buffer.write(alphabet[s])
+            if hasattr(f, 'buffer'):
+                f.buffer.write(alphabet[s])
+            else:
+                f.write(alphabet[s])
         s[:seqs.shape[0]-i-chunksize,:-1] = seqs[i+chunksize:,:]
 
         if hasattr(f, 'buffer'):
