@@ -22,11 +22,47 @@ import numpy as np
 from numpy.random import RandomState
 import pyopencl as cl
 import pyopencl.array as cl_array
-import os, time
+import os, time, warnings
 import textwrap
 from utils import printsome
+import collections
 
 cf = cl.mem_flags
+
+rng_buf_mul = 1024
+
+################################################################################
+
+os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
+os.environ['PYOPENCL_NO_CACHE'] = '1'
+os.environ["CUDA_CACHE_DISABLE"] = '1'
+
+def printPlatform(log, p, n=0):
+    log("Platform {} '{}':".format(n, p.name))
+    log("    Vendor: {}".format(p.vendor))
+    log("    Version: {}".format(p.version))
+    exts = ("\n" + " "*16).join(textwrap.wrap(p.extensions, 80-16))
+    log("    Extensions: {}".format(exts))
+
+def printDevice(log, d):
+    log("  Device '{}':".format(d.name))
+    log("    Vendor: {}".format(d.vendor))
+    log("    Version: {}".format(d.version))
+    log("    Driver Version: {}".format(d.driver_version))
+    log("    Max Clock Frequency: {}".format(d.max_clock_frequency))
+    log("    Max Compute Units: {}".format(d.max_compute_units))
+    log("    Max Work Group Size: {}".format(d.max_work_group_size))
+    log("    Global Mem Size: {}".format(d.global_mem_size))
+    log("    Global Mem Cache Size: {}".format(d.global_mem_cache_size))
+    log("    Local Mem Size: {}".format(d.local_mem_size))
+    log("    Max Constant Buffer Size: {}".format(d.max_constant_buffer_size))
+
+def printGPUs(log):
+    for n,p in enumerate(cl.get_platforms()):
+        printPlatform(log, p, n)
+        for d in p.get_devices():
+            printDevice(log, d)
+        log("")
 
 ################################################################################
 
@@ -64,15 +100,14 @@ class FutureBuf:
         self.event = event
         self.postfunc = postprocess
 
+        self.shape = buffer.shape
+        self.dtype = buffer.dtype
+
     def read(self):
         self.event.wait()
         if self.postfunc != None:
             return self.postfunc(self.buffer)
         return self.buffer
-
-def readGPUbufs(bufnames, gpus):
-    futures = [[gpu.getBuf(bn) for gpu in gpus] for bn in bufnames]
-    return [[buf.read() for buf in gpuf] for gpuf in futures]
 
 class MCMCGPU:
     def __init__(self, gpuinfo, L, q, nseq, wgsize, outdir,
@@ -85,25 +120,27 @@ class MCMCGPU:
         self.L = L
         self.q = q
         self.nPairs = L*(L-1)//2
-        self.events = []
+        self.events = collections.deque()
         self.SWORDS = ((L-1)//4+1)    #num words needed to store a sequence
         self.SBYTES = (4*self.SWORDS) #num bytes needed to store a sequence
         self.nseq = {'main': nseq}
+        self.nwalkers = nseq
 
-        gpu, gpunum, ctx, prg = gpuinfo
+        device, gpunum, ctx, prg = gpuinfo
         self.gpunum = gpunum
         self.ctx = ctx
         self.prg = prg
+        self.device = device
 
         self.wgsize = wgsize
         self.nhist, self.histws = histogram_heuristic(q)
 
         self.logfn = os.path.join(outdir, 'gpu-{}.log'.format(gpunum))
         with open(self.logfn, "wt") as f:
-            printDevice(f.write, gpu)
+            printDevice(f.write, device)
 
         self.mcmcprg = prg.metropolis
-
+        
         self.rngstate = RandomState(seed)
 
         #setup opencl for this device
@@ -113,12 +150,12 @@ class MCMCGPU:
         self.profile = profile
         if profile:
             qprop |= cl.command_queue_properties.PROFILING_ENABLE
-        self.queue = cl.CommandQueue(ctx, device=gpu, properties=qprop)
+        self.queue = cl.CommandQueue(ctx, device=device, properties=qprop)
 
         self.log("\nOpenCL Device Compilation Log:")
-        self.log(self.prg.get_build_info(gpu, cl.program_build_info.LOG))
+        self.log(self.prg.get_build_info(device, cl.program_build_info.LOG))
         maxwgs = self.mcmcprg.get_work_group_info(
-                 cl.kernel_work_group_info.WORK_GROUP_SIZE, gpu)
+                 cl.kernel_work_group_info.WORK_GROUP_SIZE, device)
         self.log("Max MCMC WGSIZE: {}".format(maxwgs))
 
         self.initted = []
@@ -144,10 +181,10 @@ class MCMCGPU:
 
         self.lastevt = None
 
-    def log(self, str):
+    def log(self, msg):
         #logs are rare, so just open the file every time
         with open(self.logfn, "at") as f:
-            print(repr(time.process_time()), str, file=f)
+            print("{: 10.3f}".format(time.process_time()), msg, file=f)
 
     def logevt(self, name, evt, nbytes=None):
         self.lastevt = evt
@@ -155,7 +192,7 @@ class MCMCGPU:
         # don't save events if not profiling.
         # note that saved events use up memory - free it using logprofile
         if self.profile:
-            if len(self.events)%1000 == 0 and self.events != []:
+            if len(self.events)%1000 == 0 and len(self.events) != 0:
                 self.log("Warning: Over {} profiling events are not flushed "
                     "(using up memory)".format(len(self.events)))
             if nbytes:
@@ -165,22 +202,30 @@ class MCMCGPU:
 
         return evt
 
-    def _waitevt(self, evts=None):
-        if evts is not None:
-            if isinstance(evts, cl.Event):
-                return [evts]
+    def _evtlist(self, evts):
+        if evts is None:
+            return []
+        elif isinstance(evts, cl.Event):
+            return [evts]
+        else:
             return evts
-        if self.lastevt is not None:
+
+    def _waitevt(self, evts=None):
+        if evts is None and self.lastevt is not None:
             return [self.lastevt]
+        return self._evtlist(evts)
 
     def logProfile(self):
-        self.wait()
-
         if not self.profile:
             return
+
+        def isComplete(e):
+            return (e.command_execution_status == 
+                    cl.command_execution_status.COMPLETE)
+
         with open(self.logfn, "at") as f:
-            while self.events != []:
-                dat = self.events.pop(0)
+            while len(self.events) != 0 and isComplete(self.events[0][0]):
+                dat = self.events.popleft()
                 evt, name, size = dat[0],dat[1],(dat[2] if len(dat)==3 else '')
                 print("EVT", name, evt.profile.start, evt.profile.end,
                       size, file=f)
@@ -210,17 +255,18 @@ class MCMCGPU:
             raise Exception("Already initialized {}".format(cmp))
         self.initted.append(cmp)
 
-    def initMCMC(self, nsteps, nMCMCcalls):
+    def initMCMC(self, nsteps, rng_offset, rng_span):
         self._initcomponent('MCMC')
 
         # rngstates should be size of mwc64xvec2_state_t
         self.nsteps = nsteps
         self._setupBuffer('rngstates', '<2u8', (self.nseq['main'],)),
         self._setupBuffer(       'Bs', '<f4',  (self.nseq['main'],)),
-        self._setupBuffer(  'randpos', '<u4',  (self.nsteps,))
+        self._setupBuffer(  'randpos', '<u4',  (self.nsteps*rng_buf_mul,))
+        self.randpos_offset = rng_buf_mul*self.nsteps
 
         self.setBuf('Bs', np.ones(self.nseq['main'], dtype='<f4'))
-        self._initMCMC_RNG(nMCMCcalls)
+        self._initMCMC_RNG(rng_offset, rng_span)
         self.nsteps = int(nsteps)
 
     def initLargeBufs(self, nseq_large):
@@ -230,7 +276,7 @@ class MCMCGPU:
         self._setupBuffer(    'seq large', '<u4', (self.SWORDS, nseq_large))
         self._setupBuffer(   'seqL large', '<u4', (self.L, nseq_large//4)),
         self._setupBuffer(      'E large', '<f4', (nseq_large,))
-        self._setupBuffer('weights large', '<f4',  (nseq_large,))
+        self._setupBuffer('weights large', '<f4', (nseq_large,))
 
         self.largebufs.extend(['seq large', 'seqL large', 'E large',
                                'weights large'])
@@ -325,58 +371,79 @@ class MCMCGPU:
                             self.bufs['J'], self.bufs['Junpacked'],
                             wait_for=self._waitevt(wait_for)))
 
-    def _initMCMC_RNG(self, nMCMCcalls, wait_for=None):
+    def _initMCMC_RNG(self, rng_offset, rng_span, wait_for=None):
         self.require('MCMC')
         self.log("initMCMC_RNG")
 
-        rsize = 2
+        # Idea is we want to divide the rng stream into non-overlapping chunks
+        # for each walker. This GPU was given a span of rng_span, so divide it
+        # by number of walkers (times 2 since each rng call advances by 2 for
+        # vec2).
 
-        nsamples = np.uint64(2**40) #upper bound for # of rngs generated
-        nseq = self.nseq['main']
-        offset = np.uint64(nsamples*nseq*self.gpunum*rsize)
-        # each gpu uses perStreamOffset*get_global_id(0)*vectorSize samples
-        #                    (nsamples *      nseq      * vecsize)
+        # Read mwc64 docs for more info. mwc64 doc says each walker's stream
+        # offset is (rng_offset + walker_span*(get_global_id(0)*vectorSize +
+        # vecind)) where vectorSize is 2. Note that rng_offset is not
+        # multiplied by 2!
 
-        # read mwc64 docs for description of nsamples.
-        # Num rng samples should be chosen such that 2**64/(rsize*nsamples) is
-        # greater than # walkers. nsamples should be > #MC steps performed
-        # per walker (which is nsteps*nMCMCcalls)
-        if not (self.nsteps*nMCMCcalls < nsamples < 2**64//(rsize*self.wgsize)):
-            raise Exception("RNG problem. RNGs may not be independent.")
-        #if this is a problem rethink the value 2**40 above, or consider using
-        #an rng with a greater period, eg the "Warp" generator.
+        rng_offset = np.uint64(rng_offset)
+
+        nwalkers = np.uint64(self.nseq['main'])
+        v2 = np.uint64(2)
+        # walker span is the # of rng calls assigned per walker
+        walker_span = np.uint64(rng_span)//(v2*nwalkers) # factor of 2 for vec2
+        self.log("RNG offset: {}  walker-span: {}  nwalkers {}".format(
+                  rng_offset, walker_span, nwalkers))
+        
+        # Warning: It is very important that the walker rng stream offsets
+        # across gpus are all distinct, or else some walkers will be highly
+        # correlated. Touch this code with care.
+        assert(walker_span*v2*nwalkers <= rng_span)
 
         wgsize = self.wgsize
-        while wgsize > nseq:
+        while wgsize > nwalkers:
             wgsize = wgsize//2
         return self.logevt('initMCMC_RNG',
-            self.prg.initRNG2(self.queue, (nseq,), (wgsize,),
-                         self.bufs['rngstates'], offset, nsamples,
+            self.prg.initRNG2(self.queue, (nwalkers,), (wgsize,),
+                         self.bufs['rngstates'], 
+                         np.uint64(rng_offset), walker_span,
                          wait_for=self._waitevt(wait_for)))
+
+    def updateRngPos(self, wait_evt=None):
+        self.randpos_offset = self.randpos_offset + self.nsteps
+        rng_evt = None
+
+        bufsize = rng_buf_mul*self.nsteps
+        if self.randpos_offset >= bufsize:
+            # all gpus use same position-rng series. This way there is no
+            # difference between running on one gpu vs splitting on multiple
+            rng = self.rngstate.randint(0, self.L, size=bufsize).astype('u4')
+            rng_evt = self.setBuf('randpos', rng, wait_for=wait_evt)
+            self.randpos_offset = 0
+        return np.uint32(self.randpos_offset), rng_evt
 
     def runMCMC(self, wait_for=None):
         """Performs a single round of mcmc sampling (nsteps MC steps)"""
+        t1 = time.time()
         self.require('MCMC')
         self.log("runMCMC")
 
+        wait_evt = self._waitevt(wait_for)
+
         nseq = self.nseq['main']
         nsteps = self.nsteps
-        wait_for = self.unpackJ(wait_for=self._waitevt(wait_for))
-
-        # all gpus use same rng series. This way there is no difference
-        # between running on one gpu vs splitting on multiple
-        rng = self.rngstate.randint(0, self.L, size=nsteps).astype('u4')
-        self.setBuf('randpos', rng)
+        wait_unpack = self.unpackJ(wait_for=wait_evt)
+        rngoffset, wait_rng = self.updateRngPos(wait_evt)
+        
+        wait = self._evtlist(wait_unpack) + self._evtlist(wait_rng)
 
         self.repackedSeqT['main'] = False
         return self.logevt('mcmc',
             self.mcmcprg(self.queue, (nseq,), (self.wgsize,),
                          self.bufs['Junpacked'], self.bufs['rngstates'],
-                         self.bufs['randpos'], np.uint32(nsteps),
+                         rngoffset, self.bufs['randpos'], np.uint32(nsteps),
                          self.Ebufs['main'], self.bufs['Bs'],
                          self.seqbufs['main'],
-                         wait_for=self._waitevt(wait_for)))
-
+                         wait_for=wait))
 
     def measureFPerror(self, log, nloops=3):
         log("Measuring FP Error")
@@ -414,9 +481,15 @@ class MCMCGPU:
                      np.uint32(nseq), seq_dev, np.uint32(buflen), localhist,
                      wait_for=self._waitevt(wait_for)))
 
-    def bicounts_to_bimarg(self, nseq, wait_for=None):
+    def bicounts_to_bimarg(self, seqbufname='main', wait_for=None):
         self.log("bicounts_to_bimarg ")
         q, nPairs = self.q, self.nPairs
+        
+        if seqbufname == 'main':
+            nseq = self.nseq['main']
+        else:
+            nseq = self.nstoredseqs
+
         nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
         return self.logevt('bicounts_to_bimarg',
             self.prg.bicounts_to_bimarg(self.queue,
@@ -791,38 +864,6 @@ class MCMCGPU:
         self.queue.finish()
 
 ################################################################################
-# Set up enviroment and some helper functions
-
-os.environ['PYOPENCL_COMPILER_OUTPUT'] = '0'
-os.environ['PYOPENCL_NO_CACHE'] = '1'
-os.environ["CUDA_CACHE_DISABLE"] = '1'
-
-def printPlatform(log, p, n=0):
-    log("Platform {} '{}':".format(n, p.name))
-    log("    Vendor: {}".format(p.vendor))
-    log("    Version: {}".format(p.version))
-    exts = ("\n" + " "*16).join(textwrap.wrap(p.extensions, 80-16))
-    log("    Extensions: {}".format(exts))
-
-def printDevice(log, d):
-    log("  Device '{}':".format(d.name))
-    log("    Vendor: {}".format(d.vendor))
-    log("    Version: {}".format(d.version))
-    log("    Driver Version: {}".format(d.driver_version))
-    log("    Max Clock Frequency: {}".format(d.max_clock_frequency))
-    log("    Max Compute Units: {}".format(d.max_compute_units))
-    log("    Max Work Group Size: {}".format(d.max_work_group_size))
-    log("    Global Mem Size: {}".format(d.global_mem_size))
-    log("    Global Mem Cache Size: {}".format(d.global_mem_cache_size))
-    log("    Local Mem Size: {}".format(d.local_mem_size))
-    log("    Max Constant Buffer Size: {}".format(d.max_constant_buffer_size))
-
-def printGPUs(log):
-    for n,p in enumerate(cl.get_platforms()):
-        printPlatform(log, p, n)
-        for d in p.get_devices():
-            printDevice(log, d)
-        log("")
 
 def unpackJ_CPU(self, couplings):
     """convert from format where every row is a unique ij pair (L choose 2
@@ -840,7 +881,7 @@ def unpackJ_CPU(self, couplings):
 
 ################################################################################
 
-def setupGPUs(scriptpath, scriptfile, param, log):
+def setup_GPU_context(scriptpath, scriptfile, param, log):
     outdir = param.outdir
     L, q = param.L, param.q
     gpuspec = param.gpuspec
@@ -858,23 +899,19 @@ def setupGPUs(scriptpath, scriptfile, param, log):
                                 for a in gpuspec.split(',')]
         except:
             raise Exception("Error: GPU specification must be comma separated "
-                            " list of platforms, eg '0,0'")
+                            " list of platform:gpus, eg '0:0,0:1'")
 
         for p,d in dev:
             try:
                 plat, devices = platforms[p]
-                gpu = devices.popitem()[d]
+                gpu = devices[d]
             except:
                 raise Exception("No GPU with specification {}".format(d))
-            log("Using GPU {} on platform {} ({})".format(gpu.name,
-                                                          plat.name, d))
             gpudevices.append(gpu)
     else:
         #use gpus in first platform
         plat = platforms[0]
         for gpu in plat[1]:
-            log("Using GPU {} on platform {} (0)".format(gpu.name,
-                                                         plat[0].name))
             gpudevices.append(gpu)
 
     if len(gpudevices) == 0:
@@ -894,25 +931,17 @@ def setupGPUs(scriptpath, scriptfile, param, log):
     log("Compilation Options: ", optstr)
     extraopt = " -cl-nv-verbose -Werror -I {}".format(scriptpath)
     log("Compiling CL...")
-    cl_prg = cl.Program(cl_ctx, src).build(optstr + extraopt)
+    
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", cl.CompilerWarning)
+        cl_prg = cl.Program(cl_ctx, src).build(optstr + extraopt)
 
-    #dump compiled program
-    ptx = cl_prg.get_info(cl.program_info.BINARIES)
-    for n,p in enumerate(ptx):
-        #useful to see if compilation changed
-        #log("PTX length: ", len(p))
-        with open(os.path.join(outdir, 'ptx{}'.format(n)), 'wt') as f:
-            f.write(p.decode('utf-8'))
+    # dump compiled program
+    ptx = cl_prg.get_info(cl.program_info.BINARIES)[0].decode('utf-8')
+    # get compile log (Nvidia truncates this at 4096 bytes.. annoying)
+    compile_log = cl_prg.get_build_info(gpudevices[0], cl.program_build_info.LOG)
 
-    return (cl_ctx, cl_prg), gpudevices
-
-def divideWalkers(nwalkers, ngpus, wgsize, log):
-    n_max = (nwalkers-1)//ngpus + 1
-    nwalkers_gpu = [n_max]*(ngpus-1) + [nwalkers - (ngpus-1)*n_max]
-    if nwalkers % (ngpus*wgsize) != 0:
-        log("Warning: number of MCMC walkers is not a multiple of "
-            "wgsize*ngpus, so there are idle work units.")
-    return nwalkers_gpu
+    return (cl_ctx, cl_prg), gpudevices, (ptx, compile_log)
 
 def initGPU(devnum, cldat, device, nwalkers, param, log):
     cl_ctx, cl_prg = cldat
@@ -929,7 +958,6 @@ def initGPU(devnum, cldat, device, nwalkers, param, log):
 
     vsize = 1024 #power of 2. Work group size for 1d vector operations.
 
-    log("Starting GPU {}".format(devnum))
     gpu = MCMCGPU((device, devnum, cl_ctx, cl_prg), L, q,
                   nwalkers, wgsize, outdir, vsize, seed, profile=profile)
     return gpu
@@ -964,38 +992,4 @@ def histogram_heuristic(q):
 
     return nhist, hist_ws
 
-def merge_device_bimarg(gpus):
-    # each gpu has its own bimarg computed for its sequences. We want to sum
-    # the bimarg to get the total bimarg, so need to share the bimarg buffers
-    # across devices. Since gpus are in same context, they can share buffers.
-
-    # There are a few possible transfer strategies with different bus
-    # usage/sync issues. The one below uses a divide by two strategy: In the
-    # first round, second half of gpus send to first half, eg gpu 3 to 1, 2 to
-    # 0, which do a sum. Then repeat on first half of gpus, dividing gpus in
-    # half each round, then broadcast final result from gpu 0.
-
-    # make sure we are done writing to buffer
-    for g in gpus:
-        g.wait()
-
-    rgpus = gpus
-    while len(rgpus) > 1:
-        h = (len(rgpus)-1)//2 + 1
-        for even, odd in zip(rgpus[:h], rgpus[h:]):
-            even.addBiBuffer('bi', odd.bufs['bi'])
-
-        for even in rgpus[:h]:
-            even.wait()
-
-        rgpus = rgpus[:h]
-
-    rgpus[0].renormalize_bimarg()
-    rgpus[0].wait()
-
-    for g in gpus[1:]:
-        g.setBuf('bi', rgpus[0].bufs['bi'])
-
-    for g in gpus[1:]:
-        g.wait()
 

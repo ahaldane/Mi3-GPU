@@ -350,6 +350,7 @@ inline float UpdateEnergy(__local float *lcouplings, __global float *J,
 __kernel
 void metropolis(__global float *J,
                 __global mwc64xvec2_state_t *rngstates,
+                         uint position_offset,
                 __global uint *position_list,
                          uint nsteps, // must be multiple of L
                 __global float *energies, //ony used to measure fp error
@@ -369,10 +370,10 @@ void metropolis(__global float *J,
 
     uint i;
     for(i = 0; i < nsteps; i++){
-        uint pos = position_list[i];
+        uint pos = position_list[i + position_offset];
         uint2 rng = MWC64XVEC2_NextUint2(&rstate);
         uint mutres = rng.x%q;  // small error here if MAX_INT%q != 0
-                                 // of order q/MAX_INT in marginals
+                                // of order q/MAX_INT in marginals
         uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)];
         uint seqp = getbyte(&sbn, pos%4);
 
@@ -563,12 +564,12 @@ void sumFloats(__global float *data,
 // Idea: Have that NHIST, and HISTWS (work-size) are powers of 2, with
 // HISTWS >= NHIST. Then in each loop over n below, we load memory as:
 //      <-----HISTWS----->
-// si   xxxxxxxxxxxxxxxxxx  (remember these are packed uints, so expand 4x)
-// sj   xxxxxxxxxxxxxxxxxx
+// si   xxxxxxxxxxxxxxxxxx  (remember these are packed uints, so expand 
+// sj   xxxxxxxxxxxxxxxxxx   4x to match w)
 //  w   xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx 
 //      <-NHIST->
 //
-// In each loop load si, sj, and the 1st w segment. Then loop over all windows
+// In each loop, load si, sj, and the 1st w segment. Then loop over all windows
 // of NHIST inside HISTWS. Then load the next w, and loop k again, 4 times.
 // Also, use fact that nseq is a multiple of 512, so need HISTWS <= 512.
 __kernel //call with group size = 32, for nPair groups

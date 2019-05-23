@@ -91,10 +91,9 @@ class Opener:
     def __enter__(self):
         if isinstance(self.fileobj, str):
             if self.rw in 'ra' and self.zipf is not False:
-                magic = "\x42\x5a\x68"  # for bz2
-                f = open(self.fileobj, self.rw + 'b')
-                start = f.read(len(magic))
-                f.close()
+                magic = b"\x42\x5a\x68"  # for bz2
+                with open(self.fileobj, self.rw + 'b') as f:
+                    start = f.read(len(magic))
                 if start == magic:
                     self.f = bz2.BZ2File(self.fileobj, self.rw+'b')
                 elif self.zipf is True:
@@ -218,12 +217,11 @@ def parseHeader(hd):
     return param, headers
 
 def readbytes(f, count):
-    if isinstance(f, io.IOBase):
-        dat = np.fromfile(f, dtype=np.uint8, count=count)
+    if hasattr(f, 'buffer'):
+        return np.fromfile(f, dtype=np.uint8, count=count)
     else:
-        dat = np.frombuffer(f.read(count), dtype=np.uint8)
-        dat.flags.writeable = True
-    return dat
+        dat = np.empty(count, dtype=np.uint8)
+        return dat[:f.readinto(dat) or 0]
 
 def loadSeqsChunked(f, names=None, chunksize=None): 
     #read header
