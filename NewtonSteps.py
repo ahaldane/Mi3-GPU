@@ -1,20 +1,20 @@
 #!/usr/bin/env python
 #
-#Copyright 2018 Allan Haldane.
+#Copyright 2019 Allan Haldane.
 
-#This file is part of IvoGPU.
+#This file is part of Mi3-GPU.
 
-#IvoGPU is free software: you can redistribute it and/or modify
+#Mi3-GPU is free software: you can redistribute it and/or modify
 #it under the terms of the GNU General Public License as published by
 #the Free Software Foundation, version 3 of the License.
 
-#IvoGPU is distributed in the hope that it will be useful,
+#Mi3-GPU is distributed in the hope that it will be useful,
 #but WITHOUT ANY WARRANTY; without even the implied warranty of
 #MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #GNU General Public License for more details.
 
 #You should have received a copy of the GNU General Public License
-#along with IvoGPU.  If not, see <http://www.gnu.org/licenses/>.
+#along with Mi3-GPU.  If not, see <http://www.gnu.org/licenses/>.
 
 #Contact: allan.haldane _AT_ gmail.com
 import numpy as np
@@ -25,7 +25,7 @@ import sys, os, errno, glob, argparse, time
 from utils.changeGauge import fieldlessGaugeEven
 from utils.seqload import writeSeqs, loadSeqs
 from utils import printsome, getLq, indep_bimarg, unimarg
-from IvoGPU import generateSequences, MPI
+from Mi3 import generateSequences, MPI
 import time
 
 ################################################################################
