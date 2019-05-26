@@ -315,7 +315,8 @@ void initRNG2(__global mwc64xvec2_state_t *rngstates,
 inline float UpdateEnergy(__local float *lcouplings, __global float *J,
                           global uint *seqmem, uint nseqs,
                           uint pos, uint seqp, uchar mutres, float energy){
-    uint m = 0;
+    uint m = 0, sbm;
+    uint sbm_prefetch = seqmem[(m/4)*nseqs + get_global_id(0)];
     while(m < L){
         //loop through seq, changing energy by changed coupling with pos
 
@@ -327,10 +328,11 @@ inline float UpdateEnergy(__local float *lcouplings, __global float *J,
         }
 
         //this line is the bottleneck of the entire MCMC analysis
-        // (would some kind of prefetch help here?)
-        uint sbm = seqmem[(m/4)*nseqs + get_global_id(0)];
-
+        sbm = sbm_prefetch;
         barrier(CLK_LOCAL_MEM_FENCE); // for lcouplings and sbm
+        if (m+1 < L) {
+            sbm_prefetch = seqmem[((m+1)/4)*nseqs + get_global_id(0)];
+        }
 
         //calculate contribution of those 4 rows to energy
         for(n = 0; n < 4 && m < L; n++, m++){
@@ -372,8 +374,8 @@ void metropolis(__global float *J,
     for(i = 0; i < nsteps; i++){
         uint pos = position_list[i + position_offset];
         uint2 rng = MWC64XVEC2_NextUint2(&rstate);
-        uint mutres = rng.x%q;  // small error here if MAX_INT%q != 0
-                                // of order q/MAX_INT in marginals
+        rng.x = rng.x%q;      // small error here if MAX_INT%q != 0
+        #define mutres rng.x  // of order q/MAX_INT in marginals
         uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)];
         uint seqp = getbyte(&sbn, pos%4);
 
@@ -386,6 +388,8 @@ void metropolis(__global float *J,
             seqmem[(pos/4)*nseqs + get_global_id(0)] = sbn;
             energy = newenergy;
         }
+
+        #undef mutres
     }
 
     rngstates[get_global_id(0)] = rstate;

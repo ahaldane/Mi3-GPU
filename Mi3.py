@@ -703,6 +703,11 @@ def MCMCbenchmark(orig_args, args, log):
     log("MC steps computed: {}".format(totsteps))
     log("MC steps per second: {:g}".format(steps_per_second))
 
+    # sanity check as a bonus
+    gpus.calcEnergies('main')
+    es = gpus.collect('E main')
+    log("\nConsistency check: <E> = ", np.mean(es), np.std(es))
+
 def equilibrate(orig_args, args, log):
     descr = ('Run a round of MCMC generation on the GPU')
     parser = argparse.ArgumentParser(prog=progname + ' mcmc',
