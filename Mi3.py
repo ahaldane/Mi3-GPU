@@ -232,7 +232,7 @@ def print_node_startup(log):
     if 'PBS_JOBID' in os.environ:
         log("Job name:   {}".format(os.environ['PBS_JOBID']))
 
-def setup_exit_hook():
+def setup_exit_hook(log):
     def exiter():
         if MPI:
             mpi_comm.Abort()
@@ -418,7 +418,7 @@ def inverseIsing(orig_args, args, log):
     needed_seqs = None
     use_seed = p.reseed.startswith('single')
     if p.preopt or (p.reseed == 'none'):
-        needed_seqs = gpus.nseq['main']
+        needed_seqs = sum(gpus.nseq['main'])
     p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
                                    nseqs=needed_seqs, needseed=use_seed))
     if p.reseed == 'msa':
@@ -613,6 +613,8 @@ def MCMCbenchmark(orig_args, args, log):
     nloop = args.nloop
     args.measurefperror = False
 
+    print_node_startup(log)
+
     log("Initialization")
     log("===============")
     log("")
@@ -626,32 +628,48 @@ def MCMCbenchmark(orig_args, args, log):
     p.update(process_potts_args(args, p.L, p.q, None, log))
     L, q, alpha = p.L, p.q, p.alpha
 
-    args.nlargebuf = 1
-    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
+    #args.nlargebuf = 1
+
+    setup_seed(args, p, log)
+
+    gpup = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
-    gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), log, p.wgsize)
-    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
-            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
-    for gpu in gpus:
-        gpu.initMCMC(p.nsteps, 2*nloop)
-    log("")
+    gpus = setup_GPUs(p, log)
+    
+    # rng_span is the rng stream range assigned per GPU, used to compute mutant
+    # residues. Here we just take the full span (2**63) and divide it evenly
+    # per gpu. Note this is the same in all runs of the program (only the
+    # rnadom position gets changed by random seed)
+    rng_span = np.uint64(2**63)//np.uint64(gpus.ngpus) #mwc64x period is 2**63
+    gpus.initMCMC(p.nsteps, [i*rng_span for i in range(gpus.ngpus)], rng_span)
 
-    nseqs = None
-    needseed = False
+    # figure out how many sequences we need to initialize
+    needed_seqs = None
+    use_seed = False
     if args.seqs is not None:
-        nseqs = np.sum([g.nseq['main'] for g in gpus])
-    if args.seedseq is not None:
-        needseed = True
+        needed_seqs = sum(gpus.nseq['main'])
+    elif args.seedseq is not None:
+        use_seed = True
     else:
-        nseqs = p.nwalkers
-    p.update(process_sequence_args(args, L, alpha, None, log,
-                                   nseqs=nseqs, needseed=needseed))
+        raise Exception("'seqs' or 'seedseq' option required")
+    p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
+                                   nseqs=needed_seqs, needseed=use_seed))
+    if p.reseed == 'msa':
+        seedseqs = loadSequenceFile(args.seedmsa, alpha, log)
+        gpuwalkers = gpus.nseq['main']
+        seedseqs = repeatseqs(seedseqs, sum(gpuwalkers))
+        p['seedmsa'] = np.split(seedseqs, np.cumsum(gpuwalkers)[:-1])
 
-    if not needseed:
-        gpus.setSeqs('main', p.seqs, log)
+    # initialize main buffers with any given sequences
+    if use_seed:
+        if p.seedseq is None:
+            raise Exception("Must provide seedseq if using reseed=single_*")
+        gpus.fillSeqs(p.seedseq)
     else:
-        for gpu in gpus:
-            gpu.fillSeqs(p.seedseq)
+        if p.seqs is None:
+            raise Exception("Need to provide seqs if not using seedseq")
+        gpus.setSeqs('main', p.seqs, log)
+
     log("")
 
     log("Benchmark")
@@ -663,14 +681,11 @@ def MCMCbenchmark(orig_args, args, log):
 
     def runMCMC():
         for i in range(nloop):
-            for gpu in gpus:
-                gpu.runMCMC()
-        for gpu in gpus:
-            gpu.wait()
+            gpus.runMCMC()
+        gpus.wait()
 
     #initialize
-    for gpu in gpus:
-        gpu.setBuf('J', p.couplings)
+    gpus.setBuf('J', p.couplings)
 
     #warmup
     log("Warmup run...")
@@ -1500,7 +1515,7 @@ def main(args):
     actions[known_args.action](args, remaining_args, print)
 
 if __name__ == '__main__':
-    setup_exit_hook()
+    setup_exit_hook(print)
 
     if MPI is None or mpi_rank == 0:
         main(sys.argv[1:])
