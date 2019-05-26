@@ -36,10 +36,13 @@ float uniformMap(uint i){
 #define getbyte(mem, n) (((uchar*)(mem))[n])
 #define setbyte(mem, n, val) {(((uchar*)(mem))[n]) = val;}
 
+// WGSIZE must be pow of 2
+#define WGMASK(x) (x&(~(WGSIZE-1)))  // round down to multiple of WGSIZE
+
 //expands couplings stored in a (nPair x q*q) form to an (L*L x q*q) form
 __kernel //to be called with group size q*q, with nPair groups
 void unpackfV(__global float *v,
-            __global float *vp){
+              __global float *vp){
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
 
@@ -143,7 +146,7 @@ void copySubseq(__global uint *smallbuf,
 // sequences are stored in SWORDS rows (nseq columns) as:
 //         row1:   a1 a2 a3 a4 b1 b2 b3 b4 c1 c2 c3 c4 ...
 //         row2:   a5 a6 a7 a8 b5 b6 b7 b8 c5 c6 c7 c8 ...
-// where a1 is byte 1 of sequence a. This reformats to L rows 
+// where a1 is byte 1 of sequence a. This reformats to L rows
 // and ((nseq-1)//4+1 cols) as:
 //         row1:   a1 b1 c1 d1 e1 f1 ...
 //         row2:   a2 b2 c2 d2 e2 f2 ...
@@ -171,11 +174,11 @@ void unpackseqs1(__global uint *buf4,
             setbyte(&tmp, (li+i)%4, getbyte(&s, li%4));
         }
         barrier(CLK_LOCAL_MEM_FENCE);
-        
+
         // reorganize the 256 uints into 4 grous of 64
         scratch[64*(li%4) + (li/4)] = tmp;
         barrier(CLK_LOCAL_MEM_FENCE);
-        
+
         // write back 64 values to each of 4 rows of seqs
         uint outrow = 4*i4 + li/64;
         if (outrow < L) { //account for trailing padding in buf4
@@ -232,7 +235,7 @@ inline float getEnergiesf(__global float *J,
                     seqm = getbyte(&sbm, cm);
                     energy = energy + lcouplings[q*seqn + seqm];
                     barrier(CLK_LOCAL_MEM_FENCE);
-                    
+
                     pair++;
                 }
             }
@@ -242,49 +245,57 @@ inline float getEnergiesf(__global float *J,
 }
 
 // this function expects J in "unpacked" form, with L*L*q*q elements
+// (padded to multiple of WGSIZE*3)
 inline float getEnergiesfX(__global float *J,
-                          __global uint *seqmem,
-                                   uint  buflen,
-                          __local float *lcouplings){
-    // This function is complicated by optimizations for the GPU.
-    // For clarity, here is equivalent but clearer (pseudo)code:
-    //
-    //float energy = 0;
-    //for(n = 0; n < L-1; n++){
-    //    for(m = n+1; m < L; m++){
-    //       energy += J[n,m,seq[n],seq[m]];
-    //    }
-    //}
+                           __global  uint *seqmem,
+                                     uint  buflen,
+                           __local  float *lJ){
 
-    uint li = get_local_id(0);
-
-    uint seqm, seqn, seqp;
-    uint cn, cm;
-    uint sbn, sbm;
-    uint n,m,k;
     float energy = 0;
-    n = 0;
-    while(n < L-1){
-        uint sbn = seqmem[(n/4)*buflen + get_global_id(0)];
-        #pragma unroll //probably ignored
-        for(cn = n%4; cn < 4 && n < L-1; cn++, n++){
-            seqn = getbyte(&sbn, cn);
-            m = n+1;
-            while(m < L){
-                uint sbm = seqmem[(m/4)*buflen + get_global_id(0)];
-                
-                #pragma unroll
-                for(cm = m%4; cm < 4 && m < L; cm++, m++){
-                    for(k = li; k < q*q; k += get_local_size(0)){
-                        lcouplings[k] = J[(n*L + m)*q*q + k];
-                    }
-                    barrier(CLK_LOCAL_MEM_FENCE);
 
-                    seqm = getbyte(&sbm, cm);
-                    energy = energy + lcouplings[q*seqn + seqm];
-                    barrier(CLK_LOCAL_MEM_FENCE);
-                }
+    uint n, sbn;
+    for(n = 0; n < L-1; n++) {
+        if (n%4 == 0) {
+            sbn = seqmem[(n/4)*buflen + get_global_id(0)];
+        }
+
+        uint seqn = getbyte(&sbn, n%4);
+
+        uint Jmem_offset = WGMASK((n*L + n+1)*q*q);
+        uint lJ_offset = (n*L + n+1)*q*q - Jmem_offset;;
+
+        // load 2*WGSIZE worth of couplings
+        lJ[get_local_id(0)] = J[Jmem_offset + get_local_id(0)];
+        Jmem_offset += WGSIZE;
+        lJ[get_local_id(0) + WGSIZE] = J[Jmem_offset + get_local_id(0)];
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        // prefetch next WGSIZE couplings
+        Jmem_offset += WGSIZE;
+        float Jprefetch = J[Jmem_offset + get_local_id(0)];
+
+        uint m, sbm;
+        for (m = n+1; m < L; m++) {
+            if (m%4 == 0 || m == n+1) {
+                sbm = seqmem[(m/4)*buflen + get_global_id(0)];
             }
+
+            uint seqm = getbyte(&sbm, m%4);
+
+            energy = energy + lJ[(lJ_offset + q*seqn +seqm)%(2*WGSIZE)];
+
+            if (lJ_offset + q*q >= WGMASK(lJ_offset) + WGSIZE) {
+                // store prefetched values in their place
+                barrier(CLK_LOCAL_MEM_FENCE);
+                lJ[WGMASK(lJ_offset) + get_local_id(0)] = Jprefetch;
+                barrier(CLK_LOCAL_MEM_FENCE);
+
+                // start next prefetch
+                Jmem_offset += WGSIZE;
+                Jprefetch = J[Jmem_offset + get_local_id(0)];
+            }
+
+            lJ_offset = (lJ_offset + q*q)%(2*WGSIZE);
         }
     }
     return energy;
@@ -295,8 +306,8 @@ void getEnergies(__global float *J,
                  __global uint *seqmem,
                           uint  buflen,
                  __global float *energies){
-    __local float lcouplings[4*q*q];
-    energies[get_global_id(0)] = getEnergiesf(J, seqmem, buflen, lcouplings);
+    __local float lJ[2*WGSIZE];
+    energies[get_global_id(0)] = getEnergiesf(J, seqmem, buflen, lJ);
 }
 
 #define SWAPF(a,b) {float tmp = a; a = b; b = tmp;}
@@ -312,38 +323,68 @@ void initRNG2(__global mwc64xvec2_state_t *rngstates,
     rngstates[get_global_id(0)] = rstate;
 }
 
-inline float UpdateEnergy(__local float *lcouplings, __global float *J,
+// This function is the bottleneck of the entire MCMC analysis.
+// It is IO bound by the sequence loads and J loads.
+//
+// Idea of J loads: We use a 2*WGSIZE local J buffer, and require that WGSIZE
+// >= q*q. At start, we fill the buffer and also prefetch the next (third)
+// WGSIZE J values to register. The local buffer can be though of as two WGSIZE
+// halves, A and B, from which we access q*q coulplings (a row) at a time. We
+// iterate in chunks of q*q, but stop after the q*q chunk goes past the local mem
+// B end. Then store the next prefetch values to the A half, use modulo
+// indexing to access the local mem as if A followed B , and begin prefetch of
+// the next WGSIZE Js. Continue iterating modulo chunks of q*q until we would
+// hang past the end of A, then replace the B half with latest prefetch.
+// Continue alternating the A and the B prefetches/overwrites.
+inline float UpdateEnergy(__local float *lJ, __global float *J,
                           global uint *seqmem, uint nseqs,
                           uint pos, uint seqp, uchar mutres, float energy){
-    uint m = 0, sbm;
-    uint sbm_prefetch = seqmem[(m/4)*nseqs + get_global_id(0)];
-    while(m < L){
+    uint Jmem_offset = WGMASK(pos*L*q*q);
+    uint lJ_offset = pos*L*q*q - Jmem_offset;;
+
+    // load 2*WGSIZE worth of couplings
+    lJ[get_local_id(0)] = J[Jmem_offset + get_local_id(0)];
+    Jmem_offset += WGSIZE;
+    lJ[get_local_id(0) + WGSIZE] = J[Jmem_offset + get_local_id(0)];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    // prefetch next WGSIZE couplings
+    Jmem_offset += WGSIZE;
+    float Jprefetch = J[Jmem_offset + get_local_id(0)];
+
+    uint m, sbm;
+    uint sbm_prefetch = seqmem[get_global_id(0)];
+    for(m = 0; m < L; m++) {
         //loop through seq, changing energy by changed coupling with pos
 
-        //load the next 4 rows of couplings to local mem
-        uint n;
-        for(n = get_local_id(0); n < min((uint)4, L-m)*q*q;
-                                                      n += get_local_size(0)){
-            lcouplings[n] = J[(pos*L + m)*q*q + n];
-        }
-
-        //this line is the bottleneck of the entire MCMC analysis
-        sbm = sbm_prefetch;
-        barrier(CLK_LOCAL_MEM_FENCE); // for lcouplings and sbm
-        if (m+1 < L) {
-            sbm_prefetch = seqmem[((m+1)/4)*nseqs + get_global_id(0)];
-        }
-
-        //calculate contribution of those 4 rows to energy
-        for(n = 0; n < 4 && m < L; n++, m++){
-            if(m == pos){
-                continue;
+        // load sequence data
+        if (m%4 == 0) {
+            sbm = sbm_prefetch;
+            if (m+4 < L) {
+                sbm_prefetch = seqmem[((m+4)/4)*nseqs + get_global_id(0)];
             }
-            uint seqm = getbyte(&sbm, n);
-            energy += lcouplings[q*q*n + q*mutres + seqm];
-            energy -= lcouplings[q*q*n + q*seqp   + seqm];
         }
-        barrier(CLK_LOCAL_MEM_FENCE);
+
+        if(m != pos){
+            uint seqm = getbyte(&sbm, m%4);
+            energy += lJ[(lJ_offset + q*mutres + seqm)%(2*WGSIZE)];
+            energy -= lJ[(lJ_offset + q*seqp   + seqm)%(2*WGSIZE)];
+        }
+
+        // load couplings
+        // note: this assumes WGSIZE > q*q (enforced in python)
+        if(lJ_offset + q*q >= WGMASK(lJ_offset) + WGSIZE) {
+            // store prefetched values in their place
+            barrier(CLK_LOCAL_MEM_FENCE);
+            lJ[WGMASK(lJ_offset) + get_local_id(0)] = Jprefetch;
+            barrier(CLK_LOCAL_MEM_FENCE);
+
+            // start next prefetch
+            Jmem_offset += WGSIZE;
+            Jprefetch = J[Jmem_offset + get_local_id(0)];
+        }
+
+        lJ_offset = (lJ_offset + q*q)%(2*WGSIZE);
     }
 
     return energy;
@@ -363,23 +404,28 @@ void metropolis(__global float *J,
     mwc64xvec2_state_t rstate = rngstates[get_global_id(0)];
 
     //set up local mem
-    __local float lcouplings[q*q*4];
-    __local uint shared_position;
+    __local float lJ[2*WGSIZE];
 
-    //initialize energy
-    float energy = getEnergiesfX(J, seqmem, nseqs, lcouplings);
+#ifdef TEMPERING
     float B = betas[get_global_id(0)];
+#else
+    const float B = 1;
+#endif
+
+    //initialize energy (resets any fp error from last kernel call)
+    float energy = getEnergiesfX(J, seqmem, nseqs, lJ);
 
     uint i;
     for(i = 0; i < nsteps; i++){
         uint pos = position_list[i + position_offset];
         uint2 rng = MWC64XVEC2_NextUint2(&rstate);
-        rng.x = rng.x%q;      // small error here if MAX_INT%q != 0
-        #define mutres rng.x  // of order q/MAX_INT in marginals
+        rng.x = rng.x%q;
+        #define mutres  (rng.x)  // small error here if MAX_INT%q != 0
+                                 // of order q/MAX_INT in marginals
         uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)];
         uint seqp = getbyte(&sbn, pos%4);
 
-        float newenergy = UpdateEnergy(lcouplings, J, seqmem, nseqs,
+        float newenergy = UpdateEnergy(lJ, J, seqmem, nseqs,
                                        pos, seqp, mutres, energy);
 
         //apply MC criterion and possibly update
@@ -401,7 +447,7 @@ void metropolis(__global float *J,
 
 // ****************************** Histogram Code **************************
 
-// Note: This could be updated to use the faster algorithm in 
+// Note: This could be updated to use the faster algorithm in
 // weightedMarg.
 __kernel
 void countBivariate(__global uint *bicount,
@@ -568,9 +614,9 @@ void sumFloats(__global float *data,
 // Idea: Have that NHIST, and HISTWS (work-size) are powers of 2, with
 // HISTWS >= NHIST. Then in each loop over n below, we load memory as:
 //      <-----HISTWS----->
-// si   xxxxxxxxxxxxxxxxxx  (remember these are packed uints, so expand 
+// si   xxxxxxxxxxxxxxxxxx  (remember these are packed uints, so expand
 // sj   xxxxxxxxxxxxxxxxxx   4x to match w)
-//  w   xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx 
+//  w   xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx
 //      <-NHIST->
 //
 // In each loop, load si, sj, and the 1st w segment. Then loop over all windows
@@ -597,7 +643,7 @@ void weightedMarg(__global float *bimarg_new,
         j += L-1-i;
     }
     j = gi + L - j; //careful with underflow!
-    
+
     for(n = li; n < NHIST*q*q; n += HISTWS){
         hist[n] = 0;
     }
@@ -656,7 +702,7 @@ float sumqq(float v, uint li, __local float *scratch){
 
     scratch[li] = v;
     barrier(CLK_LOCAL_MEM_FENCE);
-    
+
     // reduction loop which accounts for odd vector sizes
     m = q*q;
     while (m > 1) {

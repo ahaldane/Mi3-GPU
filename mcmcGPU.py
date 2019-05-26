@@ -33,7 +33,7 @@ rng_buf_mul = 1024
 
 ################################################################################
 
-os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
+os.environ['PYOPENCL_COMPILER_OUTPUT'] = '0'
 os.environ['PYOPENCL_NO_CACHE'] = '1'
 os.environ["CUDA_CACHE_DISABLE"] = '1'
 
@@ -83,16 +83,16 @@ def printGPUs(log):
 # to the empty list [] to run immediately.
 
 # Note that in openCL implementations there is generally a limit on the number
-# of queued items allowed in a context. If you reach the limit, all queues will
-# block until a kernel finishes. So we must be careful not to fill up a single
-# queue before others, ie do `for i in range(100): for g in gpus: g.command()`
-# instead of `for g in gpus: for i in range(100): g.command()` as the latter
-# may fill the first gpu's queue, blocking the rest. 
+# of queued commands allowed in a context. If you reach the limit, all queues
+# will block until a kernel finishes. So we must be careful not to fill up a
+# single queue before others, so do `for i in range(100): for g in gpus:
+# g.command()` instead of `for g in gpus: for i in range(100): g.command()` as
+# the latter may fill the first gpu's queue, blocking the rest.
 # See  CL_DEVICE_QUEUE_ON_DEVICE_MAX_SIZE  and  CL_DEVICE_MAX_ON_DEVICE_EVENTS
 
 # Note that on some systems there is a watchdog timer that kills any kernel
-# that takes too long to finish. You will get a CL_OUT_OF_RESOURCES error
-# if this happens, which occurs when the *following* kernel is run.
+# that runs for too long. You will get a CL_OUT_OF_RESOURCES error if this
+# happens, which occurs when the *following* kernel is run.
 
 class FutureBuf:
     def __init__(self, buffer, event, postprocess=None):
@@ -116,7 +116,7 @@ class MCMCGPU:
             raise ValueError("nwalkers/ngpus must be a multiple of 512")
             # this guarantees that all kernel access to seqmem is coalesced and
             # simplifies the histogram kernels
-        
+
         self.L = L
         self.q = q
         self.nPairs = L*(L-1)//2
@@ -140,7 +140,7 @@ class MCMCGPU:
             printDevice(f.write, device)
 
         self.mcmcprg = prg.metropolis
-        
+
         self.rngstate = RandomState(seed)
 
         #setup opencl for this device
@@ -169,7 +169,7 @@ class MCMCGPU:
         # setup essential buffers
         # note no padding needed on seq buffers since alignment is guaranteed
         nPairs, SWORDS = self.nPairs, self.SWORDS
-        self._setupBuffer('Junpacked', '<f4', (L*L, q*q))
+        self._setupBuffer('Junpacked', '<f4', (L*L, q*q), pad=3*self.wgsize)
         self._setupBuffer(        'J', '<f4', (nPairs, q*q))
         self._setupBuffer(       'bi', '<f4', (nPairs, q*q)),
         self._setupBuffer(  'bicount', '<u4', (nPairs, q*q)),
@@ -220,7 +220,7 @@ class MCMCGPU:
             return
 
         def isComplete(e):
-            return (e.command_execution_status == 
+            return (e.command_execution_status ==
                     cl.command_execution_status.COMPLETE)
 
         with open(self.logfn, "at") as f:
@@ -230,9 +230,14 @@ class MCMCGPU:
                 print("EVT", name, evt.profile.start, evt.profile.end,
                       size, file=f)
 
-    def _setupBuffer(self, bufname, buftype, bufshape, flags=cf.READ_WRITE):
+    def _setupBuffer(self, bufname, buftype, bufshape, pad=None,
+                     flags=cf.READ_WRITE):
         flags = flags | cf.ALLOC_HOST_PTR
         size = np.dtype(buftype).itemsize*int(np.product(bufshape))
+
+        if pad:
+            size = size + pad - ((size-1)%pad) - 1
+
         buf = cl.Buffer(self.ctx, flags, size=size)
 
         self.bufs[bufname] = buf
@@ -292,7 +297,7 @@ class MCMCGPU:
     def initSubseq(self):
         self.require('Large')
         self._initcomponent('Subseq')
-        self._setupBuffer('markpos', '<u1',  (self.SBYTES,), cf.READ_ONLY)
+        self._setupBuffer('markpos', '<u1',  (self.SBYTES,), flags=cf.READ_ONLY)
         self.markPos(np.zeros(self.SBYTES, '<u1'))
 
     # we may want to select replicas at a particular temperature
@@ -317,7 +322,7 @@ class MCMCGPU:
     def packSeqs_4(self, seqs):
         """
         Converts seqs to 4-byte uint format on CPU, padded to 32bits, assumes
-        little endian. Each row's bytes are 
+        little endian. Each row's bytes are
             a0 a1 a2 a3 b0 b1 b2 b3 c0 c1 c2 c3 ...
         for sequences a, b, c, so each uint32 correaponds to 4 seq bytes.
         """
@@ -338,11 +343,11 @@ class MCMCGPU:
     def repackseqs_T(self, bufname, wait_for=None):
         """
         On GPU, copies the seq buffer (in 4-byte format) to a seqL buffer
-        in "transpose" format, which is just the usual CPU sequence buffer 
+        in "transpose" format, which is just the usual CPU sequence buffer
         but transposed.
         """
         self.log("repackseqs_T")
-        
+
         nseq = self.nseq[bufname]
         inseq_dev = self.bufs['seq ' + bufname]
         outseq_dev = self.bufs['seqL ' + bufname]
@@ -393,7 +398,7 @@ class MCMCGPU:
         walker_span = np.uint64(rng_span)//(v2*nwalkers) # factor of 2 for vec2
         self.log("RNG offset: {}  walker-span: {}  nwalkers {}".format(
                   rng_offset, walker_span, nwalkers))
-        
+
         # Warning: It is very important that the walker rng stream offsets
         # across gpus are all distinct, or else some walkers will be highly
         # correlated. Touch this code with care.
@@ -404,7 +409,7 @@ class MCMCGPU:
             wgsize = wgsize//2
         return self.logevt('initMCMC_RNG',
             self.prg.initRNG2(self.queue, (nwalkers,), (wgsize,),
-                         self.bufs['rngstates'], 
+                         self.bufs['rngstates'],
                          np.uint64(rng_offset), walker_span,
                          wait_for=self._waitevt(wait_for)))
 
@@ -433,7 +438,7 @@ class MCMCGPU:
         nsteps = self.nsteps
         wait_unpack = self.unpackJ(wait_for=wait_evt)
         rngoffset, wait_rng = self.updateRngPos(wait_evt)
-        
+
         wait = self._evtlist(wait_unpack) + self._evtlist(wait_rng)
 
         self.repackedSeqT['main'] = False
@@ -484,7 +489,7 @@ class MCMCGPU:
     def bicounts_to_bimarg(self, seqbufname='main', wait_for=None):
         self.log("bicounts_to_bimarg ")
         q, nPairs = self.q, self.nPairs
-        
+
         if seqbufname == 'main':
             nseq = self.nseq['main']
         else:
@@ -541,7 +546,7 @@ class MCMCGPU:
                            self.bufs['J'], seq_dev, np.uint32(buflen),
                            weights_dev, E_dev,
                            wait_for=self._waitevt(wait_for)))
-    
+
     def weightedMarg(self, seqbufname='main', wait_for=None):
         self.require('Jstep')
         self.log("weightedMarg")
@@ -924,14 +929,15 @@ def setup_GPU_context(scriptpath, scriptfile, param, log):
     nhist, histws = histogram_heuristic(q)
 
     #compile CL program
-    options = [('q', q), ('L', L), ('NHIST', nhist), ('HISTWS', histws)]
+    options = [('q', q), ('L', L), ('NHIST', nhist), ('HISTWS', histws),
+               ('WGSIZE', param.wgsize)]
     if measureFPerror:
         options.append(('MEASURE_FP_ERROR', 1))
     optstr = " ".join(["-D {}={}".format(opt,val) for opt,val in options])
     log("Compilation Options: ", optstr)
     extraopt = " -cl-nv-verbose -Werror -I {}".format(scriptpath)
     log("Compiling CL...")
-    
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", cl.CompilerWarning)
         cl_prg = cl.Program(cl_ctx, src).build(optstr + extraopt)
@@ -962,11 +968,25 @@ def initGPU(devnum, cldat, device, nwalkers, param, log):
                   nwalkers, wgsize, outdir, vsize, seed, profile=profile)
     return gpu
 
+def wgsize_heuristic(q, wgsize='auto'):
+    if wgsize == 'auto':
+        wgsize = 256
+        while wgsize < q*q:
+            wgsize *= 2
+        return wgsize
+
+    wgsize = int(wgsize)
+    if wgsize < q*q:
+        raise Exception("Must have wgsize >= q*q, but "
+                        "got {} < {}".format(wgsize, q*q))
+    return wgsize
+
+
 def histogram_heuristic(q):
     """
     Choose histogram size parameters (NHIST, HISTWS) for the bimarg GPU
-    calculations. 
-    
+    calculations.
+
     Each histogram is q*q float32, and we want to squeeze as many as possible
     into local memory (eg, 96k), such that multiple workgroups can run at
     once. Strategy below figues out # of histograms which can fit into 16k.
@@ -978,7 +998,7 @@ def histogram_heuristic(q):
     if nhist == 0:
         raise Exception("alphabet size too large to make histogram on gpu")
     nhist = 2**int(np.log2(nhist)) # closest power of two
-    
+
     # this seems like a roughly good heuristic on Titan X.
     if q <= 12:
         hist_ws = 512

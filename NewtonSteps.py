@@ -396,8 +396,10 @@ def runMCMC(gpus, couplings, runName, param, log):
         #keep nloop iterator on outside to avoid filling queue with only 1 gpu
         for i in range(nloop):
             gpus.runMCMC()
-
+        
+        step = nloop
         e_rho = None
+
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
         mkdir_p(os.path.join(outdir, runName, 'equilibration'))
@@ -408,6 +410,7 @@ def runMCMC(gpus, couplings, runName, param, log):
             energies, _ = track_main_bufs(gpus, equil_dir, step=step)
             equil_e.append(energies)
 
+        step = nloop
         # track how well different walkers are equilibrated. Should go to 0
         e_rho = [spearmanr(ei, equil_e[-1]) for ei in equil_e]
 
@@ -419,7 +422,7 @@ def runMCMC(gpus, couplings, runName, param, log):
 
     gpus.logProfile()
 
-    return bimarg_model, bicount, es, e_rho, None
+    return bimarg_model, bicount, es, e_rho, None, step
 
 def runMCMC_tempered(gpus, couplings, runName, param, log):
     nloop = param.equiltime
@@ -570,7 +573,8 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
      bicount,
      sampledenergies,
      e_rho,
-     ptinfo) = MCMC_func(gpus, couplings, runName, param, log)
+     ptinfo,
+     equilsteps) = MCMC_func(gpus, couplings, runName, param, log)
 
     end_time = time.time()
 
@@ -579,7 +583,10 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
     writeStatus(runName, Jstep, bimarg_target, bicount, bimarg_model,
                 couplings, seqs, sampledenergies,
                 alpha, e_rho, ptinfo, outdir, log)
-    log("Total MCMC running time: {:.1f} s".format(end_time - start_time))
+
+    dt = end_time - start_time
+    log("Total MCMC running time: {:.1f} s    ({} MC-steps/s)".format(
+        dt, equilsteps*param.nsteps*np.float64(gpus.nwalkers)/dt))
 
     if param.tempering is not None:
         e, b = gpus.collect(['E main', 'Bs'])

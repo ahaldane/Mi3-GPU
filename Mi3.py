@@ -32,7 +32,7 @@ except:
 from utils.seqload import loadSeqs, writeSeqs
 from utils.changeGauge import fieldlessGaugeEven
 from utils import printsome, getLq, unimarg
-from mcmcGPU import setup_GPU_context, initGPU
+from mcmcGPU import setup_GPU_context, initGPU, wgsize_heuristic
 import NewtonSteps
 
 try:
@@ -52,7 +52,7 @@ if MPI:
         MPI = None
     else:
         mpi_rank = mpi_comm.Get_rank()
-        from mpi_manager import (MPI_multinode_controller, 
+        from mpi_manager import (MPI_multinode_controller,
                                  MPI_GPU_node, MPI_worker)
 
 ################################################################################
@@ -107,7 +107,7 @@ def optionRegistry():
     add('outdir', default='output', help='Output Directory')
     #add('finish', help='Dir. of an unfinished run to finish')
     #add('continue', help='Dir. of finished run, to start a new run from')
-    add('config', #is_config_file_arg=True, 
+    add('config', #is_config_file_arg=True,
                   help='config file to load arguments from')
     add('rngseed', type=np.uint32, help='random seed')
 
@@ -116,8 +116,7 @@ def optionRegistry():
         help="Number of MC walkers")
     add('nsteps', type=np.uint32, default=2048,
         help="number of mc steps per kernel call")
-    add('wgsize', type=int, default=256,
-        help="GPU workgroup size")
+    add('wgsize', default='auto', help="GPU workgroup size")
     add('gpus',
         help="GPUs to use (comma-sep list of platforms #s, eg '0,0')")
     add('profile', action='store_true',
@@ -144,7 +143,7 @@ def optionRegistry():
         help="regularization format")
     add('preopt', action='store_true',
         help="Perform a round of newton steps before first MCMC run")
-    add('reseed', 
+    add('reseed',
         choices=['none', 'single_best', 'single_random', 'single_indep',
                  'independent', 'msa'],
         default='single_indep',
@@ -166,7 +165,7 @@ def optionRegistry():
     add('seedseq', help="Starting sequence. May be 'rand'")
     add('seqs', help="File containing sequences to pre-load to GPU")
     add('seqs_large', help="File containing sequences to pre-load to GPU")
-    add('seqbimarg', 
+    add('seqbimarg',
         help="bimarg used to generate independent model sequences")
 
     # Sampling Param
@@ -205,7 +204,7 @@ def setup_seed(args, p, log):
         seed = args.rngseed
     else:
         seed = np.frombuffer(os.urandom(4), dtype='u4')[0]
-    
+
     # set up numpy rng seed on head node (used in seq gen)
     np.random.seed(seed)
     # set rngseed param, used in mcmcGPU for randomized mutation pos
@@ -245,10 +244,18 @@ def setup_exit_hook(log):
 
 ################################################################################
 
+def divideWalkers(nwalkers, ngpus, log, wgsize=None):
+    n_max = (nwalkers-1)//ngpus + 1
+    nwalkers_gpu = [n_max]*(ngpus-1) + [nwalkers - (ngpus-1)*n_max]
+    if wgsize is not None and nwalkers % (ngpus*wgsize) != 0:
+        log("Warning: number of MCMC walkers is not a multiple of "
+            "wgsize*ngpus, so there are idle work units.")
+    return nwalkers_gpu
+
 def worker_GPU_main():
     def log(*x):
         pass
-    
+
     p = mpi_comm.bcast(None, root=0)
 
     # see setup_GPUs_MPI for head node setup
@@ -264,21 +271,13 @@ def worker_GPU_main():
     worker = MPI_worker(mpi_rank, gpus)
     worker.listen()
 
-def divideWalkers(nwalkers, ngpus, log, wgsize=None):
-    n_max = (nwalkers-1)//ngpus + 1
-    nwalkers_gpu = [n_max]*(ngpus-1) + [nwalkers - (ngpus-1)*n_max]
-    if wgsize is not None and nwalkers % (ngpus*wgsize) != 0:
-        log("Warning: number of MCMC walkers is not a multiple of "
-            "wgsize*ngpus, so there are idle work units.")
-    return nwalkers_gpu
-
 def setup_GPUs_MPI(p, log):
     # setup context for head node
     clinfo, gpudevs, cllog = setup_GPU_context(scriptPath, scriptfile, p, log)
     with open(os.path.join(p.outdir, 'ptx'), 'wt') as f:
         f.write(cllog[1])
         f.write(cllog[0])
-    
+
     # gather GPU setup info from all nodes
     mpi_comm.bcast(p, root=0)
 
@@ -296,12 +295,12 @@ def setup_GPUs_MPI(p, log):
     # initialize head node gpus
     headgpus = [initGPU(id, clinfo, dev, nwalk, p, log)
                 for dev,(id, nwalk) in zip(gpudevs, gpu_param)]
-    
+
     workers = ([GPU_node(headgpus)] +
                [MPI_GPU_node(r+1, n) for r, n in enumerate(node_ngpus[1:])])
     gpus = MPI_multinode_controller(workers)
-    log('Running on GPUs:\n' + 
-        "\n".join('    {}   ({} walkers)'.format(n, nwalk) 
+    log('Running on GPUs:\n' +
+        "\n".join('    {}   ({} walkers)'.format(n, nwalk)
                   for n, nwalk in zip(gpus.gpu_list, gpuwalkers)))
     return gpus
 
@@ -312,7 +311,7 @@ def setup_GPUs(p, log):
     clinfo, gpudevs, cllog = setup_GPU_context(scriptPath, scriptfile, p, log)
     with open(os.path.join(p.outdir, 'ptx'), 'wt') as f:
         f.write(cllog[1])
-        #f.write(cllog[0])
+        f.write(cllog[0])
 
     ngpus = len(gpudevs)
 
@@ -325,8 +324,8 @@ def setup_GPUs(p, log):
                 for dev,(id, nwalk) in zip(gpudevs, gpu_param)]
 
     gpus = GPU_node(headgpus)
-    log('Running on GPUs:\n' + 
-        "\n".join('    {}   ({} walkers)'.format(n, nwalk) 
+    log('Running on GPUs:\n' +
+        "\n".join('    {}   ({} walkers)'.format(n, nwalk)
                   for n, nwalk in zip(gpus.gpu_list, gpuwalkers)))
     return gpus
 
@@ -368,7 +367,7 @@ def inverseIsing(orig_args, args, log):
 
     log("Initialization")
     log("===============")
-    
+
     # collect all detected parameters in "p"
     p = attrdict({'outdir': args.outdir})
     mkdir_p(args.outdir)
@@ -376,7 +375,7 @@ def inverseIsing(orig_args, args, log):
     if have_configargparse:
         fn = os.path.join(args.outdir, 'config.cfg')
         parser.write_config_file(args, [fn])
-    
+
     setup_seed(args, p, log)
 
     p.update(process_newton_args(args, log))
@@ -390,7 +389,7 @@ def inverseIsing(orig_args, args, log):
     gpup = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
     gpus = setup_GPUs(p, log)
-    
+
     # rng_span is the rng stream range assigned per GPU, used to compute mutant
     # residues. Here we just take the full span (2**63) and divide it evenly
     # per gpu. Note this is the same in all runs of the program (only the
@@ -456,7 +455,7 @@ def inverseIsing(orig_args, args, log):
     if p.tempering:
         B0 = p.tempering[0]
         N = np.sum(p.tempering == B0)
-    
+
     f = p.bimarg
     expected_SSR = np.sum(f*(1-f))/N
     absexp = np.sqrt(2/np.pi)*np.sqrt(f*(1-f)/N)/f
@@ -635,7 +634,7 @@ def MCMCbenchmark(orig_args, args, log):
     gpup = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
     gpus = setup_GPUs(p, log)
-    
+
     # rng_span is the rng stream range assigned per GPU, used to compute mutant
     # residues. Here we just take the full span (2**63) and divide it evenly
     # per gpu. Note this is the same in all runs of the program (only the
@@ -647,7 +646,7 @@ def MCMCbenchmark(orig_args, args, log):
     needed_seqs = None
     use_seed = False
     if args.seqs is not None:
-        needed_seqs = sum(gpus.nseq['main'])
+        needed_seqs = np.sum(gpus.nseq['main'])
     elif args.seedseq is not None:
         use_seed = True
     else:
@@ -697,16 +696,16 @@ def MCMCbenchmark(orig_args, args, log):
     runMCMC()
     end = time.clock()
 
-    log("Elapsed time: ", end - start, )
+    log("Elapsed time: ", end - start)
     totsteps = p.nwalkers*nloop*np.float64(p.nsteps)
     steps_per_second = totsteps/(end-start)
     log("MC steps computed: {}".format(totsteps))
     log("MC steps per second: {:g}".format(steps_per_second))
 
-    # sanity check as a bonus
-    gpus.calcEnergies('main')
-    es = gpus.collect('E main')
-    log("\nConsistency check: <E> = ", np.mean(es), np.std(es))
+    ## quick sanity check as a bonus
+    #gpus.calcEnergies('main')
+    #es = gpus.collect('E main')
+    #log("\nConsistency check: <E> = ", np.mean(es), np.std(es))
 
 def equilibrate(orig_args, args, log):
     descr = ('Run a round of MCMC generation on the GPU')
@@ -755,7 +754,7 @@ def equilibrate(orig_args, args, log):
         if p.tempering is not None:
             gpu.initLargeBufs(gpu.nseq['main'])
             gpu.initMarkSeq()
-    
+
     nseqs = None
     needseed = False
     if args.seqs is not None:
@@ -916,7 +915,7 @@ def subseqFreq(orig_args, args, log):
 
 def nestedZ(args, log):
     raise Exception("Not implemented yet")
-    # Plan is to implement nested sampling algorithm to compute Z.
+    # Plan would be to implement nested sampling algorithm to compute Z.
     # Use parallel method described in
     #    Exploring the energy landscapes of protein folding simulations with
     #    Bayesian computation
@@ -927,7 +926,7 @@ def nestedZ(args, log):
     #    Nested sampling for Potts models
     #    Murray, MacKay, MacKay, MacKay, NIPS 2005
     #    (This is specifically for 2-d finite-range Potts models)
-    # 
+    #
     #    Nested sampling, statistical physics and the Potts model
     #    Pfeifenberger, Rumetshofer, von der Linden, 2017
 
@@ -941,144 +940,14 @@ def ExactZS(args, log):
     #
     # For q=8, probably limited to about L=16: Would precompute partial E
     # for positions 1-10 to a buffer, then have GPU kernel iterate over
-    # positions 11-16, one wu per subsequence, with knl looping over 
-    # precomputed part. Precomputed part would be 4G. 
+    # positions 11-16, one wu per subsequence, with knl looping over
+    # precomputed part. Precomputed part would be 4G.
     #
     # Or maybe, would do it in chunks of 8 positions, storing the partial
-    # energies recursively. So first do 1-8, storing all E to buf (64M). Then 
-    # for each E, compute 9-16, storing these in next row of E (64M). 
+    # energies recursively. So first do 1-8, storing all E to buf (64M). Then
+    # for each E, compute 9-16, storing these in next row of E (64M).
     # Total memory neededwould be 64M * L/8 or 8*L Mb. Kernel would need to
     # do > (8**8)**(L/8) of these E loops.
-
-def testing(orig_args, args, log):
-    parser = argparse.ArgumentParser(prog=progname + ' test',
-                                     description="for testing")
-    addopt(parser, 'GPU options',         'nwalkers wgsize gpus')
-    addopt(parser, 'Newton Step Options', 'bimarg gamma damping')
-    addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'outdir')
-
-    args = parser.parse_args(args)
-    args.measurefperror = False
-
-    p = attrdict({'outdir': args.outdir})
-    mkdir_p(args.outdir)
-    outdir = p.outdir
-
-    p['bimarg'] = np.load(args.bimarg)
-    p['L'], p['q'] = getLq(p.bimarg)
-    L, q = p.L, p.q
-    args.nsteps = 1
-    args.profile = None
-    args.fperror = None
-    args.seqmodel = None
-    p['damping'] = args.damping
-    p['gamma'] = args.gamma
-
-    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
-    p.update(gpup)
-    gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), log, p.wgsize)
-    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
-            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
-
-    for gpu in gpus:
-        gpu.initLargeBufs(nwalk)
-        gpu.initJstep()
-
-    p.update(process_potts_args(args, p.L, p.q, p.bimarg, log))
-    L, q, alpha = p.L, p.q, p.alpha
-
-    rbim = p.bimarg + 0.1*rand(*(p.bimarg.shape))
-    rbim = (rbim/np.sum(rbim, axis=1, keepdims=True)).astype('f4')
-    for g in gpus:
-        g.setBuf('bi target', rbim)
-        g.setBuf('bi back', p.bimarg)
-
-    #save(os.path.join(outdir, 'bitarget'), rbim)
-    #save(os.path.join(outdir, 'binew'), p.bimarg)
-
-    #for g in gpus:
-    #    g.updateJ_Lstep(p.gamma, p.damping)
-    #save(os.path.join(outdir, 'dJ0001'), readGPUbufs(['J front'], gpus)[0][0])
-
-    #res = readGPUbufs(['J front', 'J back'], gpus)
-    #dJ1, dJ2 = res[0][0], res[1][0]
-    #save(os.path.join(outdir, 'dJ1'), dJ1)
-    #save(os.path.join(outdir, 'dJ2'), dJ2)
-
-    for g in gpus:
-        g.setBuf('J back', p.couplings)
-
-    gpus[0].updateJ_l2z(0.004, 0.1, 0.01, 140)
-    np.save(os.path.join(outdir, 'J0'), gpus[0].getBuf('J front').read())
-
-def testing(orig_args, args, log):
-    descr = ('Compute bimarg of a set of sequences')
-    parser = argparse.ArgumentParser(prog=progname + ' getBimarg',
-                                     description=descr)
-    add = parser.add_argument
-    addopt(parser, 'GPU Options',         'wgsize gpus profile')
-    addopt(parser, 'Potts Model Options', 'alpha')
-    addopt(parser, 'Sequence Options',    'seqs')
-    addopt(parser,  None,                 'outdir')
-
-    args = parser.parse_args(args)
-    args.measurefperror = False
-
-    requireargs(args, 'alpha seqs')
-
-    log("Initialization")
-    log("===============")
-    log("")
-
-    p = attrdict({'outdir': args.outdir})
-    mkdir_p(args.outdir)
-    alpha = args.alpha.strip()
-    p['alpha'] = alpha
-    q = len(alpha)
-    p['q'] = q
-    log("Sequence Setup")
-    log("--------------")
-    seqs = loadSequenceFile(args.seqs, alpha, log)
-    L = seqs.shape[1]
-    p['L'] = L
-    if seqs is None:
-        raise Exception("seqs must be supplied")
-    log("")
-
-    args.nwalkers = len(seqs)
-    args.nsteps = 1
-    args.nlargebuf = 1
-    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
-    p.update(gpup)
-
-    gpu0 = initGPU(0, cldat, gdevs[0], args.nwalkers, p, log)
-    gpu0.initLargeBufs(len(seqs))
-    gpu0.initJstep()
-    gpu0.setSeqs('large', seqs, log)
-    gpu0.packseqs1('large')
-    seqsT = gpu0.getBuf('seqL large').read()
-    log(seqs.shape, seqsT.view('u1').shape, 
-        np.all(seqs == seqsT.view('u1').T))
-    np.random.seed(12345)
-    gpu0.setBuf('weights large', np.random.rand(len(seqs)).astype('f4'))
-    ##gpu0.setBuf('weights large', , dtype='f4'))
-    ##gpu0.setBuf('weights large', np.arange(len(seqs), dtype='f4'))
-    #d = np.zeros(len(seqs), dtype='f4')
-    #d[60] = 1
-    #d[140] = 1
-    #gpu0.setBuf('weights large', d)
-    
-    t1 = time.time()
-    for i in range(10):
-        gpu0.weightedMarg('large')
-    bimarg1 = gpu0.getBuf('bi').read()
-    print("Time 1", time.time() - t1)
-    np.save('b1', bimarg1)
-    #log(str(bimarg1[:4,:]))
-    #log(str(bimarg1[0,:]))
-    log(np.sum(bimarg1))
-    #log(np.nonzero(bimarg1[0,:]))
 
 def testing(orig_args, args, log):
     descr = ('Compute Potts Energy of a set of sequences')
@@ -1131,7 +1000,7 @@ def testing(orig_args, args, log):
 
     for gpu in gpus:
         gpu.setBuf('J', p.couplings)
-    
+
 
     t1 = time.time()
     for i in range(1000):
@@ -1159,6 +1028,8 @@ def process_GPU_args(args, L, q, outdir, log):
 
     p = attrdict(param.copy())
     p.update({'L': L, 'q': q, 'outdir': outdir})
+
+    p['wgsize'] = wgsize_heuristic(p.q, p.wgsize)
 
     log("Total GPU walkers: {}".format(p.nwalkers))
     log("Work Group Size: {}".format(p.wgsize))
@@ -1328,7 +1199,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
     log("Sequence Setup")
     log("--------------")
 
-    if bimarg is None and (hasattr(args, 'seqbimarg') and 
+    if bimarg is None and (hasattr(args, 'seqbimarg') and
                            args.seqbimarg is not None):
         log("loading bimarg from {} for independent model sequence "
             "generation".format(args.seqbimarg))
