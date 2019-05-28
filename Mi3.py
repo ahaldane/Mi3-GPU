@@ -415,7 +415,7 @@ def inverseIsing(orig_args, args, log):
 
     # figure out how many sequences we need to initialize
     needed_seqs = None
-    use_seed = p.reseed.startswith('single')
+    use_seed = p.reseed in ['single_best', 'single_random']
     if p.preopt or (p.reseed == 'none'):
         needed_seqs = sum(gpus.nseq['main'])
     p.update(process_sequence_args(args, L, alpha, p.bimarg, log,

@@ -585,7 +585,7 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
                 alpha, e_rho, ptinfo, outdir, log)
 
     dt = end_time - start_time
-    log("Total MCMC running time: {:.1f} s    ({} MC-steps/s)".format(
+    log("Total MCMC running time: {:.1f} s    ({.3g} MC/s)".format(
         dt, equilsteps*param.nsteps*np.float64(gpus.nwalkers)/dt))
 
     if param.tempering is not None:
@@ -603,7 +603,7 @@ def newtonMCMC(param, gpus, log):
     # copy target bimarg to gpus
     gpus.setBuf('bi target', param.bimarg)
 
-    if param.reseed.startswith('single') and param.seedseq is None:
+    if param.reseed in ['single_best', 'single_indep'] and not param.seedseq:
         raise Exception("Error: resetseq option requires a starting sequence")
 
     if param.tempering is not None:
@@ -637,6 +637,11 @@ def newtonMCMC(param, gpus, log):
     for i in range(param.mcmcsteps):
         runname = name_fmt.format(i)
 
+        if param.reseed == 'single_indep':
+            seq = generateSequences('independent', param.L, param.q, 1,
+                                    param.bimarg, log)[0]
+            param['seedseq'] = seq
+
         if param.reseed.startswith('single'):
             mkdir_p(os.path.join(param.outdir, runname))
             with open(os.path.join(param.outdir,runname, 'seedseq'), 'wt') as f:
@@ -665,8 +670,4 @@ def newtonMCMC(param, gpus, log):
             param['seedseq'] = get_seq(randint(0, nseq))
         if param.reseed == 'single_best':
             param['seedseq'] = get_seq(np.argmin(es))
-        if param.reseed == 'single_indep':
-            seq = generateSequences('independent', param.L, param.q, 1,
-                                    param.bimarg, log)[0]
-            param['seedseq'] = seq
 
