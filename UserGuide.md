@@ -2,7 +2,9 @@
 Mi-3-GPU User Guide
 ===================
 
-Mi3-GPU (Mee-three) solves the "inverse Ising problem" using a GPU-parallelized Monte-Carlo sequence generation algorithm, to infer Potts models for analyzing coevolutionary mutation patterns in Multiple Sequence Alignements.
+Mi3-GPU ("Mee-three") solves the "inverse Ising problem" using a GPU-parallelized Monte-Carlo sequence generation algorithm, to infer Pott models parameters for analyzing coevolutionary mutation patterns in Multiple Sequence Alignements (MSAs).
+
+This software is meant for generation of high-accuracy Potts models of an MSA, in the sense that no analytic approximations are used and the model can be used to generate synthetic MSAs whose mutational frequencies match the dataset MSA frequencies with very low statistical error.
 
  * Installation
  * Overview
@@ -69,13 +71,25 @@ Tutorial
 Inverse Ising Inference
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-A PBS script showing a typical set of arguments for inverse Ising inference is in the file `example/HIV_inference/pbs.sh`. When executed in its directory, this script will fit a Potts model to the bivariate marginals from the file `example_bimarg_pc.npy` (obtained from an HIV dataset for sequences of length length 93 with 4 residue types) and put the results in a directory `hiv_pr_inference`. The log file `hiv_pr_inference.log` contains details about how the program is running. To monitor progress, a tip is to do `grep Error hiv_pr_inference.log`.
+A PBS script showing a typical set of arguments for inverse Ising inference is in the file `example/HIV_inference/pbs.sh`. When executed in its directory, this script will fit a Potts model to the bivariate marginals from the supplied file `example_bimarg_pc.npy` (derived from an HIV dataset for sequences of length length 93 with 4 residue types) and put the results in a directory `hiv_pr_inference`. The log file `hiv_pr_inference.log` contains details about how the program is running. 
 
-You initially need to supply a bivariate marginal file (`--bim`), an initial trial Potts model (`--J`), an output directory (`--outdir`), the sequence alphabet (`--alpha`) and the synthetic MSA size (`--nwalkers`), but may later want to modify other options from their defaults. See "helper scripts" below on how to generate a bivariate marginal file from an MSA.
+As seen in `pbs.sh`, you initially need to supply a bivariate marginal file (`--bim`), an initial trial Potts model (`--seqmodel`), an output directory (`--outdir`), the sequence alphabet (`--alpha`) and the synthetic MSA size (`--nwalkers`). You may later want to modify other options from their defaults. A sensible initial trial model is an independent model, (`--seqmodel independent`), and `--nwalkers` should be at least 2^15, larger is better. See "helper scripts" below on how to generate a bivariate marginal file from an MSA.
 
-Once inference is finished the final Potts model can be found in the finale "run" directory in the output directory, in `hiv_pr_inference/run_63/`.
+Once inference has complete the inferred Potts model can be found in the final "run" directory in the output directory, in `hiv_pr_inference/run_63/` with Potts couplings `J.npy` stored using a fieldless gauge (see glossary and file formats, below), along with other data such as the synthetic MSA (see below) in `seqs`, the bivariate marginals of that MSA in `bimarg.npy`, the Potts energies of the sequences, in `energies.npy` and more.
 
-Finishing the simulation and Tracking convergence:
+To monitor progress and check for convergence, a simple way is to do `grep Error hiv_pr_inference.log`. This will output lines of the following form:
+
+    run_04 J-Step   4092  Error: SSR:   0.206  Ferr:  0.00992  X: -119.709 (-122.201) 
+    run_05 J-Step   5115  Error: SSR:   0.204  Ferr:  0.00984  X: -120.186 (-122.374) 
+    run_06 J-Step   6138  Error: SSR:   0.203  Ferr:  0.00971  X: -120.275 (-122.534)
+
+This shows the result of each round of synthetic MSA generation, one round per line, with the following information from left to right: First, the "run_04" shows the round number. Next, "Jstep 6138" shows the number of Potts parameter-updates performed so far (many may be performed per round as described further below). Next, the sum-of-square-residuals (SSR) between the synthetic bivariate marginals and the dataset mbivariate marginals is shown, followed by the average bivariate marginal relative error "Ferr", computed as the sum of the relative errors |f^data - f^synth|/f^data limited to marginals $f^data > 0.01$. Finally, the "correlated energy" X is displayed, computed in two different ways. See PRE for further description of this value.
+
+The correlated energy X should be the primary way of evaluating convergence. This value should initially become more and more negative, but after enough steps should roughly level off at a fixed negative value, at which point the inference can be considered finished. X is calculated as $sum_{ij\alpha\beta} J^ij_ab C^ij_ab$ using correlation terms $C^ij_ab = f^ij_ab - f^i_a f^j_b$. In the output above the first value after "X: " is computed using the bivariate marginals of the synthetic MSA, and the value in parentheses is computed using the dataset bivariate marginals, for comparison. Once near convergence these two values should become fairly close to each other and it should not matter which is tracked. The value of X also give you information about how much correlated effects influence your MSA: If the abolute magnitude of X is small or 0 compared to the typical statistical energy of sequences (visible with `grep mean hiv_pr_inference.log`) this means correlated effects contribute little to mutational statistics.
+
+Near convergence, the SSR and Ferr should become small as well, although these values are also influenced by various additional statistical errors and are not reliable indicators of convergence, and may level off prematurely due to finite-sampling effects, or occasionally increase slightly between rounds due to statistical fluctuations. Ferr is meant to be a simple and intuitive measure of the percent error in the bivariate marginals.
+
+    
 
 Sequence Generation Arguments
 .............................

@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 from scipy import *
 import pylab as plt
 from matplotlib.colors import Normalize
@@ -11,14 +11,14 @@ import seqload, changeGauge
 from matplotlib.colors import LinearSegmentedColormap
 
 def getL(size):
-    return int(((1+sqrt(1+8*size))/2) + 0.5)
+    return int(((1+sqrt(1+8*size))//2) + 0.5)
 
 def getLq(J):
     return getL(J.shape[0]), int(sqrt(J.shape[1]) + 0.5)
 
 def getUnimarg(ff):
     L, q = getLq(ff)
-    ff = ff.reshape((L*(L-1)/2,q,q))
+    ff = ff.reshape((L*(L-1)//2,q,q))
     marg = array([sum(ff[0],axis=1)] + [sum(ff[n],axis=0) for n in range(L-1)])
     return marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
 
@@ -76,7 +76,6 @@ class DraggableColorbar(object):
         dx = event.x - xprev
         dy = event.y - yprev
         self.press = event.x,event.y
-        #print 'x0=%f, xpress=%f, event.xdata=%f, dx=%f, x0+dx=%f'%(x0, xpress, event.xdata, dx, x0+dx)
         scale = self.cbar.norm.vmax - self.cbar.norm.vmin
         perc = 0.03
         if event.button==1:
@@ -183,7 +182,7 @@ class PositionPicker:
         L, q = getLq(J)
         pairs = [(i,j) for i in range(L-1) for j in range(i+1,L)]
         pp = dict((p,n) for n,p in enumerate(pairs))
-        pp.update([((j,i), n) for (i,j),n in pp.iteritems()])
+        pp.update([((j,i), n) for (i,j),n in pp.items()])
         self.pp = pp
         self.L, self.q = L, q
 
@@ -235,7 +234,8 @@ def drawMarg(alphacolor, q, i,j, marg, J, hi, hj, score, ax):
     drawGrid(ax, 3, 1, 1, q, q, 
              [[graytext(x) for x in r] for r in marg],
              mapi, mapj, 'Bimarg', 
-             map(graytext, sum(marg, axis=1)), map(graytext, sum(marg, axis=0)),
+             list(map(graytext, sum(marg, axis=1))), 
+             list(map(graytext, sum(marg, axis=0))),
              labeltext=alphatext)
     
     fnorm = Normalize(-1, 1.0, clip=True)
@@ -250,7 +250,7 @@ def drawMarg(alphacolor, q, i,j, marg, J, hi, hj, score, ax):
     drawGrid(ax, q + 13, 1, 1, q, q, 
              [[bwrtext(x) for x in r] for r in J],
              mapi, mapj, 'J score={:.2f}'.format(score), 
-             map(bwrtext, hi), map(bwrtext, hj),
+             list(map(bwrtext, hi)), list(map(bwrtext, hj)),
              labeltext=alphatext)
 
 cdict = {'red':   ((0.0,  1.0, 1.0),

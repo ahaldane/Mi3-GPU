@@ -4,9 +4,11 @@ import sys
 with open(sys.argv[1]) as f:
     lines = [l.strip().split() for l in f.readlines()]
 
-events = [(l[1], int(l[2]), int(l[3])) 
+units = 1e-9  # nanoseconds
+events = [(l[1], int(l[2])*units, int(l[3])*units)
           for l in lines if len(l) > 0 and l[0] == 'EVT']
-names = list(set([name for name, start, end in events]))
+names = sorted(set([name for name, start, end in events]))
+t0 = events[0][1]
 
 tot_times = [sum([end-start for name, start, end in events if name == n])
              for n in names]

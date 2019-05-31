@@ -62,7 +62,7 @@ def printstats(name, jstep, bicount, bimarg_target, bimarg_model, couplings,
 
     Co = bimarg_target - indep_bimarg(bimarg_target)
     Xo = np.sum(couplings*Co, axis=1)
-    
+
     rhostr = '(none)'
     if e_rho is not None:
         rho, rp = zip(*e_rho)
@@ -71,12 +71,12 @@ def printstats(name, jstep, bicount, bimarg_target, bimarg_model, couplings,
 
     #print some details
     disp = """\
-{name} J-Step {jstep: 6d}  Error: SSR: {ssr: 7.3f}  Ferr: {ferr: 7.5f}  X: {X} 
+{name} J-Step {jstep: 6d}  Error: SSR: {ssr: 7.3f}  Ferr: {ferr: 7.5f}  X: {X}
 {name} bimarg: {bimarg} ...
 {name}      J: {couplings} ...
 {name} min(E) = {lowE:.4f}      mean(E) = {meanE:.4f}
 {name} E Autocorr vs time: {rhos}""".format(
-        name=name, jstep=jstep, ferr=ferr, ssr=ssr, 
+        name=name, jstep=jstep, ferr=ferr, ssr=ssr,
         X="{: 7.3f} ({: 7.3f})".format(np.sum(X), np.sum(Xo)),
         bimarg=printsome(bimarg_model),
         couplings=printsome(couplings), lowE=min(energies),
@@ -144,7 +144,7 @@ def getNeff(w):
 
 def NewtonStatus(n, trialJ, weights, bimarg_model, bimarg_target, log):
     SSR = np.sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
-    
+
     # not clear what best Neff measure is. sum(weights)?
     Neff = getNeff(weights)
     log("Predicted statistics after perturbing J:")
@@ -170,7 +170,7 @@ def iterNewton(param, bimarg_model, gpus, log):
     s = time.time()
 
     head_node = gpus.head_node
-    
+
     seqbuf = 'main'
     wbuf = 'weights'
     if param.distribute_jstep != 'all':
@@ -257,7 +257,7 @@ def preOpt(param, gpus, log):
     gpus.calcEnergies('main')
     bicount, es, seqs = gpus.collect(['bicount', 'E main', 'seq main'])
     bimarg = bicount.astype(np.float32)/np.float32(np.sum(bicount[0,:]))
-    
+
     writeStatus('preopt', 0, bimarg_target, bicount, bimarg,
                 J, seqs, es, alpha, None, None, outdir, log)
 
@@ -302,7 +302,7 @@ def swapTemps(gpus, dummy, N):
     # views of even and odd elements
     eBs1, eBs2 = Bs[:-1:2], Bs[1::2]
     oBs1, oBs2 = Bs[1:-1:2], Bs[2::2]
-    
+
     # swap matching inds in a, b, with PT swap prob
     def swap(a, b, dE):
         ind_diff = np.where(a != b)[0]
@@ -313,7 +313,7 @@ def swapTemps(gpus, dummy, N):
         sind = ind_diff[sind]
 
         a[sind], b[sind] = b[sind], a[sind]
-    
+
     # iterate the swaps, alternating left and right swaps
     for n in range(N):
         swap(eBs1, eBs2, deEvn)
@@ -396,7 +396,7 @@ def runMCMC(gpus, couplings, runName, param, log):
         #keep nloop iterator on outside to avoid filling queue with only 1 gpu
         for i in range(nloop):
             gpus.runMCMC()
-        
+
         step = nloop
         e_rho = None
 
@@ -603,9 +603,6 @@ def newtonMCMC(param, gpus, log):
     # copy target bimarg to gpus
     gpus.setBuf('bi target', param.bimarg)
 
-    if param.reseed in ['single_best', 'single_indep'] and not param.seedseq:
-        raise Exception("Error: resetseq option requires a starting sequence")
-
     if param.tempering is not None:
         if param.nwalkers % len(param.tempering) != 0:
             raise Exception("# of temperatures must evenly divide # walkers")
@@ -630,6 +627,19 @@ def newtonMCMC(param, gpus, log):
         J, Jstep = preOpt(param, gpus, log)
     else:
         log("No Pre-optimization")
+    
+    # do some setup for reseed options
+    seqs = param.seqs
+    seedseq = param.seedseq
+    if seqs is not None and param.reseed == 'single_best':
+        gpus.calcEnergies()
+        es = gpus.collect('E main')
+    def get_seq(n):
+        rseq = None
+        for s in seqs:
+            if n < s.shape[0]:
+                return s[n]
+            n -= s.shape[0]
 
     # solve using newton-MCMC
     Jstep = Jsteps
@@ -637,37 +647,34 @@ def newtonMCMC(param, gpus, log):
     for i in range(param.mcmcsteps):
         runname = name_fmt.format(i)
 
-        if param.reseed == 'single_indep':
-            seq = generateSequences('independent', param.L, param.q, 1,
-                                    param.bimarg, log)[0]
-            param['seedseq'] = seq
+        # determine seed sequence, if using seed
+        seed = None
+        if seedseq is not None:
+            seed = seedseq
+            seedseq = None  # only use provided seed in first round
+        elif param.reseed == 'single_indep':
+            seed = generateSequences('independent', param.L, param.q, 1,
+                                     param.bimarg, log)[0]
+        elif param.reseed == 'single_random':
+            #choose random seed sequence from the final sequences from last round
+            nseq = np.sum(s.shape[0] for s in seqs)
+            seed = get_seq(randint(0, nseq))
+        elif param.reseed == 'single_best':
+            seed = get_seq(np.argmin(es))
 
-        if param.reseed.startswith('single'):
-            mkdir_p(os.path.join(param.outdir, runname))
-            with open(os.path.join(param.outdir,runname, 'seedseq'), 'wt') as f:
+        # fill sequence buffers (with seed or otherwise)
+        mkdir_p(os.path.join(param.outdir, runname))
+        if seed is not None
+            with open(os.path.join(param.outdir, runname, 'seedseq'), 'wt') as f:
                 f.write("".join(param.alpha[c] for c in param.seedseq))
             gpus.fillSeqs(param.seedseq)
-        elif param.reseed == 'msa':
-            gpus.setBuf('seq main', param.seedmsa)
         elif param.reseed == 'independent':
             indep_seqs = [generateSequences('independent', param.L, param.q,
                                             g.nwalkers, param.bimarg, log)
                           for g in gpus]
             gpus.setBuf('seq main', indep_seqs)
+        elif param.reseed == 'msa':
+            gpus.setBuf('seq main', param.seedmsa)
 
         Jstep, seqs, es, J = MCMCstep(runname, Jstep, J, param, gpus, log)
-
-        def get_seq(n):
-            rseq = None
-            for s in seqs:
-                if n < s.shape[0]:
-                    return s[n]
-                n -= s.shape[0]
-
-        if param.reseed == 'single_random':
-            #choose random seed sequence from the final sequences for next round
-            nseq = np.sum(s.shape[0] for s in seqs)
-            param['seedseq'] = get_seq(randint(0, nseq))
-        if param.reseed == 'single_best':
-            param['seedseq'] = get_seq(np.argmin(es))
 

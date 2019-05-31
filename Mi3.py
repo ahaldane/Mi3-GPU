@@ -1216,9 +1216,9 @@ def process_sequence_args(args, L, alpha, bimarg, log,
                 fn = os.path.join(args.outdir, 'initial_seqs-{}'.format(n))
                 writeSeqs(fn, s, alpha)
         elif args.seqs is not None:
-            seqs = [loadSequenceFile(args.seqs, alpha, log)]
+            seqs = loadSequenceFile(args.seqs, alpha, log)
         elif args.seqmodel in ['uniform', 'independent']:
-            seqs = [generateSequences(args.seqmodel, L, q, nseqs, bimarg, log)]
+            seqs = generateSequences(args.seqmodel, L, q, nseqs, bimarg, log)
         elif args.seqmodel is not None:
             seqs = loadSequenceDir(args.seqmodel, '', alpha, log)
 
@@ -1228,7 +1228,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
         if np.sum(nseqs) != np.sum([s.shape[0] for s in seqs]):
             n, s = np.sum(nseqs), np.concatenate(seqs)
             log("Repeating {} sequences to make {}".format(s.shape[0], n))
-            seqs = [repeatseqs(s, n)]
+            seqs = repeatseqs(s, n)
 
     # try to get seed seq
     if needseed:
@@ -1287,17 +1287,9 @@ def loadSequenceFile(sfile, alpha, log):
 
 def loadSequenceDir(sdir, bufname, alpha, log):
     log("Loading {} sequences from dir {}".format(bufname, sdir))
-    seqs = []
-    while True:
-        sfile = os.path.join(sdir, 'seqs{}-{}'.format(bufname, len(seqs)))
-        if not os.path.exists(sfile):
-            break
-        seqs.append(loadSeqs(sfile, names=alpha)[0].astype('<u1'))
-    log("Found {} sequences".format(sum([s.shape[0] for s in seqs])))
-
-    if seqs == []:
-        return None
-
+    sfile = os.path.join(sdir, 'seqs')
+    seqs = loadSeqs(sfile, names=alpha)[0].astype('<u1'))
+    log("Found {} sequences".format(s.shape[0]))
     return seqs
 
 def process_sample_args(args, log):
