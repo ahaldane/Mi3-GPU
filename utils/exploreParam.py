@@ -22,6 +22,15 @@ def getUnimarg(ff):
     marg = array([sum(ff[0],axis=1)] + [sum(ff[n],axis=0) for n in range(L-1)])
     return marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
 
+def indepF(fab):
+    L = int( (1+np.sqrt(1+8*fab.shape[0]))/2 + 0.5)
+    nB = int(np.sqrt(fab.shape[1]) + 0.5)
+
+    fabx = fab.reshape((fab.shape[0], nB, nB))
+    fa1, fb2 = np.sum(fabx,axis=2), np.sum(fabx,axis=1)
+    fafb = np.array([np.outer(fa, fb).flatten() for fa,fb in zip(fa1, fb2)])
+    return fafb
+
 def getM(x):
     L = getL(len(x))
     M = zeros((L,L))
@@ -274,7 +283,7 @@ def main():
                         choices=['split', 'overlay', 'splitoverlay'], 
                         default='overlay',
                         help='how to draw contact map')
-    parser.add_argument('-interactionscore', 
+    parser.add_argument('-score', 
                         choices=['fb', 'fbw', 'fbwsqrt', 'DI', 'Xij'], 
                         default='fbwsqrt')
     parser.add_argument('-gauge', choices=['nofield', 0, 'w', 'wsqrt'], 
@@ -304,17 +313,21 @@ def main():
     elif args.gauge == 'wsqrt':
         h, J = changeGauge.weightedGauge(zeros((L,q)), J, weights=sqrt(ff))
 
-    if args.interactionscore == 'fb':
+    if args.score == 'fb':
         h0, J0 = changeGauge.zeroGauge(h, J)
         pottsScore = sqrt(sum(J0**2, axis=1))
-    elif args.interactionscore == 'fbw':
+    elif args.score == 'fbw':
         w = ff
         hw, Jw = changeGauge.weightedGauge(zeros((L,q)), J, weights=w)
         pottsScore = sqrt(sum((Jw*w)**2, axis=1))
-    elif args.interactionscore == 'fbwsqrt':
+    elif args.score == 'fbwsqrt':
         w = sqrt(ff)
         hw, Jw = changeGauge.weightedGauge(zeros((L,q)), J, weights=w)
         pottsScore = sqrt(sum((Jw*w)**2, axis=1))
+    elif args.score == 'Xij':
+        C = ff - indepF(ff)
+        X = np.sum(C*J, axis=1)
+        pottsScore = -X
     else:
         raise Exception("Not yet implemented")
     save('score', pottsScore)

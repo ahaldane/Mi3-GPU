@@ -82,7 +82,7 @@ class Opener:
             compression. If False, don't compress.
         """
         self.fileobj = fileobj
-        if rw not in "rwa":
+        if rw.rstrip('b') not in "rwa":
             raise Exception("File mode must be r,w, or a")
         self.rw = rw
         self.f = None
@@ -304,7 +304,7 @@ def writeSeqs(fn, seqs, names=prot_alpha, param={'alpha': prot_alpha},
     if isinstance(names, str):
         names = names.encode('ascii')
 
-    with Opener(fn, 'w', zipf) as f:
+    with Opener(fn, 'wb', zipf) as f:
         if not noheader:
             param = param if param != None else {}
             param['alpha'] = names.decode('utf-8')

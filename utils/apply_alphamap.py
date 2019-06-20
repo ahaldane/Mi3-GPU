@@ -20,6 +20,7 @@
 import sys, os, argparse
 from Bio.Alphabet import IUPAC
 import seqload
+import numpy as np
 
 def ind(x, alpha):
     for i in range(len(alpha)):
