@@ -18,7 +18,7 @@
 
 #Contact: allan.haldane _AT_ gmail.com
 import numpy as np
-import sys
+import sys, os
 import json, bz2, io
 
 def translateascii_python(seqmat, names, pos):
@@ -108,8 +108,7 @@ class Opener:
 
         elif hasattr(self.fileobj, 'read') or hasattr(self.fileobj, 'write'):
             if self.rw != self.fileobj.mode: #error? XXX
-                raise Exception(("File is already open ({}), but in wrong mode "
-                                "({})").format(self.fileobj.mode, self.rw))
+                self.fileobj = os.fdopen(self.fileobj.fileno(), self.rw)
             return self.fileobj
         else:
             raise ValueError("invalid filename or file object")
