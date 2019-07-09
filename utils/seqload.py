@@ -90,19 +90,20 @@ class Opener:
     
     def __enter__(self):
         if isinstance(self.fileobj, str):
-            if self.rw in 'ra' and self.zipf is not False:
+            rw = self.rw.strip('b').rstrip('t')
+            if rw in 'ra' and self.zipf is not False:
                 magic = b"\x42\x5a\x68"  # for bz2
-                with open(self.fileobj, self.rw + 'b') as f:
+                with open(self.fileobj, rw + 'b') as f:
                     start = f.read(len(magic))
                 if start == magic:
-                    self.f = bz2.BZ2File(self.fileobj, self.rw+'b')
+                    self.f = bz2.BZ2File(self.fileobj, rw+'b')
                 elif self.zipf is True:
                     raise Exception("bz2 file expected")
-            elif self.rw == 'w' and self.zipf:
-                self.f = bz2.BZ2File(self.fileobj, self.rw+'b')
+            elif rw == 'w' and self.zipf:
+                self.f = bz2.BZ2File(self.fileobj, rw+'b')
 
             if self.f is None:
-                self.f = open(self.fileobj, self.rw + 'b')
+                self.f = open(self.fileobj, rw + 'b')
 
             return self.f
 

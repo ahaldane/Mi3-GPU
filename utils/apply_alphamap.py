@@ -40,11 +40,14 @@ def reduceSeqAlphaPerpos(seqs, newalphas, oldalpha):
         conv = np.array([ind(let,a) for let in oldalpha])
         rseqs[:,n] = conv[seqs[:,n]]
             
-    seqload.writeSeqs(sys.stdout, rseqs, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", noheader=True)
+    seqload.writeSeqs(sys.stdout, rseqs, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", 
+                      noheader=True)
+
+def reduceBimAlphaPerpos(bimarg, newalphas, oldalpha):
 
 def main():
     parser = argparse.ArgumentParser(description='Apply alphabet reduction to MSA')
-    parser.add_argument('seqs')
+    parser.add_argument('seqs_bimarg', help='seq file or bimarg file')
     parser.add_argument('alphamap')
     parser.add_argument('-alpha', default='protgap')
 
@@ -55,14 +58,20 @@ def main():
                  'nuc': "ACGT"}
     alpha = alphabets.get(args.alpha, args.alpha)
 
-    seqs = seqload.loadSeqs(args.seqs, alpha)[0]
-
     with open(args.alphamap) as f:
         # assumed to be a file containing the output of alphabet reduction, but
         # only for one reduction level.  Each line should look like:
         # ALPHA8 -DNAGSQFMYCI E HWP K L R T V
         newalphas = [a.split()[1:] for a in f.readlines()]
-    reduceSeqAlphaPerpos(seqs, newalphas, alpha)
+
+    
+    bimarg, seqs = None, None
+    try:
+        bimarg = np.load(args.seq_bimarg)
+        reduceBimAlphaPerpos(seqs, newalphas, alpha)
+    except ValueError:
+        seqs = seqload.loadSeqs(args.seqs, alpha)[0]
+        reduceSeqAlphaPerpos(seqs, newalphas, alpha)
 
 if __name__ == '__main__':
     main()
