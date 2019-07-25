@@ -15,26 +15,48 @@
 //along with Mi3-GPU.  If not, see <http://www.gnu.org/licenses/>.
 //
 //Contact: allan.haldane _AT_ gmail.com
+//
+//
+// Compile me with:
+// $ gcc -O3 mcmcCPUgenThreaded.c -lm -o cpu
+//
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <pthread.h>
 #include "Random123/threefry.h"
 #include "math.h"
-#include "common/epsilons.h"
-#include "common/rng.h"
-#define NUM_THREADS 8
+#define NUM_THREADS 1
+#if NUM_THREADS > 1
+#include <pthread.h>
+#endif
 
-unsigned int nB, L;
+unsigned int q, L;
 float *couplings;
-#define coupling(i,j,a,b) couplings[(L*i + j)*nB*nB + a*nB + b]
+#define coupling(i,j,a,b) couplings[(L*i + j)*q*q + ((int)a)*q + ((int)b)]
 char *alphabet;
 char *sseq;
 uint loops, steps;
 
-double getEnergy(char *seq){
+unsigned long int getRandSeed(){
+    unsigned long int seed=0;
+    FILE *f = fopen("/dev/urandom", "rb");
+    if(fread(&seed, sizeof(seed), 1, f) != 1){
+        fprintf(stderr, "Error: Could not read /dev/urandom to get a random "
+                        "seed");
+        exit(1);
+    }
+    fclose(f);
+    return seed;
+}
+
+float uniformMap32(uint32_t i){
+    //converts a 32 bit integer to a uniform float [0,1)
+    return (i>>8)*0x1.0p-24f;
+}
+
+float getEnergy(char *seq){
     int i, j;
-    double energy = 0;
+    float energy = 0;
     for(i = 0; i < L-1; i++){
         for(j = i+1; j < L; j++){
             energy += coupling(i,j,seq[i],seq[j]);
@@ -43,102 +65,163 @@ double getEnergy(char *seq){
     return energy;
 }
 
+inline void
+step(float *energy, char *seq, int pos, int res, float rng) {
+    int m;
+
+    float newenergy = *energy;
+    uint sbn = seq[pos];
+
+    for (m = 0; m < L; m++) {
+        newenergy += (coupling(pos,m,res,seq[m]) -
+                      coupling(pos,m,sbn,seq[m]) );
+    }
+
+    float p = exp(-(newenergy - *energy));
+    if (p > rng) {
+        seq[pos] = res;
+        *energy = newenergy;
+    }
+}
+
 void *mcmc(void *t){
     int i, j, n, m;
-    uint id = (int)t;
-    threefry4x32_key_t k = {{0, 1, 2, id}};
-    threefry4x32_ctr_t c = {{0, 1, 0xdeadbeef, 0xbeeff00d}};
+    uint id = *(uint*)t;
+    threefry2x32_key_t k = {{0, id}};
+    threefry2x32_ctr_t c = {{0xdeadbeef, getRandSeed()}};
+
+    // correction needed if 2^32 is not a multiple of L*q
+    // A bit tricky to avoid overflow: need two moduli
+    uint32_t Lq_rng_lim = 0xffffffffu - (((0xffffffffu % (L*q)) + 1u) % (L*q));
 
     char *seq = malloc(sizeof(char)*L);
     for(i = 0; i < L; i++){
         seq[i] = sseq[i];
     }
-    
+
     float energy;
     for(n = 0; n < loops; n++){
         energy = getEnergy(seq);//reset floating point error
-        uint pos = 0;
-        for(i = 0; i < steps; i++){
-            c.v[0]++; 
-            threefry4x32_ctr_t rng = threefry4x32(c, k);
-            uint residue = rng.v[0]%nB;
 
-            double newenergy = energy;
-            uint sbn = seq[pos];
-            for(m = 0; m < L; m++){
-                newenergy += (coupling(pos,m, residue,seq[m]) - 
-                              coupling(pos,m,seq[pos],seq[m]) );
-            }
-                
-            float p = exp(-(newenergy - energy));
-            if(p > uniformMap32(rng.v[1]) && !isinf(newenergy)){
-                seq[pos] = residue;
-                energy = newenergy;
-            }
+        for (i = 0; i < steps; ) {
+            c.v[0]++;
+            threefry2x32_ctr_t rng = threefry2x32(c, k);
 
-            pos = (pos+1)%L;
+            if (rng.v[0] <= Lq_rng_lim) {
+                uint32_t Lq = rng.v[0] % (L*q);
+                step(&energy, seq, Lq/q, Lq%q, uniformMap32(rng.v[1]));
+                i++;
+            }
         }
+
+        for(i = 0; i < L; i++){
+            printf("%c", alphabet[seq[i]]);
+        }
+        printf("\n");
     }
 
-    for(i = 0; i < L; i++){
-        printf("%c", alphabet[seq[i]]);
-    }
-    printf("  %g \n", energy);
+    fprintf(stderr, "%20d", energy);
 
     free(seq);
+#if NUM_THREADS > 1
     pthread_exit((void*) t);
+#endif
+}
+
+char *readFile(char *filename, int *fileLen){
+    FILE * f;
+    long flen;
+    char * buffer;
+
+    f = fopen(filename, "rb");
+    if(f == NULL){
+        return NULL;
+    }
+
+    // obtain file size:
+    fseek(f, 0, SEEK_END);
+    flen = ftell(f);
+    rewind(f);
+
+    buffer = (char*)malloc(sizeof(char)*(flen+1));
+    size_t count = fread(buffer, 1, flen, f);
+    *fileLen = flen;
+
+    fclose(f);
+
+    return buffer;
 }
 
 int main(int argc, char *argv[]){
     int i,j,n,a,b;
 
-    if(argc != 6){
-        fprintf(stderr, "Usage: ./a.out couplings steps loops alphabet startseq\n");
+    if (argc != 6) {
+        fprintf(stderr, "Usage: ./a.out couplings steps loops alphabet "
+                        "startseq\n");
         exit(1);
     }
 
-    unsigned int nPairs, nComb; 
-    double *incpl = readEM(&nComb, &nPairs, argv[1]);
-    L = (int)((1+sqrt(1+8*nPairs))/2);
-    nB = (int)(sqrt(nComb));
-    
-    // expand couplings to full matrix (better memory access)
-    couplings = malloc(sizeof(float)*L*L*nB*nB);
-    n = 0;
-    for(i = 0; i < L-1; i++){
-    for(j = i+1; j < L; j++){
-        for(a = 0; a < nB; a++){
-        for(b = 0; b < nB; b++){
-            coupling(i,j,a,b) = incpl[nB*nB*n + nB*a + b];
-            coupling(j,i,b,a) = incpl[nB*nB*n + nB*a + b];
-        }
-        }
-        n++;
+    // Read in the file of couplings, which is expected to be a binary list of
+    // float values. Create this from a npy file with:
+    // >>> j = load('J.npy')
+    // >>> j.tofile('J.dat')
+    int filelen;
+    float *incpl = (float*)readFile(argv[1], &filelen);
+    if (filelen % 4 != 0) {
+        fprintf(stderr, "Error: coupling file must contain float32. "
+                        "Got %d", filelen);
+        exit(1);
     }
-    }
+    filelen = filelen/4;  // size in # floats
 
     steps = atoi(argv[2]);
     loops = atoi(argv[3]);
 
     alphabet = argv[4];
-    if(strlen(alphabet) != nB){
+    q = strlen(alphabet);
+    if (filelen % (q*q) != 0){
         fprintf(stderr, "Error: size of alphabet (%d) does not i"
-                        "match nB (%d)", strlen(alphabet), nB);
+                        "match coupling file", strlen(alphabet));
+        exit(1);
     }
-    printf("#PARAM alpha: '%s'\n", alphabet);
 
     char *startseq = argv[5];
-    sseq = malloc(sizeof(char)*L);
-    printf("#INFO Starting seq: ");
+
+    unsigned int nPairs = filelen/(q*q);
+    L = (int)((1+sqrt(1+8*nPairs))/2);
+
+    if ((L*(L-1))/2 != nPairs) {
+        fprintf(stderr, "Error: coupling file did not have length L*(L-1)/2. "
+                        "Got %d", nPairs);
+        exit(1);
+    }
+
+    // expand couplings to full matrix (better memory access)
+    couplings = malloc(sizeof(float)*L*L*q*q);
+    n = 0;
+    for(i = 0; i < L-1; i++){
+        for(j = i+1; j < L; j++){
+            for(a = 0; a < q; a++){
+                for(b = 0; b < q; b++){
+                    coupling(i,j,a,b) = incpl[q*q*n + q*a + b];
+                    coupling(j,i,b,a) = incpl[q*q*n + q*a + b];
+                }
+            }
+            n++;
+        }
+    }
+
+    sseq = malloc(L);
     for(i = 0; i < L; i++){
         sseq[i] = (char)(strchr(alphabet, startseq[i]) - alphabet);
-        printf("%c", alphabet[sseq[i]]);
     }
-    printf("\n");
 
     int rc;
-    long t;
+    uint t = 0;
     void *status;
+
+
+#if NUM_THREADS > 1
 
     pthread_t thread[NUM_THREADS];
     pthread_attr_t attr;
@@ -146,11 +229,10 @@ int main(int argc, char *argv[]){
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 
     for(t=0; t<NUM_THREADS; t++) {
-        printf("Main: creating thread %ld\n", t);
-        rc = pthread_create(&thread[t], &attr, mcmc, (void *)t); 
+        rc = pthread_create(&thread[t], &attr, mcmc, (void *)&t);
         if (rc) {
             printf("ERROR; return code from pthread_create() is %d\n", rc);
-            exit(-1);
+            exit(1);
         }
     }
 
@@ -159,12 +241,16 @@ int main(int argc, char *argv[]){
         rc = pthread_join(thread[t], &status);
         if (rc) {
             printf("ERROR; return code from pthread_join() is %d\n", rc);
-            exit(-1);
+            exit(1);
         }
-        printf("Main: completed join with thread %ld having a status of %ld\n",t,(long)status);
     }
 
-    printf("Main: program completed. Exiting.\n");
     free(sseq);
     pthread_exit(NULL);
+
+#else
+
+    mcmc(&t);
+
+#endif
 }

@@ -22,10 +22,11 @@ Requirements:
  * mwc64x (see below)
  * gcc (for helper utils only)
  * Optional: mpi4py
+ * Mi3-GPU was developed and tested on Linux systems.
 
 After cloning this repository, download the `mwc64x` software (available at http://cas.ee.ic.ac.uk/people/dt10/research/rngs-gpu-mwc64x.html) and place it in the directory named `mwc64x` next to the `Mi3.py` script.
 
-The helper module "seqtools" in the utils directory must be compiled with `make seqtools` (requires gcc). 
+The helper module "seqtools" in the utils directory must be compiled with `make seqtools` (requires a C compiler). 
 
 To check that the script is correctly detecting the system's OpenCL installation and GPUs, run:
 

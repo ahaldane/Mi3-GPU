@@ -23,18 +23,23 @@ import sys
 import argparse
 from Bio.Alphabet import IUPAC
 
-def getMarginals(seqs, q): 
-    nSeq, seqLen = seqs.shape
-    nrmlz = lambda x: x/np.sum(x,axis=1)[:,newaxis]
-    freqs = lambda s,bins: np.histogram(s, bins)[0].astype(np.float64)
+def getMarginals(seqs, q, weights=None, nrmlz=True): 
+    nSeq, L = seqs.shape
 
-    bins = np.arange(q+1, dtype='int')
-    f = nrmlz(array([freqs(seqs[:,i], bins) for i in range(seqLen)]))
+    if q > 16: # the x + q*y operation below may overflow for u1
+        seqs = seqs.astype('i4')
 
-    bins = np.arange(q*q+1, dtype='int')
-    ff = nrmlz(np.array([ freqs(seqs[:,j] + q*seqs[:,i], bins)
-                                             for i in range(seqLen) 
-                                             for j in range(i+1, seqLen)]))
+    if nrmlz:
+        nrmlz = lambda x: x/np.sum(x, axis=-1, keepdims=True)
+    else:
+        nrmlz = lambda x: x
+
+    def freqs(s, bins):
+        return np.bincount(s, minlength=bins, weights=weights)
+
+    f = nrmlz(np.array([freqs(seqs[:,i], q) for i in range(L)]))
+    ff = nrmlz(np.array([freqs(seqs[:,j] + q*seqs[:,i], q*q)
+                         for i in range(L-1) for j in range(i+1, L)]))
     return f, ff
 
 class Counter:
@@ -46,23 +51,23 @@ class Counter:
         param, headers = info
 
         nSeq, L = seqs.shape
-        nB = len(param['alpha'])
-        nbins = nB*nB
+        q = len(param['alpha'])
+        nbins = q*q
 
         
         if self.weights is not None:
             if counts is 0:
-                counts = np.zeros((L*(L-1)//2, nB*nB), dtype='f8')
+                counts = np.zeros((L*(L-1)//2, q*q), dtype='f8')
             w = self.weights[self.pos:self.pos+nSeq]
             self.pos += nSeq
         else:
             if counts is 0:
-                counts = np.zeros((L*(L-1)//2, nB*nB), dtype='i4')
+                counts = np.zeros((L*(L-1)//2, q*q), dtype='i4')
             w = None
 
         n = 0
         for i in range(L):
-            nsi = nB*seqs[:,i].astype('i8')
+            nsi = q*seqs[:,i].astype('i8')
             for j in range(i+1, L):
                 sj = seqs[:,j].astype('i8')
                 counts[n,:] += np.bincount(sj + nsi, minlength=nbins, weights=w)

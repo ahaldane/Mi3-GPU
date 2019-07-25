@@ -74,13 +74,13 @@ def printstats(name, jstep, bicount, bimarg_target, bimarg_model, couplings,
 {name} J-Step {jstep: 6d}  Error: SSR: {ssr: 7.3f}  Ferr: {ferr: 7.5f}  X: {X}
 {name} bimarg: {bimarg} ...
 {name}      J: {couplings} ...
-{name} min(E) = {lowE:.4f}      mean(E) = {meanE:.4f}
+{name} min(E) = {lowE:.4f}     mean(E) = {meanE:.4f}     std(E) = {stdE:.4f}
 {name} E Autocorr vs time: {rhos}""".format(
         name=name, jstep=jstep, ferr=ferr, ssr=ssr,
         X="{: 7.3f} ({: 7.3f})".format(np.sum(X), np.sum(Xo)),
         bimarg=printsome(bimarg_model),
         couplings=printsome(couplings), lowE=min(energies),
-        meanE=np.mean(energies), rhos=rhostr)
+        meanE=np.mean(energies), stdE=np.std(energies), rhos=rhostr)
 
     if ptinfo != None:
         disp += "\n{} PT swap rate: {}".format(name, ptinfo[1])
@@ -251,17 +251,19 @@ def preOpt(param, gpus, log):
 
     log("Pre-Optimization:")
 
-    # we assume that at this point the "main" sequence buffers are filled with sequences
+    # we assume that at this point the "main" sequence buffers are filled with
+    # sequences
     gpus.setBuf('J', J)
     gpus.calcBicounts('main')
     gpus.calcEnergies('main')
     bicount, es, seqs = gpus.collect(['bicount', 'E main', 'seq main'])
     bimarg = bicount.astype(np.float32)/np.float32(np.sum(bicount[0,:]))
 
+    mkdir_p(os.path.join(param.outdir, 'preopt'))
     writeStatus('preopt', 0, bimarg_target, bicount, bimarg,
                 J, seqs, es, alpha, None, None, outdir, log)
 
-    Jsteps, newJ = NewtonSteps('preopt', param, bimarg_model, gpus, log)
+    Jsteps, newJ = NewtonSteps('preopt', param, bimarg, gpus, log)
 
     return newJ, Jsteps
 
@@ -585,7 +587,7 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
                 alpha, e_rho, ptinfo, outdir, log)
 
     dt = end_time - start_time
-    log("Total MCMC running time: {:.1f} s    ({.3g} MC/s)".format(
+    log("Total MCMC running time: {:.1f} s    ({:.3g} MC/s)".format(
         dt, equilsteps*param.nsteps*np.float64(gpus.nwalkers)/dt))
 
     if param.tempering is not None:
@@ -665,7 +667,7 @@ def newtonMCMC(param, gpus, log):
         # fill sequence buffers (with seed or otherwise)
         mkdir_p(os.path.join(param.outdir, runname))
         if seed is not None:
-            with open(os.path.join(param.outdir, runname, 'seedseq'), 'wt') as f:
+            with open(os.path.join(param.outdir, runname, 'seedseq'),'wt') as f:
                 f.write("".join(param.alpha[c] for c in param.seedseq))
             gpus.fillSeqs(param.seedseq)
         elif param.reseed == 'independent':

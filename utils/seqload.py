@@ -18,7 +18,7 @@
 
 #Contact: allan.haldane _AT_ gmail.com
 import numpy as np
-import sys
+import sys, os
 import json, bz2, io
 
 def translateascii_python(seqmat, names, pos):
@@ -82,7 +82,7 @@ class Opener:
             compression. If False, don't compress.
         """
         self.fileobj = fileobj
-        if rw not in "rwa":
+        if rw.rstrip('b') not in "rwa":
             raise Exception("File mode must be r,w, or a")
         self.rw = rw
         self.f = None
@@ -90,26 +90,26 @@ class Opener:
     
     def __enter__(self):
         if isinstance(self.fileobj, str):
-            if self.rw in 'ra' and self.zipf is not False:
+            rw = self.rw.strip('b').rstrip('t')
+            if rw in 'ra' and self.zipf is not False:
                 magic = b"\x42\x5a\x68"  # for bz2
-                with open(self.fileobj, self.rw + 'b') as f:
+                with open(self.fileobj, rw + 'b') as f:
                     start = f.read(len(magic))
                 if start == magic:
-                    self.f = bz2.BZ2File(self.fileobj, self.rw+'b')
+                    self.f = bz2.BZ2File(self.fileobj, rw+'b')
                 elif self.zipf is True:
                     raise Exception("bz2 file expected")
-            elif self.rw == 'w' and self.zipf:
-                self.f = bz2.BZ2File(self.fileobj, self.rw+'b')
+            elif rw == 'w' and self.zipf:
+                self.f = bz2.BZ2File(self.fileobj, rw+'b')
 
             if self.f is None:
-                self.f = open(self.fileobj, self.rw + 'b')
+                self.f = open(self.fileobj, rw + 'b')
 
             return self.f
 
         elif hasattr(self.fileobj, 'read') or hasattr(self.fileobj, 'write'):
             if self.rw != self.fileobj.mode: #error? XXX
-                raise Exception(("File is already open ({}), but in wrong mode "
-                                "({})").format(self.fileobj.mode, self.rw))
+                self.fileobj = os.fdopen(self.fileobj.fileno(), self.rw)
             return self.fileobj
         else:
             raise ValueError("invalid filename or file object")
@@ -304,7 +304,7 @@ def writeSeqs(fn, seqs, names=prot_alpha, param={'alpha': prot_alpha},
     if isinstance(names, str):
         names = names.encode('ascii')
 
-    with Opener(fn, 'w', zipf) as f:
+    with Opener(fn, 'wb', zipf) as f:
         if not noheader:
             param = param if param != None else {}
             param['alpha'] = names.decode('utf-8')

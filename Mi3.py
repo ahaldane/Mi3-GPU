@@ -463,7 +463,8 @@ def inverseIsing(orig_args, args, log):
     expected_Ferr = np.mean(absexp[f>0.01])
     log("\nEstimated lowest achievable error for this nwalkers and bimarg is:"
         "\nSSR = {:.4f}   Ferr = {:.3f}".format(expected_SSR, expected_Ferr))
-    log("(Statistical error only. Modeling biases may cause additional error)")
+    log("(Statistical error only. Modeling biases and perturbation procedure "
+        "may cause additional error)")
 
     log("")
     log("")
@@ -1216,10 +1217,8 @@ def process_sequence_args(args, L, alpha, bimarg, log,
     # try to load sequence files
     if nseqs is not None:
         if args.seqs in ['uniform', 'independent']:
-            seqs = [generateSequences(args.seqs, L, q, nseqs, bimarg, log)]
-            for n,s in enumerate(seqs):
-                fn = os.path.join(args.outdir, 'initial_seqs-{}'.format(n))
-                writeSeqs(fn, s, alpha)
+            seqs = generateSequences(args.seqs, L, q, nseqs, bimarg, log)
+            writeSeqs(os.path.join(args.outdir, 'initial_seqs'), seqs, alpha)
         elif args.seqs is not None:
             seqs = loadSequenceFile(args.seqs, alpha, log)
         elif args.seqmodel in ['uniform', 'independent']:
@@ -1230,8 +1229,8 @@ def process_sequence_args(args, L, alpha, bimarg, log,
         if nseqs is not None and seqs is None:
             raise Exception("Did not find requested {} sequences".format(nseqs))
 
-        if np.sum(nseqs) != seqs.shape[0]:
-            log("Repeating {} sequences to make {}".format(s.shape[0], n))
+        if nseqs != seqs.shape[0]:
+            log("Repeating {} sequences to make {}".format(s.shape[0], nseqs))
             seqs = repeatseqs(seqs, nseqs)
 
     # try to get seed seq
@@ -1293,7 +1292,7 @@ def loadSequenceDir(sdir, bufname, alpha, log):
     log("Loading {} sequences from dir {}".format(bufname, sdir))
     sfile = os.path.join(sdir, 'seqs')
     seqs = loadSeqs(sfile, names=alpha)[0].astype('<u1')
-    log("Found {} sequences".format(s.shape[0]))
+    log("Found {} sequences".format(seqs.shape[0]))
     return seqs
 
 def process_sample_args(args, log):

@@ -6,7 +6,7 @@ from numpy.distutils.core import setup, Extension
 
 module1 = Extension('seqtools',
                     sources = ['seqtools.c'],
-                    extra_compile_args = ['-O3 -Wall'])
+                    extra_compile_args = ['-O3', '-Wall'])
                     #extra_compile_args = ['-g -Wall'])
 
 setup (name = 'seqtools',
