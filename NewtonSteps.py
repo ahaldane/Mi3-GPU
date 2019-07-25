@@ -664,7 +664,7 @@ def newtonMCMC(param, gpus, log):
 
         # fill sequence buffers (with seed or otherwise)
         mkdir_p(os.path.join(param.outdir, runname))
-        if seed is not None
+        if seed is not None:
             with open(os.path.join(param.outdir, runname, 'seedseq'), 'wt') as f:
                 f.write("".join(param.alpha[c] for c in param.seedseq))
             gpus.fillSeqs(param.seedseq)

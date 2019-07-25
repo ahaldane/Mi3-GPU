@@ -403,7 +403,8 @@ def inverseIsing(orig_args, args, log):
         gpus.head_gpu.initLargeBufs(gpus.nwalkers)
     elif p.distribute_jstep == 'head_node':
         if not MPI:
-            raise Exception('"head_node" option only makes sense when using MPI')
+            raise Exception('"head_node" option only makes sense when '
+                            'using MPI')
         nlrg = divideWalkers(gpus.nwalkers, gpus.head_node.ngpus, log, p.wgsize)
         gpus.head_node.initLargeBufs(nlrg)
     else:  # all
@@ -743,22 +744,26 @@ def equilibrate(orig_args, args, log):
     if p.equiltime == 'auto':
         rngPeriod = 0
     else:
-        rngPeriod = p.equiltime*p.mcmcsteps
-    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
+        rngPeriod = p.equiltime
+
+    gpup = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
-    gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), log, p.wgsize)
-    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
-            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
-    for gpu in gpus:
-        gpu.initMCMC(p.nsteps, rngPeriod)
-        if p.tempering is not None:
-            gpu.initLargeBufs(gpu.nseq['main'])
-            gpu.initMarkSeq()
+    gpus = setup_GPUs(p, log)
+
+    # rng_span is the rng stream range assigned per GPU, used to compute mutant
+    # residues. Here we just take the full span (2**63) and divide it evenly
+    # per gpu. Note this is the same in all runs of the program (only the
+    # rnadom position gets changed by random seed)
+    rng_span = np.uint64(2**63)//np.uint64(gpus.ngpus) #mwc64x period is 2**63
+    gpus.initMCMC(p.nsteps, [i*rng_span for i in range(gpus.ngpus)], rng_span)
+
+    if p.tempering is not None:
+        gpus.initMarkSeq()
 
     nseqs = None
     needseed = False
     if args.seqs is not None:
-        nseqs = np.sum([g.nseq['main'] for g in gpus])
+        nseqs = sum(gpus.nseq['main'])
     if args.seedseq is not None:
         needseed = True
     else:
@@ -783,17 +788,20 @@ def equilibrate(orig_args, args, log):
 
     # set up gpu buffers
     if needseed:
-        for gpu in gpus:
-            gpu.fillSeqs(p.seedseq)
+        gpus.fillSeqs(p.seedseq)
     else:
         gpus.setSeqs('main', p.seqs, log)
+
+    gpus.setBuf('J', p.couplings)
 
     log("")
 
     log("Equilibrating")
     log("====================")
-    # set up tempering if needed
+
     MCMC_func = NewtonSteps.runMCMC
+
+    # set up tempering if needed
     if p.tempering is not None:
         MCMC_func = NewtonSteps.runMCMC_tempered
         B0 = np.max(p.tempering)
@@ -809,21 +817,18 @@ def equilibrate(orig_args, args, log):
 
     (bimarg_model,
      bicount,
-     energies,
+     sampledenergies,
      e_rho,
-     ptinfo) = MCMC_func(gpus, p.couplings, 'gen', p, log)
+     ptinfo,
+     equilsteps) = MCMC_func(gpus, p.couplings, 'gen', p, log)
 
-    seq_large, seqs = readGPUbufs(['seq large', 'seq main'], gpus)
+    seqs = gpus.collect('seq main')
 
     outdir = p.outdir
-    savetxt(os.path.join(outdir, 'bicounts'), bicount, fmt='%d')
+    np.savetxt(os.path.join(outdir, 'bicounts'), bicount, fmt='%d')
     np.save(os.path.join(outdir, 'bimarg'), bimarg_model)
-    np.save(os.path.join(outdir, 'energies'), energies)
-    for n,seqbuf in enumerate(seqs):
-        writeSeqs(os.path.join(outdir, 'seqs-{}'.format(n)), seqbuf, alpha)
-    for n,seqbuf in enumerate(seq_large):
-        writeSeqs(os.path.join(outdir, 'seqs_large-{}'.format(n)),
-                  seqbuf, alpha)
+    np.save(os.path.join(outdir, 'energies'), sampledenergies)
+    writeSeqs(os.path.join(outdir, 'seqs'), seqs, alpha)
 
     if p.tempering is not None:
         e, b = readGPUbufs(['E main', 'Bs'], gpus)
@@ -831,7 +836,7 @@ def equilibrate(orig_args, args, log):
         np.save(os.path.join(outdir, 'walker_Es'), np.concatenate(e))
         log("Final PT swap rate: {}".format(ptinfo[1]))
 
-    log("Mean energy:", np.mean(energies))
+    log("Mean energy:", np.mean(sampledenergies))
 
     log("Done!")
 
@@ -1225,10 +1230,9 @@ def process_sequence_args(args, L, alpha, bimarg, log,
         if nseqs is not None and seqs is None:
             raise Exception("Did not find requested {} sequences".format(nseqs))
 
-        if np.sum(nseqs) != np.sum([s.shape[0] for s in seqs]):
-            n, s = np.sum(nseqs), np.concatenate(seqs)
+        if np.sum(nseqs) != seqs.shape[0]:
             log("Repeating {} sequences to make {}".format(s.shape[0], n))
-            seqs = repeatseqs(s, n)
+            seqs = repeatseqs(seqs, nseqs)
 
     # try to get seed seq
     if needseed:
@@ -1288,7 +1292,7 @@ def loadSequenceFile(sfile, alpha, log):
 def loadSequenceDir(sdir, bufname, alpha, log):
     log("Loading {} sequences from dir {}".format(bufname, sdir))
     sfile = os.path.join(sdir, 'seqs')
-    seqs = loadSeqs(sfile, names=alpha)[0].astype('<u1'))
+    seqs = loadSeqs(sfile, names=alpha)[0].astype('<u1')
     log("Found {} sequences".format(s.shape[0]))
     return seqs
 
