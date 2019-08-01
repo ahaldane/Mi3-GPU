@@ -658,7 +658,7 @@ def newtonMCMC(param, gpus, log):
             seed = generateSequences('independent', param.L, param.q, 1,
                                      param.bimarg, log)[0]
         elif param.reseed == 'single_random':
-            #choose random seed sequence from the final sequences from last round
+            #choose random seed from the final sequences from last round
             nseq = np.sum(s.shape[0] for s in seqs)
             seed = get_seq(randint(0, nseq))
         elif param.reseed == 'single_best':
@@ -668,7 +668,7 @@ def newtonMCMC(param, gpus, log):
         mkdir_p(os.path.join(param.outdir, runname))
         if seed is not None:
             with open(os.path.join(param.outdir, runname, 'seedseq'),'wt') as f:
-                f.write("".join(param.alpha[c] for c in param.seedseq))
+                f.write("".join(param.alpha[c] for c in seed))
             gpus.fillSeqs(param.seedseq)
         elif param.reseed == 'independent':
             indep_seqs = [generateSequences('independent', param.L, param.q,

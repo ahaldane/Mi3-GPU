@@ -32,7 +32,7 @@ except:
 from utils.seqload import loadSeqs, writeSeqs
 from utils.changeGauge import fieldlessGaugeEven
 from utils import printsome, getLq, unimarg
-from mcmcGPU import setup_GPU_context, initGPU, wgsize_heuristic
+from mcmcGPU import setup_GPU_context, initGPU, wgsize_heuristic, printGPUs
 import NewtonSteps
 
 try:
@@ -625,7 +625,6 @@ def MCMCbenchmark(orig_args, args, log):
     mkdir_p(args.outdir)
 
     setup_seed(args, p, log)
-
     p.update(process_potts_args(args, p.L, p.q, None, log))
     L, q, alpha = p.L, p.q, p.alpha
 
@@ -694,9 +693,9 @@ def MCMCbenchmark(orig_args, args, log):
 
     #timed run
     log("Timed run...")
-    start = time.clock()
+    start = time.perf_counter()
     runMCMC()
-    end = time.clock()
+    end = time.perf_counter()
 
     log("Elapsed time: ", end - start)
     totsteps = p.nwalkers*nloop*np.float64(p.nsteps)
@@ -1228,10 +1227,14 @@ def process_sequence_args(args, L, alpha, bimarg, log,
 
         if nseqs is not None and seqs is None:
             raise Exception("Did not find requested {} sequences".format(nseqs))
-
-        if nseqs != seqs.shape[0]:
-            log("Repeating {} sequences to make {}".format(s.shape[0], nseqs))
+        
+        n_loaded = seqs.shape[0]
+        if nseqs > n_loaded:
+            log("Repeating {} sequences to make {}".format(n_loaded, nseqs))
             seqs = repeatseqs(seqs, nseqs)
+        elif nseqs < n_loaded:
+            log("Truncating {} sequences to make {}".format( n_loaded, nseqs))
+            seqs = seqs[:nseqs]
 
     # try to get seed seq
     if needseed:
