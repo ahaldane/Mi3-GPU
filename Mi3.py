@@ -1071,8 +1071,8 @@ def process_newton_args(args, log):
     if bimarg.dtype != np.dtype('<f4'):
         raise Exception("Bimarg must be in 'f4' format")
         #could convert, but this helps warn that something may be wrong
-    if any(~((bimarg.flatten() >= 0) & (bimarg.flatten() <= 1))):
-        raise Exception("Bimarg must be 0 <= f <= 1")
+    if np.any((bimarg <= 0) | (bimarg > 1)):
+        raise Exception("All bimarg must be 0 < f < 1")
     log("Target Marginals: " + printsome(bimarg) + "...")
     p['bimarg'] = bimarg
 

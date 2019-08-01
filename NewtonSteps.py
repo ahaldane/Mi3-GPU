@@ -669,7 +669,7 @@ def newtonMCMC(param, gpus, log):
         if seed is not None:
             with open(os.path.join(param.outdir, runname, 'seedseq'),'wt') as f:
                 f.write("".join(param.alpha[c] for c in seed))
-            gpus.fillSeqs(param.seedseq)
+            gpus.fillSeqs(seed)
         elif param.reseed == 'independent':
             indep_seqs = [generateSequences('independent', param.L, param.q,
                                             g.nwalkers, param.bimarg, log)

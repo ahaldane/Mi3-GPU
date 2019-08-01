@@ -326,6 +326,8 @@ class MCMCGPU:
             a0 a1 a2 a3 b0 b1 b2 b3 c0 c1 c2 c3 ...
         for sequences a, b, c, so each uint32 correaponds to 4 seq bytes.
         """
+        if seqs.dtype != np.dtype('<u1'):
+            raise Exception("seqs must have u1 dtype")
         bseqs = np.zeros((seqs.shape[0], self.SBYTES), dtype='<u1', order='C')
         bseqs[:,:self.L] = seqs
         mem = np.zeros((self.SWORDS, seqs.shape[0]), dtype='<u4', order='C')
