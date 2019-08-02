@@ -410,8 +410,6 @@ def inverseIsing(orig_args, args, log):
     else:  # all
         pass
 
-    if p.tempering is not None:
-        gpus.initMarkSeq()
     log("")
 
     # figure out how many sequences we need to initialize
@@ -751,9 +749,6 @@ def equilibrate(orig_args, args, log):
     # rnadom position gets changed by random seed)
     rng_span = np.uint64(2**63)//np.uint64(gpus.ngpus) #mwc64x period is 2**63
     gpus.initMCMC(p.nsteps, [i*rng_span for i in range(gpus.ngpus)], rng_span)
-
-    if p.tempering is not None:
-        gpus.initMarkSeq()
 
     nseqs = None
     needseed = False
@@ -1222,7 +1217,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
 
         if nseqs is not None and seqs is None:
             raise Exception("Did not find requested {} sequences".format(nseqs))
-        
+
         n_loaded = seqs.shape[0]
         if nseqs > n_loaded:
             log("Repeating {} sequences to make {}".format(n_loaded, nseqs))

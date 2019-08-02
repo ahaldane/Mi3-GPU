@@ -262,9 +262,6 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
     def initJstep(self):
         self.isend('initJstep')
 
-    def initMarkSeq(self):
-        self.isend('initMarkSeq')
-
     def runMCMC(self):
         t1 = time.time()
         self.isend('runMCMC')

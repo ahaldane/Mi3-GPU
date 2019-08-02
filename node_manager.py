@@ -66,10 +66,6 @@ class GPU_node:
         for gpu in self.gpus:
             gpu.initJstep()
 
-    def initMarkSeq(self):
-        for gpu in self.gpus:
-            gpu.initMarkSeq()
-
     def logProfile(self):
         for gpu in self.gpus:
             gpu.logProfile()

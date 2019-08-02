@@ -826,39 +826,6 @@ class MCMCGPU:
         self.repackedSeqT['large'] = False
         return self.logevt('storeSeqs', evt)
 
-    #def markSeqs(self, mask, wait_for=None):
-    #    self.require('Markseq')
-
-    #    marks = -np.ones(mask.shape, dtype='i4')
-    #    inds = np.where(mask)[0]
-    #    marks[inds] = np.arange(len(inds), dtype='i4')
-    #    self.setBuf('markseqs', marks, wait_for=wait_for)
-    #    self.nmarks = len(inds)
-    #    self.log("marked {} seqs".format(len(inds)))
-
-    #def storeMarkedSeqs(self, wait_for=None):
-    #    self.require('Markseq', 'Large')
-
-    #    nseq = self.nseq['main']
-    #    newseq = self.nmarks
-    #    if nseq == newseq:
-    #        self.storeSeqs()
-    #        return
-
-    #    offset = self.nstoredseqs
-    #    self.log("storeMarkedSeqs {} {}".format(offset, newseq))
-
-    #    if offset + newseq > self.nseq['large']:
-    #        raise Exception("cannot store seqs past end of large buffer")
-    #    self.nstoredseqs += newseq
-    #    self.repackedSeqT['large'] = False
-    #    return self.logevt('storeMarkedSeqs',
-    #        self.prg.storeMarkedSeqs(self.queue, (nseq,), (self.wgsize,),
-    #                       self.seqbufs['main'], self.seqbufs['large'],
-    #                       np.uint32(self.nseq['large']), np.uint32(offset),
-    #                       self.bufs['markseqs'],
-    #                       wait_for=self._waitevt(wait_for)))
-
     def clearLargeSeqs(self):
         self.require('Large')
         self.nstoredseqs = 0

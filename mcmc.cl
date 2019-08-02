@@ -79,27 +79,6 @@ void storeSeqs(__global uint *smallbuf,
     }
 }
 
-//// copies marked sequences in smallbuf to end of largebuf
-//__kernel
-//void storeMarkedSeqs(__global uint *smallbuf,
-//                     __global uint *largebuf,
-//                              uint  nlarge,
-//                              uint  offset,
-//                     __global uint *inds) {
-//    // copies seqs from small seq buffer to large seq buffer
-//    // according to indices in "inds".
-
-//    uint w;
-//    uint nseqs = get_global_size(0);
-//    uint n = get_global_id(0);
-
-//    for (w = 0; w < SWORDS; w++) {
-//        if (inds[n] != -1) {
-//            largebuf[w*nlarge + offset + inds[n]] = smallbuf[w*nseqs + n];
-//        }
-//    }
-//}
-
 // copies some sequences from large buf to small buf
 __kernel
 void restoreSeqs(__global uint *smallbuf,
@@ -209,7 +188,7 @@ inline float getEnergiesf(__global float *J,
 //
 // Idea of optimized J loads: We use a 2*WGSIZE local J buffer, and require
 // that WGSIZE >= q*q. At start, we fill the buffer and also prefetch the next
-// (third) WGSIZE J values to register. The local buffer can be though of as
+// (third) WGSIZE J values to register. The local buffer can be thought of as
 // two WGSIZE halves, A and B, from which we access q*q coulplings (a row) at a
 // time. We iterate in chunks of q*q, but stop after the q*q chunk goes past
 // the local mem B end. Then store the next prefetch values to the A half, use
@@ -274,70 +253,6 @@ inline float getEnergiesf(__global float *J,
     return energy;
 }
 
-//// this function expects J in "unpacked" form, with L*L*q*q elements
-//// (padded to multiple of WGSIZE*3)
-//inline float getEnergiesfX(__global float *J,
-//                           __global  uint *seqmem,
-//                                     uint  buflen,
-//                           __local  float *lJ) {
-//    float energy = 0;
-//    float rem = 0;
-
-//    uint n, sbn;
-//    for (n = 0; n < L-1; n++) {
-//        if (n%4 == 0) {
-//            sbn = seqmem[(n/4)*buflen + get_global_id(0)];
-//        }
-
-//        uint seqn = getbyte(&sbn, n%4);
-
-//        // start loading couplings for row n*L + m with m = n+1
-//        // We load in chunks of WGSIZE, and start of row is within chunk
-//        uint Jmem_offset = WGMASK((n*L + n+1)*q*q);
-//        uint lJ_offset = (n*L + n+1)*q*q - Jmem_offset;;
-
-//        // load 2*WGSIZE worth of couplings
-//        lJ[get_local_id(0)] = J[Jmem_offset + get_local_id(0)];
-//        Jmem_offset += WGSIZE;
-//        lJ[get_local_id(0) + WGSIZE] = J[Jmem_offset + get_local_id(0)];
-//        barrier(CLK_LOCAL_MEM_FENCE);
-
-//        // prefetch next WGSIZE couplings
-//        Jmem_offset += WGSIZE;
-//        float Jprefetch = J[Jmem_offset + get_local_id(0)];
-
-//        uint m, sbm = sbn;
-//        for (m = n+1; m < L; m++) {
-//            if (m%4 == 0) {
-//                sbm = seqmem[(m/4)*buflen + get_global_id(0)];
-//            }
-
-//            uint seqm = getbyte(&sbm, m%4);
-
-//            // Kahan summation for extra precision
-//            float y = lJ[(lJ_offset + q*seqn + seqm)%(2*WGSIZE)] - rem;
-//            float t = energy + y;
-//            rem = (t - energy) - y;
-//            energy = t;
-
-//            // load more couplings and advance lJ_offset if necessary
-//            if (lJ_offset + q*q >= WGMASK(lJ_offset) + WGSIZE) {
-//                // store prefetched values in their place
-//                barrier(CLK_LOCAL_MEM_FENCE);
-//                lJ[WGMASK(lJ_offset) + get_local_id(0)] = Jprefetch;
-//                barrier(CLK_LOCAL_MEM_FENCE);
-
-//                // start next prefetch
-//                Jmem_offset += WGSIZE;
-//                Jprefetch = J[Jmem_offset + get_local_id(0)];
-//            }
-
-//            lJ_offset = (lJ_offset + q*q)%(2*WGSIZE);
-//        }
-//    }
-//    return energy;
-//}
-
 __kernel
 void getEnergies(__global float *J,
                  __global uint *seqmem,
@@ -346,15 +261,6 @@ void getEnergies(__global float *J,
     __local float lJ[2*WGSIZE];
     energies[get_global_id(0)] = getEnergiesf(J, seqmem, buflen, lJ);
 }
-
-//__kernel
-//void getEnergiesX(__global float *J,
-//                 __global uint *seqmem,
-//                          uint  buflen,
-//                 __global float *energies) {
-//    __local float lJ[2*WGSIZE];
-//    energies[get_global_id(0)] = getEnergiesfX(J, seqmem, buflen, lJ);
-//}
 
 // ****************************** Metropolis sampler **************************
 
@@ -540,63 +446,6 @@ void bicounts_to_bimarg(__global uint *bicount,
     bimarg[n] = ((float)bicount[n])/((float)nseq);
 }
 
-//__kernel //call with group size = NHIST, for nPair groups
-//void countMarkedBivariate(__global uint *bicount,
-//                          uint nseq,
-//                 __global uint *marks,
-//                 __global uint *seqmem,
-//                 __local  uint *hist) {
-//    uint li = get_local_id(0);
-//    uint gi = get_group_id(0);
-//    uint nhist = get_local_size(0);
-//    uint i,j,n,m;
-
-//    // only meant to be called for small buffer so nseq == buflen
-
-//    //figure out which i,j pair we are
-//    i = 0;
-//    j = L-1;
-//    while (j <= gi) {
-//        i++;
-//        j += L-1-i;
-//    }
-//    j = gi + L - j; //careful with underflow!
-
-//    for (n = 0; n < q*q; n++) {
-//        hist[nhist*n + li] = 0;
-//    }
-//    barrier(CLK_LOCAL_MEM_FENCE);
-
-//    uint tmp;
-//    //loop through all sequences
-//    for (n = li; n < nseq; n += nhist) {
-//        if (marks[n] != -1) {
-//            tmp = seqmem[(i/4)*nseq+n];
-//            uint seqi = ((uchar*)&tmp)[i%4];
-//            tmp = seqmem[(j/4)*nseq+n];
-//            uint seqj = ((uchar*)&tmp)[j%4];
-//            hist[nhist*(q*seqi + seqj) + li]++;
-//        }
-//    }
-//    barrier(CLK_LOCAL_MEM_FENCE);
-//    //merge histograms
-//    for (n = 0; n < q*q; n++) {
-//        m = nhist;
-//        while (m > 1) {
-//            uint odd = m%2;
-//            m = (m+1)>>1; //div by 2 rounded up
-//            if (li < m - odd) {
-//                hist[nhist*n + li] = hist[nhist*n + li] + hist[nhist*n + li +m];
-//            }
-//            barrier(CLK_LOCAL_MEM_FENCE);
-//        }
-//    }
-
-//    for (n = li; n < q*q; n += nhist) { //only loops once if nhist > q*q
-//        bicount[gi*q*q + n] = hist[nhist*n];
-//    }
-//}
-
 __kernel //call with global work size = to # sequences
 void perturbedWeights(__global float *J,
                       __global uint *seqmem,
@@ -638,10 +487,10 @@ void sumFloats(__global float *data,
 
 // Idea: Have that NHIST, and HISTWS (work-size) are powers of 2, with
 // HISTWS >= NHIST. Then in each loop over n below, we load memory as:
-//      <-----HISTWS----->
-// si   xxxxxxxxxxxxxxxxxx  (remember these are packed uints, so expand
-// sj   xxxxxxxxxxxxxxxxxx   4x to match w)
-//  w   xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxxxx
+//      <----HISTWS---->
+// si   xxxxxxxxxxxxxxxx  (remember these are packed uints, so expand
+// sj   xxxxxxxxxxxxxxxx   4x to match w)
+//  w   xxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxx xxxxxxxxxxxxxxxx
 //      <-NHIST->
 //
 // In each loop, load si, sj, and the 1st w segment. Then loop over all windows
