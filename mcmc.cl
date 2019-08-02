@@ -192,10 +192,11 @@ void unpackseqs1(__global uint *buf4,
 
 // this function expects J in "packed" form, with nPair*q*q elements
 inline float getEnergiesf(__global float *J,
-                          __global uint *seqmem,
-                                   uint  buflen,
-                         __local float *lcouplings){
+                          __global  uint *seqmem,
+                                    uint  buflen,
+                          __local  float *lJ){
     // This function is complicated by optimizations for the GPU.
+    // See UpdateEnergy below for details.
     // For clarity, here is equivalent but clearer (pseudo)code:
     //
     //float energy = 0;
@@ -207,49 +208,17 @@ inline float getEnergiesf(__global float *J,
     //    }
     //}
 
-    uint li = get_local_id(0);
+    // load 2*WGSIZE worth of couplings
+    uint lJ_offset = 0;
+    uint Jmem_offset = 0;
+    lJ[get_local_id(0)] = J[Jmem_offset + get_local_id(0)];
+    Jmem_offset += WGSIZE;
+    lJ[get_local_id(0) + WGSIZE] = J[Jmem_offset + get_local_id(0)];
+    barrier(CLK_LOCAL_MEM_FENCE);
 
-    uint seqm, seqn, seqp;
-    uint cn, cm;
-    uint sbn, sbm;
-    uint n,m,k,pair;
-    float energy = 0;
-    pair = 0;
-    n = 0;
-    while(n < L-1){
-        uint sbn = seqmem[(n/4)*buflen + get_global_id(0)];
-        #pragma unroll //probably ignored
-        for(cn = n%4; cn < 4 && n < L-1; cn++, n++){
-            seqn = getbyte(&sbn, cn);
-            m = n+1;
-            while(m < L){
-                uint sbm = seqmem[(m/4)*buflen + get_global_id(0)];
-
-                #pragma unroll
-                for(cm = m%4; cm < 4 && m < L; cm++, m++){
-                    for(k = li; k < q*q; k += get_local_size(0)){
-                        lcouplings[k] = J[pair*q*q + k];
-                    }
-                    barrier(CLK_LOCAL_MEM_FENCE);
-
-                    seqm = getbyte(&sbm, cm);
-                    energy = energy + lcouplings[q*seqn + seqm];
-                    barrier(CLK_LOCAL_MEM_FENCE);
-
-                    pair++;
-                }
-            }
-        }
-    }
-    return energy;
-}
-
-// this function expects J in "unpacked" form, with L*L*q*q elements
-// (padded to multiple of WGSIZE*3)
-inline float getEnergiesfX(__global float *J,
-                           __global  uint *seqmem,
-                                     uint  buflen,
-                           __local  float *lJ){
+    // prefetch next WGSIZE couplings
+    Jmem_offset += WGSIZE;
+    float Jprefetch = J[Jmem_offset + get_local_id(0)];
 
     float energy = 0;
 
@@ -261,6 +230,52 @@ inline float getEnergiesfX(__global float *J,
 
         uint seqn = getbyte(&sbn, n%4);
 
+        uint m, sbm;
+        for (m = n+1; m < L; m++) {
+            if (m%4 == 0 || m == n+1) {
+                sbm = seqmem[(m/4)*buflen + get_global_id(0)];
+            }
+
+            uint seqm = getbyte(&sbm, m%4);
+
+            energy += lJ[(lJ_offset + q*seqn + seqm)%(2*WGSIZE)];
+
+            // load more couplings and advance lJ_offset if necessary
+            if (lJ_offset + q*q >= WGMASK(lJ_offset) + WGSIZE) {
+                // store prefetched values in their place
+                barrier(CLK_LOCAL_MEM_FENCE);
+                lJ[WGMASK(lJ_offset) + get_local_id(0)] = Jprefetch;
+                barrier(CLK_LOCAL_MEM_FENCE);
+
+                // start next prefetch
+                Jmem_offset += WGSIZE;
+                Jprefetch = J[Jmem_offset + get_local_id(0)];
+            }
+
+            lJ_offset = (lJ_offset + q*q)%(2*WGSIZE);
+        }
+    }
+    return energy;
+}
+
+// this function expects J in "unpacked" form, with L*L*q*q elements
+// (padded to multiple of WGSIZE*3)
+inline float getEnergiesfX(__global float *J,
+                           __global  uint *seqmem,
+                                     uint  buflen,
+                           __local  float *lJ){
+    float energy = 0;
+
+    uint n, sbn;
+    for(n = 0; n < L-1; n++) {
+        if (n%4 == 0) {
+            sbn = seqmem[(n/4)*buflen + get_global_id(0)];
+        }
+
+        uint seqn = getbyte(&sbn, n%4);
+
+        // start loading couplings for row n*L + m with m = n+1
+        // We load in chunks of WGSIZE, and start of row is within chunk
         uint Jmem_offset = WGMASK((n*L + n+1)*q*q);
         uint lJ_offset = (n*L + n+1)*q*q - Jmem_offset;;
 
@@ -282,8 +297,9 @@ inline float getEnergiesfX(__global float *J,
 
             uint seqm = getbyte(&sbm, m%4);
 
-            energy = energy + lJ[(lJ_offset + q*seqn +seqm)%(2*WGSIZE)];
+            energy += lJ[(lJ_offset + q*seqn + seqm)%(2*WGSIZE)];
 
+            // load more couplings and advance lJ_offset if necessary
             if (lJ_offset + q*q >= WGMASK(lJ_offset) + WGSIZE) {
                 // store prefetched values in their place
                 barrier(CLK_LOCAL_MEM_FENCE);
@@ -310,7 +326,14 @@ void getEnergies(__global float *J,
     energies[get_global_id(0)] = getEnergiesf(J, seqmem, buflen, lJ);
 }
 
-#define SWAPF(a,b) {float tmp = a; a = b; b = tmp;}
+__kernel
+void getEnergiesX(__global float *J,
+                 __global uint *seqmem,
+                          uint  buflen,
+                 __global float *energies){
+    __local float lJ[2*WGSIZE];
+    energies[get_global_id(0)] = getEnergiesfX(J, seqmem, buflen, lJ);
+}
 
 // ****************************** Metropolis sampler **************************
 
@@ -330,8 +353,8 @@ void initRNG2(__global mwc64xvec2_state_t *rngstates,
 // >= q*q. At start, we fill the buffer and also prefetch the next (third)
 // WGSIZE J values to register. The local buffer can be though of as two WGSIZE
 // halves, A and B, from which we access q*q coulplings (a row) at a time. We
-// iterate in chunks of q*q, but stop after the q*q chunk goes past the local mem
-// B end. Then store the next prefetch values to the A half, use modulo
+// iterate in chunks of q*q, but stop after the q*q chunk goes past the local
+// mem B end. Then store the next prefetch values to the A half, use modulo
 // indexing to access the local mem as if A followed B , and begin prefetch of
 // the next WGSIZE Js. Continue iterating modulo chunks of q*q until we would
 // hang past the end of A, then replace the B half with latest prefetch.
@@ -578,8 +601,8 @@ void perturbedWeights(__global float *J,
                                uint  buflen,
                       __global float *weights,
                       __global float *energies){
-    __local float lcouplings[q*q];
-    float energy = getEnergiesf(J, seqmem, buflen, lcouplings);
+    __local float lJ[2*WGSIZE];
+    float energy = getEnergiesf(J, seqmem, buflen, lJ);
     weights[get_global_id(0)] = exp(-(energy - energies[get_global_id(0)]));
 }
 
