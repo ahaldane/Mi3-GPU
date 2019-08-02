@@ -306,13 +306,13 @@ class MCMCGPU:
         self._setupBuffer('markpos', '<u1',  (self.SBYTES,), flags=cf.READ_ONLY)
         self.markPos(np.zeros(self.SBYTES, '<u1'))
 
-    # we may want to select replicas at a particular temperature
-    def initMarkSeq(self):
-        self._initcomponent('Markseq')
+    ## we may want to select replicas at a particular temperature
+    #def initMarkSeq(self):
+    #    self._initcomponent('Markseq')
 
-        self._setupBuffer( 'markseqs', '<i4',  (self.nseq['main'],))
-        self.setBuf('markseqs', np.arange(self.nseq['main'], dtype='<i4'))
-        self.nmarks = self.nseq['main']
+    #    self._setupBuffer( 'markseqs', '<i4',  (self.nseq['main'],))
+    #    self.setBuf('markseqs', np.arange(self.nseq['main'], dtype='<i4'))
+    #    self.nmarks = self.nseq['main']
 
     def initJstep(self):
         self._initcomponent('Jstep')
@@ -826,38 +826,38 @@ class MCMCGPU:
         self.repackedSeqT['large'] = False
         return self.logevt('storeSeqs', evt)
 
-    def markSeqs(self, mask, wait_for=None):
-        self.require('Markseq')
+    #def markSeqs(self, mask, wait_for=None):
+    #    self.require('Markseq')
 
-        marks = -np.ones(mask.shape, dtype='i4')
-        inds = np.where(mask)[0]
-        marks[inds] = np.arange(len(inds), dtype='i4')
-        self.setBuf('markseqs', marks, wait_for=wait_for)
-        self.nmarks = len(inds)
-        self.log("marked {} seqs".format(len(inds)))
+    #    marks = -np.ones(mask.shape, dtype='i4')
+    #    inds = np.where(mask)[0]
+    #    marks[inds] = np.arange(len(inds), dtype='i4')
+    #    self.setBuf('markseqs', marks, wait_for=wait_for)
+    #    self.nmarks = len(inds)
+    #    self.log("marked {} seqs".format(len(inds)))
 
-    def storeMarkedSeqs(self, wait_for=None):
-        self.require('Markseq', 'Large')
+    #def storeMarkedSeqs(self, wait_for=None):
+    #    self.require('Markseq', 'Large')
 
-        nseq = self.nseq['main']
-        newseq = self.nmarks
-        if nseq == newseq:
-            self.storeSeqs()
-            return
+    #    nseq = self.nseq['main']
+    #    newseq = self.nmarks
+    #    if nseq == newseq:
+    #        self.storeSeqs()
+    #        return
 
-        offset = self.nstoredseqs
-        self.log("storeMarkedSeqs {} {}".format(offset, newseq))
+    #    offset = self.nstoredseqs
+    #    self.log("storeMarkedSeqs {} {}".format(offset, newseq))
 
-        if offset + newseq > self.nseq['large']:
-            raise Exception("cannot store seqs past end of large buffer")
-        self.nstoredseqs += newseq
-        self.repackedSeqT['large'] = False
-        return self.logevt('storeMarkedSeqs',
-            self.prg.storeMarkedSeqs(self.queue, (nseq,), (self.wgsize,),
-                           self.seqbufs['main'], self.seqbufs['large'],
-                           np.uint32(self.nseq['large']), np.uint32(offset),
-                           self.bufs['markseqs'],
-                           wait_for=self._waitevt(wait_for)))
+    #    if offset + newseq > self.nseq['large']:
+    #        raise Exception("cannot store seqs past end of large buffer")
+    #    self.nstoredseqs += newseq
+    #    self.repackedSeqT['large'] = False
+    #    return self.logevt('storeMarkedSeqs',
+    #        self.prg.storeMarkedSeqs(self.queue, (nseq,), (self.wgsize,),
+    #                       self.seqbufs['main'], self.seqbufs['large'],
+    #                       np.uint32(self.nseq['large']), np.uint32(offset),
+    #                       self.bufs['markseqs'],
+    #                       wait_for=self._waitevt(wait_for)))
 
     def clearLargeSeqs(self):
         self.require('Large')
