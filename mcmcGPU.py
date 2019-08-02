@@ -134,11 +134,12 @@ class MCMCGPU:
 
         self.wgsize = wgsize
         self.nhist, self.histws = histogram_heuristic(q)
-
+        
+        # sanity checks (should be checked elsewhere before this)
         if nseq%wgsize != 0:
             raise Exception("nseq per GPU must be a multiple of wgsize")
-        if wgsize < 2*q*q:
-            raise Exception("wgsize cannot be less than 2*q*q")
+        if wgsize < q*q:
+            raise Exception("wgsize cannot be less than q*q")
 
         self.logfn = os.path.join(outdir, 'gpu-{}.log'.format(gpunum))
         with open(self.logfn, "wt") as f:
@@ -528,27 +529,28 @@ class MCMCGPU:
                              self.bufs['J'], seq_dev, np.uint32(buflen),
                              energies_dev, wait_for=self._waitevt(wait_for)))
 
-    def calcEnergiesTST(self, seqbufname, wait_for=None):
-        self.log("calcEnergies " + seqbufname)
+    #def calcEnergies(self, seqbufname, wait_for=None):
+    #    self.log("calcEnergies " + seqbufname)
 
-        energies_dev = self.Ebufs[seqbufname]
-        seq_dev = self.seqbufs[seqbufname]
-        buflen = self.nseq[seqbufname]
+    #    energies_dev = self.Ebufs[seqbufname]
+    #    seq_dev = self.seqbufs[seqbufname]
+    #    buflen = self.nseq[seqbufname]
 
-        if seqbufname == 'main':
-            nseq = self.nseq[seqbufname]
-        else:
-            nseq = self.nstoredseqs
-            # pad to be a multiple of wgsize (uses dummy seqs at end)
-            nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
+    #    if seqbufname == 'main':
+    #        nseq = self.nseq[seqbufname]
+    #    else:
+    #        nseq = self.nstoredseqs
+    #        # pad to be a multiple of wgsize (uses dummy seqs at end)
+    #        nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
 
-        wait_unpack = self.unpackJ(wait_for=wait_evt)
-        wait = self._evtlist(wait_unpack)
+    #    wait_evt = self._waitevt(wait_for)
+    #    wait_unpack = self.unpackJ(wait_for=wait_evt)
+    #    wait = self._evtlist(wait_unpack)
 
-        return self.logevt('getEnergies',
-            self.prg.getEnergiesX(self.queue, (nseq,), (self.wgsize,),
-                             self.bufs['Junpacked'], seq_dev, np.uint32(buflen),
-                             energies_dev, wait_for=wait))
+    #    return self.logevt('getEnergies',
+    #        self.prg.getEnergiesX(self.queue, (nseq,), (self.wgsize,),
+    #                         self.bufs['Junpacked'], seq_dev, np.uint32(buflen),
+    #                         energies_dev, wait_for=wait))
 
     def calcWeights(self, seqbufname='main', wait_for=None):
         #overwrites weights, neff

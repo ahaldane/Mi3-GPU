@@ -510,11 +510,9 @@ def getEnergies(orig_args, args, log):
     args.nwalkers = len(seqs)
     args.nsteps = 1
     args.nlargebuf = 1
-    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
+    gpup = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
-    gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), log, p.wgsize)
-    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
-            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
+    gpus = setup_GPUs(p, log)
     gpus.setSeqs('main', seqs, log)
     log("")
 
@@ -522,12 +520,9 @@ def getEnergies(orig_args, args, log):
     log("Computing Energies")
     log("==================")
 
-    for gpu in gpus:
-        gpu.setBuf('J', p.couplings)
-
-    for gpu in gpus:
-        gpu.calcEnergies('main')
-    es = np.concatenate(readGPUbufs(['E main'], gpus)[0])
+    gpus.setBuf('J', p.couplings)
+    gpus.calcEnergies('main')
+    es = gpus.collect('E main')
 
     log("Saving results to file '{}'".format(args.out))
     np.save(args.out, es)

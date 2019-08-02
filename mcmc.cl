@@ -221,6 +221,7 @@ inline float getEnergiesf(__global float *J,
     float Jprefetch = J[Jmem_offset + get_local_id(0)];
 
     float energy = 0;
+    float rem = 0;
 
     uint n, sbn;
     for(n = 0; n < L-1; n++) {
@@ -230,15 +231,19 @@ inline float getEnergiesf(__global float *J,
 
         uint seqn = getbyte(&sbn, n%4);
 
-        uint m, sbm;
+        uint m, sbm = sbn;
         for (m = n+1; m < L; m++) {
-            if (m%4 == 0 || m == n+1) {
+            if (m%4 == 0) {
                 sbm = seqmem[(m/4)*buflen + get_global_id(0)];
             }
 
             uint seqm = getbyte(&sbm, m%4);
-
-            energy += lJ[(lJ_offset + q*seqn + seqm)%(2*WGSIZE)];
+            
+            // Kahan summation for extra precision
+            float y = lJ[(lJ_offset + q*seqn + seqm)%(2*WGSIZE)] - rem;
+            float t = energy + y;
+            rem = (t - energy) - y;
+            energy = t;
 
             // load more couplings and advance lJ_offset if necessary
             if (lJ_offset + q*q >= WGMASK(lJ_offset) + WGSIZE) {
@@ -265,6 +270,7 @@ inline float getEnergiesfX(__global float *J,
                                      uint  buflen,
                            __local  float *lJ){
     float energy = 0;
+    float rem = 0;
 
     uint n, sbn;
     for(n = 0; n < L-1; n++) {
@@ -289,15 +295,19 @@ inline float getEnergiesfX(__global float *J,
         Jmem_offset += WGSIZE;
         float Jprefetch = J[Jmem_offset + get_local_id(0)];
 
-        uint m, sbm;
+        uint m, sbm = sbn;
         for (m = n+1; m < L; m++) {
-            if (m%4 == 0 || m == n+1) {
+            if (m%4 == 0) {
                 sbm = seqmem[(m/4)*buflen + get_global_id(0)];
             }
 
             uint seqm = getbyte(&sbm, m%4);
 
-            energy += lJ[(lJ_offset + q*seqn + seqm)%(2*WGSIZE)];
+            // Kahan summation for extra precision
+            float y = lJ[(lJ_offset + q*seqn + seqm)%(2*WGSIZE)] - rem;
+            float t = energy + y;
+            rem = (t - energy) - y;
+            energy = t;
 
             // load more couplings and advance lJ_offset if necessary
             if (lJ_offset + q*q >= WGMASK(lJ_offset) + WGSIZE) {
@@ -326,14 +336,14 @@ void getEnergies(__global float *J,
     energies[get_global_id(0)] = getEnergiesf(J, seqmem, buflen, lJ);
 }
 
-__kernel
-void getEnergiesX(__global float *J,
-                 __global uint *seqmem,
-                          uint  buflen,
-                 __global float *energies){
-    __local float lJ[2*WGSIZE];
-    energies[get_global_id(0)] = getEnergiesfX(J, seqmem, buflen, lJ);
-}
+//__kernel
+//void getEnergiesX(__global float *J,
+//                 __global uint *seqmem,
+//                          uint  buflen,
+//                 __global float *energies){
+//    __local float lJ[2*WGSIZE];
+//    energies[get_global_id(0)] = getEnergiesfX(J, seqmem, buflen, lJ);
+//}
 
 // ****************************** Metropolis sampler **************************
 
@@ -359,9 +369,9 @@ void initRNG2(__global mwc64xvec2_state_t *rngstates,
 // the next WGSIZE Js. Continue iterating modulo chunks of q*q until we would
 // hang past the end of A, then replace the B half with latest prefetch.
 // Continue alternating the A and the B prefetches/overwrites.
-inline float UpdateEnergy(__local float *lJ, __global float *J,
+inline float DeltaEnergy(__local float *lJ, __global float *J,
                           global uint *seqmem, uint nseqs,
-                          uint pos, uint seqp, uchar mutres, float energy){
+                          uint pos, uint seqp, uchar mutres){
     uint Jmem_offset = WGMASK(pos*L*q*q);
     uint lJ_offset = pos*L*q*q - Jmem_offset;;
 
@@ -374,6 +384,8 @@ inline float UpdateEnergy(__local float *lJ, __global float *J,
     // prefetch next WGSIZE couplings
     Jmem_offset += WGSIZE;
     float Jprefetch = J[Jmem_offset + get_local_id(0)];
+
+    float dE = 0;
 
     uint m, sbm;
     uint sbm_prefetch = seqmem[get_global_id(0)];
@@ -390,12 +402,11 @@ inline float UpdateEnergy(__local float *lJ, __global float *J,
 
         if(m != pos){
             uint seqm = getbyte(&sbm, m%4);
-            energy += lJ[(lJ_offset + q*mutres + seqm)%(2*WGSIZE)];
-            energy -= lJ[(lJ_offset + q*seqp   + seqm)%(2*WGSIZE)];
+            dE += (lJ[(lJ_offset + q*mutres + seqm)%(2*WGSIZE)] -
+                   lJ[(lJ_offset + q*seqp   + seqm)%(2*WGSIZE)]);
         }
 
         // load couplings
-        // note: this assumes WGSIZE > q*q (enforced in python)
         if(lJ_offset + q*q >= WGMASK(lJ_offset) + WGSIZE) {
             // store prefetched values in their place
             barrier(CLK_LOCAL_MEM_FENCE);
@@ -410,7 +421,7 @@ inline float UpdateEnergy(__local float *lJ, __global float *J,
         lJ_offset = (lJ_offset + q*q)%(2*WGSIZE);
     }
 
-    return energy;
+    return dE;
 }
 
 __kernel
@@ -435,9 +446,6 @@ void metropolis(__global float *J,
     const float B = 1;
 #endif
 
-    //initialize energy (resets any fp error from last kernel call)
-    float energy = getEnergiesfX(J, seqmem, nseqs, lJ);
-
     uint i;
     for(i = 0; i < nsteps; i++){
         uint pos = position_list[i + position_offset];
@@ -448,24 +456,18 @@ void metropolis(__global float *J,
         uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)];
         uint seqp = getbyte(&sbn, pos%4);
 
-        float newenergy = UpdateEnergy(lJ, J, seqmem, nseqs,
-                                       pos, seqp, mutres, energy);
+        float dE = DeltaEnergy(lJ, J, seqmem, nseqs, pos, seqp, mutres);
 
         //apply MC criterion and possibly update
-        if(exp(-B*(newenergy - energy)) > uniformMap(rng.y)){
+        if(exp(-B*dE) > uniformMap(rng.y)){
             setbyte(&sbn, pos%4, mutres);
             seqmem[(pos/4)*nseqs + get_global_id(0)] = sbn;
-            energy = newenergy;
         }
 
         #undef mutres
     }
 
     rngstates[get_global_id(0)] = rstate;
-
-#ifdef MEASURE_FP_ERROR
-    energies[get_global_id(0)] = energy;
-#endif
 }
 
 // ****************************** Histogram Code **************************
