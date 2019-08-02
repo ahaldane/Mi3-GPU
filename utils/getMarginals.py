@@ -42,7 +42,7 @@ def getMarginals(seqs, q, weights=None, nrmlz=True):
                          for i in range(L-1) for j in range(i+1, L)]))
     return f, ff
 
-class Counter:
+class BiCounter:
     def __init__(self, weights):
         self.weights = weights
         self.pos = 0
@@ -54,6 +54,8 @@ class Counter:
         q = len(param['alpha'])
         nbins = q*q
 
+        if q > 16: # the x + q*y operation below may overflow for u1
+            seqs = seqs.astype('i4')
         
         if self.weights is not None:
             if counts is 0:
@@ -67,11 +69,40 @@ class Counter:
 
         n = 0
         for i in range(L):
-            nsi = q*seqs[:,i].astype('i8')
+            nsi = q*seqs[:,i]
             for j in range(i+1, L):
-                sj = seqs[:,j].astype('i8')
+                sj = seqs[:,j]
                 counts[n,:] += np.bincount(sj + nsi, minlength=nbins, weights=w)
                 n += 1
+        return counts
+
+class UniCounter:
+    def __init__(self, weights):
+        self.weights = weights
+        self.pos = 0
+
+    def __call__(self, counts, seqs, info): 
+        param, headers = info
+
+        nSeq, L = seqs.shape
+        q = len(param['alpha'])
+        nbins = q
+
+        if self.weights is not None:
+            if counts is 0:
+                counts = np.zeros((L,q), dtype='f8')
+            w = self.weights[self.pos:self.pos+nSeq]
+            self.pos += nSeq
+        else:
+            if counts is 0:
+                counts = np.zeros((L,q), dtype='i4')
+            w = None
+
+        n = 0
+        for i in range(L):
+            si = seqs[:,i]
+            counts[n,:] += np.bincount(si, minlength=nbins, weights=w)
+            n += 1
         return counts
 
 def main():
@@ -79,6 +110,7 @@ def main():
     parser.add_argument('--alpha', default='protgap')
     parser.add_argument('--weights')
     parser.add_argument('--counts', action='store_true')
+    parser.add_argument('--uni', action='store_true')
     parser.add_argument('seqfile')
     parser.add_argument('outfile')
 
@@ -98,8 +130,11 @@ def main():
             weights = np.loadtxt(args.weights)
     else:
         weights = None
-
-    counter = Counter(weights)
+    
+    if args.uni:
+        counter = UniCounter(weights)
+    else:
+        counter = BiCounter(weights)
 
     counts = seqload.reduceSeqs(args.seqfile, counter, 0, letters)[0]
     if args.counts:

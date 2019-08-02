@@ -67,7 +67,7 @@ def printGPUs(log):
 ################################################################################
 
 # The GPU performs two main types of computation: MCMC runs, and perturbed
-# coupling updates.  All MCMCGPU methods are asynchronous on the host.
+# coupling updates. MCMCGPU methods are asynchronous on the host.
 # Functions that return data do not return the data directly, but return a
 # FutureBuf object. The data may be obtained by FutureBuf.read(), which is
 # blocking.
@@ -135,6 +135,11 @@ class MCMCGPU:
         self.wgsize = wgsize
         self.nhist, self.histws = histogram_heuristic(q)
 
+        if nseq%wgsize != 0:
+            raise Exception("nseq per GPU must be a multiple of wgsize")
+        if wgsize < 2*q*q:
+            raise Exception("wgsize cannot be less than 2*q*q")
+
         self.logfn = os.path.join(outdir, 'gpu-{}.log'.format(gpunum))
         with open(self.logfn, "wt") as f:
             printDevice(f.write, device)
@@ -167,10 +172,10 @@ class MCMCGPU:
         self.largebufs = []
 
         # setup essential buffers
-        # note no padding needed on seq buffers since alignment is guaranteed
         nPairs, SWORDS = self.nPairs, self.SWORDS
-        self._setupBuffer('Junpacked', '<f4', (L*L, q*q), pad=3*self.wgsize)
-        self._setupBuffer(        'J', '<f4', (nPairs, q*q))
+        j_pad = 3*self.wgsize
+        self._setupBuffer(        'J', '<f4', (nPairs, q*q), pad=j_pad)
+        self._setupBuffer('Junpacked', '<f4', (L*L, q*q), pad=j_pad)
         self._setupBuffer(       'bi', '<f4', (nPairs, q*q)),
         self._setupBuffer(  'bicount', '<u4', (nPairs, q*q)),
         self._setupBuffer( 'seq main', '<u4', (SWORDS, self.nseq['main'])),
@@ -360,7 +365,7 @@ class MCMCGPU:
                             wait_for=self._waitevt(wait_for)))
 
     def unpackJ(self, wait_for=None):
-        """convert from format where every row is a unique ij pair (L choose 2
+        """convert J from format where every row is a unique ij pair (L choose 2
         rows) to format with every pair, all orders (L^2 rows)."""
 
         # quit if J already loaded/unpacked
@@ -520,6 +525,28 @@ class MCMCGPU:
             self.prg.getEnergies(self.queue, (nseq,), (self.wgsize,),
                              self.bufs['J'], seq_dev, np.uint32(buflen),
                              energies_dev, wait_for=self._waitevt(wait_for)))
+
+    def calcEnergiesTST(self, seqbufname, wait_for=None):
+        self.log("calcEnergies " + seqbufname)
+
+        energies_dev = self.Ebufs[seqbufname]
+        seq_dev = self.seqbufs[seqbufname]
+        buflen = self.nseq[seqbufname]
+
+        if seqbufname == 'main':
+            nseq = self.nseq[seqbufname]
+        else:
+            nseq = self.nstoredseqs
+            # pad to be a multiple of wgsize (uses dummy seqs at end)
+            nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
+
+        wait_unpack = self.unpackJ(wait_for=wait_evt)
+        wait = self._evtlist(wait_unpack)
+
+        return self.logevt('getEnergies',
+            self.prg.getEnergiesX(self.queue, (nseq,), (self.wgsize,),
+                             self.bufs['Junpacked'], seq_dev, np.uint32(buflen),
+                             energies_dev, wait_for=wait))
 
     def calcWeights(self, seqbufname='main', wait_for=None):
         #overwrites weights, neff
