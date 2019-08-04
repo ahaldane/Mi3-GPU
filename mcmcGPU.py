@@ -133,7 +133,7 @@ class MCMCGPU:
 
         self.wgsize = wgsize
         self.nhist, self.histws = histogram_heuristic(q)
-        
+
         # sanity checks (should be checked elsewhere before this)
         if nseq%wgsize != 0:
             raise Exception("nseq per GPU must be a multiple of wgsize")

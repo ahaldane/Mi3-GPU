@@ -117,7 +117,7 @@ def optionRegistry():
         help="Number of MC walkers")
     add('nsteps', type=np.uint32, default=2048,
         help="number of mc steps per kernel call")
-    add('wgsize', default='auto', help="GPU workgroup size")
+    add('wgsize', default=512, help="GPU workgroup size")
     add('gpus',
         help="GPUs to use (comma-sep list of platforms #s, eg '0,0')")
     add('profile', action='store_true',
@@ -390,13 +390,7 @@ def inverseIsing(orig_args, args, log):
     gpup = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
     gpus = setup_GPUs(p, log)
-
-    # rng_span is the rng stream range assigned per GPU, used to compute mutant
-    # residues. Here we just take the full span (2**63) and divide it evenly
-    # per gpu. Note this is the same in all runs of the program (only the
-    # rnadom position gets changed by random seed)
-    rng_span = np.uint64(2**63)//np.uint64(gpus.ngpus) #mwc64x period is 2**63
-    gpus.initMCMC(p.nsteps, [i*rng_span for i in range(gpus.ngpus)], rng_span)
+    gpus.initMCMC(p.nsteps)
     gpus.initJstep()
 
     # first gpu/node may need to store all collected seqs
@@ -629,13 +623,7 @@ def MCMCbenchmark(orig_args, args, log):
     gpup = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
     gpus = setup_GPUs(p, log)
-
-    # rng_span is the rng stream range assigned per GPU, used to compute mutant
-    # residues. Here we just take the full span (2**63) and divide it evenly
-    # per gpu. Note this is the same in all runs of the program (only the
-    # rnadom position gets changed by random seed)
-    rng_span = np.uint64(2**63)//np.uint64(gpus.ngpus) #mwc64x period is 2**63
-    gpus.initMCMC(p.nsteps, [i*rng_span for i in range(gpus.ngpus)], rng_span)
+    gpus.initMCMC(p.nsteps)
 
     # figure out how many sequences we need to initialize
     needed_seqs = None
@@ -743,13 +731,7 @@ def equilibrate(orig_args, args, log):
     gpup = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
     gpus = setup_GPUs(p, log)
-
-    # rng_span is the rng stream range assigned per GPU, used to compute mutant
-    # residues. Here we just take the full span (2**63) and divide it evenly
-    # per gpu. Note this is the same in all runs of the program (only the
-    # rnadom position gets changed by random seed)
-    rng_span = np.uint64(2**63)//np.uint64(gpus.ngpus) #mwc64x period is 2**63
-    gpus.initMCMC(p.nsteps, [i*rng_span for i in range(gpus.ngpus)], rng_span)
+    gpus.initMCMC(p.nsteps)
 
     nseqs = None
     needseed = False

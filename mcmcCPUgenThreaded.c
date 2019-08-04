@@ -66,21 +66,20 @@ float getEnergy(char *seq){
 }
 
 inline void
-step(float *energy, char *seq, int pos, int res, float rng) {
+step(char *seq, int pos, int res, float rng) {
     int m;
 
-    float newenergy = *energy;
+    float dE = 0;
     uint sbn = seq[pos];
 
     for (m = 0; m < L; m++) {
-        newenergy += (coupling(pos,m,res,seq[m]) -
-                      coupling(pos,m,sbn,seq[m]) );
+        dE += (coupling(pos,m,res,seq[m]) -
+               coupling(pos,m,sbn,seq[m]) );
     }
 
-    float p = exp(-(newenergy - *energy));
+    float p = exp(-dE);
     if (p > rng) {
         seq[pos] = res;
-        *energy = newenergy;
     }
 }
 
@@ -99,17 +98,14 @@ void *mcmc(void *t){
         seq[i] = sseq[i];
     }
 
-    float energy;
     for(n = 0; n < loops; n++){
-        energy = getEnergy(seq);//reset floating point error
-
         for (i = 0; i < steps; ) {
             c.v[0]++;
             threefry2x32_ctr_t rng = threefry2x32(c, k);
 
             if (rng.v[0] <= Lq_rng_lim) {
                 uint32_t Lq = rng.v[0] % (L*q);
-                step(&energy, seq, Lq/q, Lq%q, uniformMap32(rng.v[1]));
+                step(seq, Lq/q, Lq%q, uniformMap32(rng.v[1]));
                 i++;
             }
         }
@@ -119,8 +115,6 @@ void *mcmc(void *t){
         }
         printf("\n");
     }
-
-    fprintf(stderr, "%20d", energy);
 
     free(seq);
 #if NUM_THREADS > 1

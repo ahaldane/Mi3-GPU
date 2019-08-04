@@ -74,9 +74,9 @@ class MPI_multinode_controller(GPU_node):
             yield n, lst[pos:pos + n.ngpus]
             pos += n.ngpus
 
-    def initMCMC(self, nsteps, rng_offsets, rng_span):
+    def _initMCMC_rng(self, nsteps, rng_offsets, rng_span):
         for node, offset in self._zip_gpus(rng_offsets):
-            node.initMCMC(nsteps, offset, rng_span)
+            node._initMCMC_rng(nsteps, offset, rng_span)
 
     def initLargeBufs(self, nseq):
         if isinstance(nseq, list):
@@ -269,8 +269,8 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
     def head_gpu(self):
         return self
 
-    def initMCMC(self, nsteps, rng_offsets, rng_span):
-        self.isend('initMCMC')
+    def _initMCMC_rng(self, nsteps, rng_offsets, rng_span):
+        self.isend('_initMCMC_rng')
         self.isend((nsteps, rng_offsets, rng_span))
 
     def initLargeBufs(self, nseq):
@@ -444,13 +444,13 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
     def get_gpu_list(self):
         self.isend(self.gpu_list)
 
-    def initMCMC(self):
+    def _initMCMC_rng(self):
         args = self.recv()
-        super().initMCMC(*args)
+        super()._initMCMC_rng(*args)
 
     def initLargeBufs(self):
         nseq = self.recv()
-        super().initMCMC(nseq)
+        super().initLargeBufs(nseq)
 
     def calcEnergies(self):
         seqbufname = self.recv()

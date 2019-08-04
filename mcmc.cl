@@ -356,9 +356,8 @@ void metropolis(__global float *J,
     for (i = 0; i < nsteps; i++) {
         uint pos = position_list[i + position_offset];
         uint2 rng = MWC64XVEC2_NextUint2(&rstate);
-        rng.x = rng.x%q;
-        #define mutres  (rng.x)  // small error here if MAX_INT%q != 0
-                                 // of order q/MAX_INT in marginals
+        rng.x = rng.x%q;         // small error here if MAX_INT%q != 0
+        #define mutres  (rng.x)  // of order q/MAX_INT in marginals
         uint sbn = seqmem[(pos/4)*nseqs + get_global_id(0)];
         uint seqp = getbyte(&sbn, pos%4);
 

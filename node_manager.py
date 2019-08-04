@@ -68,7 +68,17 @@ class GPU_node:
     def gpu_list(self):
         return [("({}) ".format(g.gpunum) + g.device.name) for g in self.gpus]
 
-    def initMCMC(self, nsteps, rng_offsets, rng_span):
+    def initMCMC(self, nsteps):
+        # rng_span is the rng stream range assigned per GPU, used to compute
+        # mutant residues. Here we just take the full span (2**63) and divide
+        # it evenly per gpu. Note this is the same in all runs of the program
+        # (only the random position gets changed by numpy random seed).
+        # mwc64x period is 2**63
+        rng_span = np.uint64(2**63)//np.uint64(self.ngpus) 
+        rng_offsets = [i*rng_span for i in range(self.ngpus)]
+        self._initMCMC_rng(nsteps, rng_offsets, rng_span)
+
+    def _initMCMC_rng(self, nsteps, rng_offsets, rng_span):
         for gpu, offset in zip(self.gpus, rng_offsets):
             gpu.initMCMC(nsteps, offset, rng_span)
 

@@ -1,11 +1,9 @@
 Mi3-GPU (or Montecarlo Inverse Ising Inference for GPUs)
 ===================================================================
 
-Mi3-GPU (Mee-three) solves the "inverse Ising problem" using a GPU-parallelized Monte-Carlo sequence generation algorithm, to infer Potts models for analyzing coevolutionary mutation patterns in Multiple Sequence Alignements.
+Mi3-GPU (Mee-three) solves the "inverse Ising problem" using a GPU-parallelized Monte-Carlo sequence generation algorithm to infer Potts models. It is designed for analyzing coevolutionary mutation patterns in Multiple Sequence Alignements (MSAs)
 
-Given pairwise residue-frequencies obtained from an MSA containing sequences `s` with length `L` and `q` residue types, this program solves for the real-valued coupling parameters `J^{ij}_{\alpha \beta}` of an infinite-range q-state Potts model with Hamiltonian `H(s) = \sum_{i < j}^L J^{ij}_{s_i s_j}` which best model the dataset MSA.
-
-See the User guide for detailed information and examples.
+See the [User Guide](UserGuide.md) for detailed information and examples.
 
 For more information see the following publications:
 
