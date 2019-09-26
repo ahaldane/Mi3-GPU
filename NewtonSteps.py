@@ -402,12 +402,13 @@ def runMCMC(gpus, couplings, runName, param, log):
 
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
-        mkdir_p(os.path.join(outdir, runName, 'equilibration'))
+        equil_dir = os.path.join(outdir, runName, 'equilibration')
+        mkdir_p(equil_dir)
         equil_e = []
-        for j in range(nloop/trackequil):
+        for j in range(nloop//trackequil):
             for i in range(trackequil):
                 gpus.runMCMC()
-            energies, _ = track_main_bufs(gpus, equil_dir, step=step)
+            energies, _ = track_main_bufs(gpus, equil_dir, step=j*trackequil)
             equil_e.append(energies)
 
         step = nloop
@@ -493,7 +494,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
         #note: sync necessary with trackequil (may slightly affect performance)
         mkdir_p(os.path.join(outdir, runName, 'equilibration'))
         equil_e = []
-        for j in range(nloop/trackequil):
+        for j in range(nloop//trackequil):
             for i in range(trackequil):
                 for gpu in gpus:
                     gpu.runMCMC()
