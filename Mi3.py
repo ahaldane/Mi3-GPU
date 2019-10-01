@@ -20,7 +20,7 @@
 
 import numpy as np
 from numpy.random import randint, rand
-from scipy.misc import logsumexp
+from scipy.special import logsumexp
 import pyopencl as cl
 import pyopencl.array as cl_array
 import sys, os, errno, time, datetime, socket, signal, atexit
@@ -42,12 +42,14 @@ except ImportError:
     from pipes import quote as cmd_quote
 
 from node_manager import GPU_node
-try:
-    from mpi4py import MPI
-except ImportError:
-    MPI = None
 
-if MPI:
+MPI = None
+def setup_MPI():
+    global MPI, mpi_comm, mpi_rank
+    global MPI_multinode_controller, MPI_GPU_node, MPI_worker
+
+    from mpi4py import MPI
+
     mpi_comm = MPI.COMM_WORLD
     if mpi_comm.Get_size() == 1:
         MPI = None
@@ -1336,9 +1338,9 @@ def main(args):
     add('action', choices=actions.keys(), nargs='?', default=None,
         help="Computation to run")
     add('--clinfo', action=CLInfoAction, help="Display detected GPUs")
+    add('--mpi', action='store_true', help="Enable MPI")
     add('-h', '--help', action='store_true',
         help="show this help message and exit")
-
 
     known_args, remaining_args = parser.parse_known_args(args)
 
@@ -1352,6 +1354,13 @@ def main(args):
     if known_args.help:
         remaining_args.append('-h')
 
+    if known_args.mpi:
+        setup_MPI()
+
+        if mpi_rank != 0:
+            worker_GPU_main()
+            return
+
     #if not sys.stdin.isatty(): #config file supplied in stdin
     #    config = readConfig(sys.stdin, known_args.action)
     #    configargs = [arg for opt,val in config for arg in ('--'+opt, val)]
@@ -1363,8 +1372,4 @@ def main(args):
 
 if __name__ == '__main__':
     setup_exit_hook(print)
-
-    if MPI is None or mpi_rank == 0:
-        main(sys.argv[1:])
-    else:
-        worker_GPU_main()
+    main(sys.argv[1:])
