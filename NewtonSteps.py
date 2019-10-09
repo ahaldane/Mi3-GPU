@@ -23,26 +23,8 @@ import sys, os, errno, glob, argparse, time
 from utils.changeGauge import fieldlessGaugeEven
 from utils.seqload import writeSeqs, loadSeqs
 from utils import printsome, getLq, indep_bimarg, unimarg
-from Mi3 import generateSequences, MPI
+from Mi3 import generateSequences, MPI, mkdir_p
 import time
-
-################################################################################
-# Set up enviroment and some helper functions
-
-def mkdir_p(path):
-    try:
-        os.makedirs(path)
-    except OSError as exc:
-        if not (exc.errno == errno.EEXIST and os.path.isdir(path)):
-            raise
-
-class attrdict(dict):
-    def __getattr__(self, attr):
-        try:
-            return dict.__getitem__(self, attr)
-        except KeyError:
-            return None
-
 
 ################################################################################
 #Helper funcs

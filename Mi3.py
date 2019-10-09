@@ -64,11 +64,15 @@ def setup_MPI():
 progname = 'Mi3.py'
 
 def mkdir_p(path):
+    orig_umask = os.umask(0o755)
     try:
-        os.makedirs(path)
+        os.makedirs(path, mode=0o755)
     except OSError as exc:
         if not (exc.errno == errno.EEXIST and os.path.isdir(path)):
             raise
+    finally:
+        os.umask(orig_umask)
+
 scriptPath = os.path.dirname(os.path.realpath(__file__))
 scriptfile = os.path.join(scriptPath, "mcmc.cl")
 
@@ -76,7 +80,6 @@ class attrdict(dict):
     def __getattr__(self, attr):
         if attr.startswith('_'):
             return super().__getattr__(attr)
-
         try:
             return dict.__getitem__(self, attr)
         except KeyError:
@@ -457,7 +460,8 @@ def inverseIsing(orig_args, args, log):
     absexp = np.sqrt(2/np.pi)*np.sqrt(f*(1-f)/N)/f
     expected_Ferr = np.mean(absexp[f>0.01])
     log("\nEstimated lowest achievable error for this nwalkers and bimarg is:"
-        "\nSSR = {:.4f}   Ferr = {:.3f}".format(expected_SSR, expected_Ferr))
+        "\nMIN:    SSR = {:.4f}   Ferr = {:.3f}".format(expected_SSR,
+                                                        expected_Ferr))
     log("(Statistical error only. Modeling biases and perturbation procedure "
         "may cause additional error)")
 
