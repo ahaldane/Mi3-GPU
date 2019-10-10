@@ -238,10 +238,12 @@ class MCMCGPU:
     def _setupBuffer(self, bufname, buftype, bufshape, pad=None,
                      flags=cf.READ_WRITE):
         flags = flags | cf.ALLOC_HOST_PTR
-        size = np.dtype(buftype).itemsize*int(np.product(bufshape))
 
+        nelem = int(np.product(bufshape))
         if pad:
-            size = size + pad - ((size-1)%pad) - 1
+            nelem = nelem + pad
+
+        size = np.dtype(buftype).itemsize * nelem
 
         buf = cl.Buffer(self.ctx, flags, size=size)
 
