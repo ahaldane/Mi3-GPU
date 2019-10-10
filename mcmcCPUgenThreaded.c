@@ -25,7 +25,7 @@
 #include <string.h>
 #include "Random123/threefry.h"
 #include "math.h"
-#define NUM_THREADS 1
+#define NUM_THREADS 12
 #if NUM_THREADS > 1
 #include <pthread.h>
 #endif

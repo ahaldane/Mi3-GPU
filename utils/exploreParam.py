@@ -10,6 +10,8 @@ from Bio.Alphabet import IUPAC
 import seqload, changeGauge
 from matplotlib.colors import LinearSegmentedColormap
 
+o = -0.5
+
 def getL(size):
     return int(((1+sqrt(1+8*size))//2) + 0.5)
 
@@ -115,40 +117,40 @@ def drawGrid(ax, x,y,d,nx,ny, content, rowlabel, collabel, title, rowsum, colsum
     for i in range(nx+1):
         ax.plot([x,x+ny*d],[y+i*d,y+i*d], 'k-')
     fs = 12
-    
+
     if labeltext is None:
         def labeltext(ax, *args, **kwargs):
             ax.text(*args, **kwargs)
 
     if content != None:
         for i in range(ny):
-            labeltext(ax, x+0.5+i, y+0.5+nx, rowlabel[i], 
-                       horizontalalignment='center', 
+            labeltext(ax, x+0.5+i, y+0.5+nx, rowlabel[i],
+                       horizontalalignment='center',
                        verticalalignment='bottom',
                        fontsize=fs, rotation='vertical')
             if rowsum is not None:
-                ax.text(x+0.5+i, y-0.5, rowsum[i]['text'], 
-                           horizontalalignment='center', 
+                ax.text(x+0.5+i, y-0.5, rowsum[i]['text'],
+                           horizontalalignment='center',
                            verticalalignment='center',
                            fontsize=fs, color=rowsum[i]['color'])
             for j in range(nx):
                 c = content[i][j]
-                ax.text(x+0.5+i, y+0.5+ny-1-j, c['text'], 
-                           horizontalalignment='center', 
+                ax.text(x+0.5+i, y+0.5+ny-1-j, c['text'],
+                           horizontalalignment='center',
                            verticalalignment='center',
                            fontsize=fs, color=c['color'])
         for j in range(nx):
-            labeltext(ax, x-0.5, y+0.5+nx-1-j, collabel[j], 
-                       horizontalalignment='right', 
+            labeltext(ax, x-0.5, y+0.5+nx-1-j, collabel[j],
+                       horizontalalignment='right',
                        verticalalignment='center',
                        fontsize=fs)
             if colsum is not None:
-                ax.text(x+0.5+nx, y+0.5+nx-1-j, colsum[j]['text'], 
-                           horizontalalignment='center', 
+                ax.text(x+0.5+nx, y+0.5+nx-1-j, colsum[j]['text'],
+                           horizontalalignment='center',
                            verticalalignment='center',
                            fontsize=fs, color=colsum[j]['color'])
-    ax.text(x+ny/2, y+1.5+nx+1, title, 
-               horizontalalignment='center', 
+    ax.text(x+ny/2, y+1.5+nx+1, title,
+               horizontalalignment='center',
                verticalalignment='center',
                fontsize=fs)
 
@@ -174,9 +176,9 @@ def alphatext(ax,x,y,ls,**kw):
             t = transforms.offset_copy(text._transform, y=ex.height, units='dots')
 
 class PositionPicker:
-    def __init__(self, contactfig, margax, alphacolor, J, h, ff, score):
+    def __init__(self, contactfig, ax, alphacolor, J, h, ff, score):
         self.presstime = 0
-        self.margax = margax
+        self.margax, self.Cax, self.Jax = ax
         contactfig.canvas.mpl_connect('button_press_event', self.onpress)
         contactfig.canvas.mpl_connect('button_release_event', self.onrelease)
         self.i, self.j = None, None
@@ -203,7 +205,7 @@ class PositionPicker:
             if event.xdata is not None:
                 L, q = self.L, self.q
 
-                i,j = int(event.xdata-0.5), int(event.ydata-0.5)
+                i,j = int(event.xdata-o), int(event.ydata-o)
                 if i == j:
                     return
                 self.i, self.j = i, j
@@ -220,45 +222,49 @@ class PositionPicker:
                     Jij = Jij.T
 
                 self.margax.clear()
-                drawMarg(self.alphacolor, q, i,j, ffij, Jij, hi, hj, score, self.margax)
-                self.margax.figure.canvas.draw()
+                self.Cax.clear()
+                self.Jax.clear()
 
-def drawMarg(alphacolor, q, i,j, marg, J, hi, hj, score, ax):
+                drawMarg(self.alphacolor, q, i,j, ffij, Jij, hi, hj, score,
+                         self.margax, self.Cax, self.Jax)
+
+                self.margax.figure.canvas.draw()
+                self.Cax.figure.canvas.draw()
+                self.Jax.figure.canvas.draw()
+
+def drawMarg(alphacolor, q, i,j, marg, J, hi, hj, score, margax, Cax, Jax):
     graytext = lambda x: {'text': "{:.2f}".format(x), 'color': cm.gray_r(fnorm(x))}
     bwrtext = lambda x: {'text': "{:.2f}".format(x), 'color': cm.bwr(fnorm(x))}
     rwbtext = lambda x: {'text': "{:.2f}".format(x), 'color': cm.bwr_r(fnorm(x))}
     mapi = alphacolor[i]
     mapj = alphacolor[j]
 
-    ax.set_axis_off()
-    ax.set_xlim(0, 3*(q+4))
-    ax.set_ylim(0, 1*(q+5))
-
-    ax.text((3*(q+4)+2)/2.0, q+17, "Pair {}, {}".format(i+1,j+1), 
-               horizontalalignment='center', 
-               verticalalignment='center',
-               fontsize=16)
+    for ax in (margax, Cax, Jax):
+        ax.set_axis_off()
+        ax.set_xlim(0, 6+q)
+        ax.set_ylim(0, 1*(q+5))
 
     fnorm = Normalize(0, 0.1, clip=True)
-    drawGrid(ax, 3, 1, 1, q, q, 
+    drawGrid(margax, 3, 1, 1, q, q,
              [[graytext(x) for x in r] for r in marg],
-             mapi, mapj, 'Bimarg', 
-             list(map(graytext, sum(marg, axis=1))), 
+             mapi, mapj, '({}, {})   Bimarg'.format(i,j),
+             list(map(graytext, sum(marg, axis=1))),
              list(map(graytext, sum(marg, axis=0))),
              labeltext=alphatext)
-    
+
     fnorm = Normalize(-1, 1.0, clip=True)
     C = marg - outer(sum(marg, axis=1), sum(marg, axis=0))
     Cmax = np.max(np.abs(C))
-    drawGrid(ax, q+6.5, 1, 1, q, q, 
+    drawGrid(Cax, 3, 1, 1, q, q,
              [[rwbtext(x) for x in r] for r in C/Cmax],
-             mapi, mapj, 'C * {}'.format(str(Cmax)), None, None,
+             mapi, mapj, '({}, {})   C * {}'.format(i, j, str(Cmax)),
+             None, None,
              labeltext=alphatext)
 
     fnorm = Normalize(-1, 1.0, clip=True)
-    drawGrid(ax, q + 13, 1, 1, q, q, 
+    drawGrid(Jax, 3, 1, 1, q, q,
              [[bwrtext(x) for x in r] for r in J],
-             mapi, mapj, 'J score={:.2f}'.format(score), 
+             mapi, mapj, '({}, {})   J score={:.2f}'.format(i, j, score),
              list(map(bwrtext, hi)), list(map(bwrtext, hj)),
              labeltext=alphatext)
 
@@ -273,6 +279,8 @@ cdict = {'red':   ((0.0,  1.0, 1.0),
 alphared = LinearSegmentedColormap('AlphaRed', cdict)
 
 def main():
+    alpha21 = '-' + IUPAC.protein.letters
+
     parser = argparse.ArgumentParser(description='Run DCA')
     parser.add_argument('bimarg')
     parser.add_argument('couplings')
@@ -280,15 +288,15 @@ def main():
     parser.add_argument('-unimarg21', help='21 letter univariate marginals')
     parser.add_argument('-contactfreq', help='contact frequency file')
     parser.add_argument('-contactmode',
-                        choices=['split', 'overlay', 'splitoverlay'], 
+                        choices=['split', 'overlay', 'splitoverlay'],
                         default='overlay',
                         help='how to draw contact map')
-    parser.add_argument('-score', 
-                        choices=['fb', 'fbw', 'fbwsqrt', 'DI', 'Xij'], 
+    parser.add_argument('-score',
+                        choices=['fb', 'fbw', 'fbwsqrt', 'DI', 'Xij'],
                         default='fbwsqrt')
-    parser.add_argument('-gauge', choices=['nofield', 0, 'w', 'wsqrt'], 
+    parser.add_argument('-gauge', choices=['nofield', '0', 'w', 'wsqrt'],
                                              default='wsqrt')
-    parser.add_argument('-alpha', default="ABCDEFGH")
+    parser.add_argument('-alpha', default=alpha21)
     parser.add_argument('-regions', help='comma separated list of indices')
     parser.add_argument('-title', help='Figure title')
 
@@ -301,7 +309,7 @@ def main():
     J = np.load(args.couplings)
 
     unimarg = getUnimarg(ff)
-    
+
     L, q = getLq(J)
 
     if args.gauge == 'nofield':
@@ -331,12 +339,12 @@ def main():
     else:
         raise Exception("Not yet implemented")
     save('score', pottsScore)
-    
+
     if args.alphamap:
         unimarg21 = np.load(args.unimarg21)
 
         with open(args.alphamap) as f:
-            alphamap = [l.split()[1:] for l in f.readlines()] 
+            alphamap = [l.split()[1:] for l in f.readlines()]
             # replace "junk" entry in alpha map with '*'
             alphamap_color = []
             for l,a in enumerate(alphamap):
@@ -353,9 +361,9 @@ def main():
                 alphamap_color.append(clet)
     else:
         alphamap_color = [[[(c, 1.0)] for c in alpha] for i in range(L)]
-    
+
     ss = 0.4
-    
+
     contactfig = plt.figure()
 
 
@@ -364,11 +372,11 @@ def main():
         # assume grayscale [0,1]
         cont = cm.gray_r(cont*0.2)
         plt.imshow(cont, origin='lower',
-                     extent=(+0.5,L+0.5,+0.5,L+0.5), interpolation='nearest')
+                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
 
         scores = getM(pottsScore)
         img = plt.imshow(scores, origin='lower', cmap=alphared,
-                     extent=(+0.5,L+0.5,+0.5,L+0.5), interpolation='nearest')
+                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
         cbar = plt.colorbar()
         cbar = DraggableColorbar(cbar,img)
         cbar.connect()
@@ -380,16 +388,16 @@ def main():
 
         upper = getM(pottsScore)
         upper[hitri] = nan
-        img = plt.imshow(upper, origin='lower', cmap='Blues', 
-                     extent=(+0.5,L+0.5,+0.5,L+0.5), interpolation='nearest')
+        img = plt.imshow(upper, origin='lower', cmap='Blues',
+                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
         cbar = plt.colorbar()
         cbar = DraggableColorbar(cbar,img)
         cbar.connect()
 
         lower = getM(np.load(args.contactfreq))
         lower[lotri] = nan
-        plt.imshow(lower, origin='lower', cmap='Reds', 
-                     extent=(+0.5,L+0.5,+0.5,L+0.5), interpolation='nearest')
+        plt.imshow(lower, origin='lower', cmap='Reds',
+                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
     if args.contactfreq and args.contactmode == 'splitoverlay':
         lotri = ones((L,L), dtype=bool)
         lotri[triu_indices(L,k=1)] = False
@@ -399,18 +407,18 @@ def main():
         cont = getM(np.load(args.contactfreq))
         cont = cm.gray_r(cont*0.2)
         plt.imshow(cont, origin='lower',
-                     extent=(+0.5,L+0.5,+0.5,L+0.5), interpolation='nearest')
+                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
 
         upper = getM(pottsScore)
         upper[hitri] = nan
         img = plt.imshow(upper, origin='lower', cmap=alphared,
-                     extent=(+0.5,L+0.5,+0.5,L+0.5), interpolation='nearest')
+                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
         cbar = plt.colorbar()
         cbar = DraggableColorbar(cbar,img)
         cbar.connect()
     else:
-        img = plt.imshow(getM(pottsScore), origin='lower', cmap='Blues', 
-                     extent=(+0.5,L+0.5,+0.5,L+0.5), interpolation='nearest')
+        img = plt.imshow(getM(pottsScore), origin='lower', cmap='Blues',
+                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
         cbar = plt.colorbar()
         cbar = DraggableColorbar(cbar, img)
         cbar.connect()
@@ -418,15 +426,24 @@ def main():
     if args.regions:
         regions = [int(x) for x in args.regions.split(',')]
         for r in regions:
-            plt.axvline(r+0.5, color='k', alpha=0.2)
-            plt.axhline(r+0.5, color='k', alpha=0.2)
+            plt.axvline(r+o, color='k', alpha=0.2)
+            plt.axhline(r+o, color='k', alpha=0.2)
 
     if args.title:
         plt.title(args.title)
 
-    margfig = plt.figure(figsize=(ss*(3*(q+4)), ss*1*(q+5)), facecolor='white')
+    gridfig_size = tuple(0.2*x for x in (6+q, 6+q))
+
+    margfig = plt.figure(figsize=gridfig_size, facecolor='white')
     margax = plt.axes([0, 0, 1, 1])
-    ijpicker = PositionPicker(contactfig, margax, alphamap_color, J, h, ff, pottsScore)
+
+    Cfig = plt.figure(figsize=gridfig_size, facecolor='white')
+    Cax = plt.axes([0, 0, 1, 1])
+
+    Jfig = plt.figure(figsize=gridfig_size, facecolor='white')
+    Jax = plt.axes([0, 0, 1, 1])
+
+    ijpicker = PositionPicker(contactfig, (margax, Cax, Jax), alphamap_color, J, h, ff, pottsScore)
 
     plt.show()
 
