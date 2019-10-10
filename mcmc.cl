@@ -196,18 +196,24 @@ inline float getEnergiesf(__global float *J,
 // prefetch of the next WGSIZE Js. Continue iterating modulo chunks of q*q
 // until we would hang past the end of A, then replace the B half with latest
 // prefetch. Continue alternating the A and the B prefetches/overwrites.
+//
+// Note: J buffer must be padded with an extra 3*WGSIZE elements long,
+// since we prefetch 3 groups of WGSIZE initially, and sometimes load an
+// extra WGSIZE at the end of the J buffer.
 
     // load 2*WGSIZE worth of couplings
-    uint lJ_offset = 0;
     uint Jmem_offset = 0;
     lJ[get_local_id(0)] = J[Jmem_offset + get_local_id(0)];
     Jmem_offset += WGSIZE;
     lJ[get_local_id(0) + WGSIZE] = J[Jmem_offset + get_local_id(0)];
+    Jmem_offset += WGSIZE;
     barrier(CLK_LOCAL_MEM_FENCE);
 
     // prefetch next WGSIZE couplings
-    Jmem_offset += WGSIZE;
     float Jprefetch = J[Jmem_offset + get_local_id(0)];
+    Jmem_offset += WGSIZE;
+
+    uint lJ_offset = 0;
 
     float energy = 0;
     float rem = 0;
@@ -243,8 +249,8 @@ inline float getEnergiesf(__global float *J,
                 barrier(CLK_LOCAL_MEM_FENCE);
 
                 // start next prefetch
-                Jmem_offset += WGSIZE;
                 Jprefetch = J[Jmem_offset + get_local_id(0)];
+                Jmem_offset += WGSIZE;
             }
 
             lJ_offset = (lJ_offset + q*q)%(2*WGSIZE);

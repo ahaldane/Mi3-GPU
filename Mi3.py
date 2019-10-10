@@ -64,14 +64,11 @@ def setup_MPI():
 progname = 'Mi3.py'
 
 def mkdir_p(path):
-    orig_umask = os.umask(0o755)
     try:
-        os.makedirs(path, mode=0o755)
+        os.makedirs(path)
     except OSError as exc:
         if not (exc.errno == errno.EEXIST and os.path.isdir(path)):
             raise
-    finally:
-        os.umask(orig_umask)
 
 scriptPath = os.path.dirname(os.path.realpath(__file__))
 scriptfile = os.path.join(scriptPath, "mcmc.cl")
