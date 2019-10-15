@@ -157,9 +157,7 @@ class MPI_multinode_controller(GPU_node):
 
     def runMCMC(self):
         for n,gpu in enumerate(self.gpus):
-            #t1 = time.time()
             gpu.runMCMC()
-            #print('     runMCMC', n, time.time() - t1)
 
 class MPI_comm_Mixin:
     def __init__(self):
@@ -281,9 +279,7 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
         self.isend('initJstep')
 
     def runMCMC(self):
-        t1 = time.time()
         self.isend('runMCMC')
-        #print("       ttt isend", time.time() - t1)
 
     def calcEnergies(self, seqbufname):
         self.isend('calcEnergies')

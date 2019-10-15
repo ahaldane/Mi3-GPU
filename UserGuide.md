@@ -34,7 +34,7 @@ To check that the script is correctly detecting the system's OpenCL installation
     ./Mi3.py --clinfo
 
 which should output information on the available GPUs. XXX with MPI
-Mi3-GPU was developed and tested on Linux systems.
+Mi3-GPU was developed and tested on Linux systems using the Anaconda3 python package manager. Note that it is best to install mpi4py using pip and not using conda, to avoid overriding the system MPI installation.
 
 Overview of Functionality
 -------------------------

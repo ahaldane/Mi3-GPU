@@ -518,7 +518,7 @@ def NewtonSteps(runName, param, bimarg_model, gpus, log):
     if param.newtonSteps != 1:
         Jsteps, newJ, bimarg_p = iterNewton(param, bimarg_model, gpus, log)
         np.save(os.path.join(outdir, runName, 'predictedBimarg'), bimarg_p)
-        np.save(os.path.join(outdir, runName, 'predictedJ'), newJ)
+        np.save(os.path.join(outdir, runName, 'perturbedJ'), newJ)
     else:
         log("Performing single newton update step")
         newJ = singleNewton(bimarg_model, param.gamma0, param, gpus)
@@ -580,7 +580,7 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
 
     return Jstep + Jsteps, seqs, sampledenergies, newJ
 
-def newtonMCMC(param, gpus, log):
+def newtonMCMC(param, gpus, start_run, log):
     J = param.couplings
 
     # copy target bimarg to gpus
@@ -627,7 +627,7 @@ def newtonMCMC(param, gpus, log):
     # solve using newton-MCMC
     Jstep = Jsteps
     name_fmt = 'run_{{:0{}d}}'.format(int(np.ceil(np.log10(param.mcmcsteps))))
-    for i in range(param.mcmcsteps):
+    for i in range(start_run, param.mcmcsteps):
         runname = name_fmt.format(i)
 
         # determine seed sequence, if using seed

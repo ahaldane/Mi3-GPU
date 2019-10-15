@@ -23,13 +23,8 @@ from numpy.random import randint, rand
 from scipy.special import logsumexp
 import pyopencl as cl
 import pyopencl.array as cl_array
-import sys, os, errno, time, datetime, socket, signal, atexit
-try:
-    import configargparse as argparse
-    have_configargparse = True
-except:
-    import argparse
-    have_configargparse = False
+import sys, os, errno, time, datetime, socket, signal, atexit, glob
+
 from utils.seqload import loadSeqs, writeSeqs
 from utils.changeGauge import fieldlessGaugeEven
 from utils import printsome, getLq, unimarg
@@ -108,7 +103,7 @@ def optionRegistry():
               "loads 'alpha', 'couplings', 'seedseq' and 'seqs', if not "
               "otherwise supplied.") )
     add('outdir', default='output', help='Output Directory')
-    #add('finish', help='Dir. of an unfinished run to finish')
+    add('finish', help='Dir. of an unfinished run to finish')
     #add('continue', help='Dir. of finished run, to start a new run from')
     add('config', #is_config_file_arg=True,
                   help='config file to load arguments from')
@@ -348,16 +343,13 @@ def inverseIsing(orig_args, args, log):
     addopt(parser, 'Sampling Options',    'equiltime '
                                           'trackequil tempering nswaps_temp ')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'seqmodel outdir rngseed config ')
-                                          #'finish continue')
+    addopt(parser,  None,                 'seqmodel outdir rngseed config '
+                                          'finish')
 
     args = parser.parse_args(args)
     args.measurefperror = False
 
     print_node_startup(log)
-
-    if args.config:
-        pass
 
     log("")
     log("Command line arguments:")
@@ -371,13 +363,33 @@ def inverseIsing(orig_args, args, log):
     log("Initialization")
     log("===============")
 
+    if args.finish:
+        # search for last completed run (contains a perturbedJ file)
+        rundirs = glob.glob(os.path.join(args.finish, 'run_*'))
+        rundirs.sort()
+        rundir = None
+        for fn in reversed(rundirs):
+            if os.path.isfile(os.path.join(fn, 'perturbedJ.npy')):
+                rundir = fn
+                break
+        if rundir is None:
+            raise Exception("Did not find any runs in {}".format(args.finish))
+
+        log("Continuing from {}".format(rundir))
+        args.seqmodel = rundir
+        log("")
+        with open(os.path.join(args.finish, 'config.json'), 'r') as f:
+            args.__dict__ = json.load(f)
+
+        startrun = int(re.match('[0-9]*$', rundir).groups()) + 1
+    else:
+        startrun = 0
+        mkdir_p(args.outdir)
+        with open(os.path.join(args.outdir, 'command.txt'), 'w') as f:
+            f.write(" ".join(cmd_quote(a) for a in orig_args))
+
     # collect all detected parameters in "p"
     p = attrdict({'outdir': args.outdir})
-    mkdir_p(args.outdir)
-
-    if have_configargparse:
-        fn = os.path.join(args.outdir, 'config.cfg')
-        parser.write_config_file(args, [fn])
 
     setup_seed(args, p, log)
 
@@ -413,14 +425,13 @@ def inverseIsing(orig_args, args, log):
     needed_seqs = None
     use_seed = p.reseed in ['single_best', 'single_random']
     if p.preopt or (p.reseed == 'none'):
-        needed_seqs = sum(gpus.nseq['main'])
+        needed_seqs = gpus.nseq['main']
     p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
                                    nseqs=needed_seqs, needseed=use_seed))
     if p.reseed == 'msa':
         seedseqs = loadSequenceFile(args.seedmsa, alpha, log)
-        gpuwalkers = gpus.nseq['main']
-        seedseqs = repeatseqs(seedseqs, sum(gpuwalkers))
-        p['seedmsa'] = np.split(seedseqs, np.cumsum(gpuwalkers)[:-1])
+        seedseqs = repeatseqs(seedseqs, gpus.nseq['main'])
+        p['seedmsa'] = np.split(seedseqs, gpus.ngpus)
 
     # initialize main buffers with any given sequences
     if p.preopt or p.reseed == 'none':
@@ -467,7 +478,7 @@ def inverseIsing(orig_args, args, log):
     log("MCMC Run")
     log("========")
 
-    NewtonSteps.newtonMCMC(p, gpus, log)
+    NewtonSteps.newtonMCMC(p, gpus, startrun, log)
 
 def getEnergies(orig_args, args, log):
     descr = ('Compute Potts Energy of a set of sequences')
@@ -523,69 +534,69 @@ def getEnergies(orig_args, args, log):
     log("Saving results to file '{}'".format(args.out))
     np.save(args.out, es)
 
-def getBimarg(orig_args, args, log):
-    descr = ('Compute bimarg of a set of sequences')
-    parser = argparse.ArgumentParser(prog=progname + ' getBimarg',
-                                     description=descr)
-    add = parser.add_argument
-    add('out', default='output', help='Output File')
-    addopt(parser, 'GPU Options',         'wgsize gpus profile')
-    addopt(parser, 'Potts Model Options', 'alpha')
-    addopt(parser, 'Sequence Options',    'seqs')
-    addopt(parser,  None,                 'outdir')
+#def getBimarg(orig_args, args, log):
+#    descr = ('Compute bimarg of a set of sequences')
+#    parser = argparse.ArgumentParser(prog=progname + ' getBimarg',
+#                                     description=descr)
+#    add = parser.add_argument
+#    add('out', default='output', help='Output File')
+#    addopt(parser, 'GPU Options',         'wgsize gpus profile')
+#    addopt(parser, 'Potts Model Options', 'alpha')
+#    addopt(parser, 'Sequence Options',    'seqs')
+#    addopt(parser,  None,                 'outdir')
 
-    args = parser.parse_args(args)
-    args.measurefperror = False
+#    args = parser.parse_args(args)
+#    args.measurefperror = False
 
-    requireargs(args, 'alpha seqs')
+#    requireargs(args, 'alpha seqs')
 
-    log("Initialization")
-    log("===============")
-    log("")
+#    log("Initialization")
+#    log("===============")
+#    log("")
 
-    p = attrdict({'outdir': args.outdir})
-    mkdir_p(args.outdir)
-    alpha = args.alpha.strip()
-    p['alpha'] = alpha
-    q = len(alpha)
-    p['q'] = q
-    log("Sequence Setup")
-    log("--------------")
-    seqs = loadSequenceFile(args.seqs, alpha, log)
-    L = seqs.shape[1]
-    p['L'] = L
-    if seqs is None:
-        raise Exception("seqs must be supplied")
-    log("")
+#    p = attrdict({'outdir': args.outdir})
+#    mkdir_p(args.outdir)
+#    alpha = args.alpha.strip()
+#    p['alpha'] = alpha
+#    q = len(alpha)
+#    p['q'] = q
+#    log("Sequence Setup")
+#    log("--------------")
+#    seqs = loadSequenceFile(args.seqs, alpha, log)
+#    L = seqs.shape[1]
+#    p['L'] = L
+#    if seqs is None:
+#        raise Exception("seqs must be supplied")
+#    log("")
 
-    args.nwalkers = len(seqs)
-    args.nsteps = 1
-    args.nlargebuf = 1
-    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
-    p.update(gpup)
-    gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), log, p.wgsize)
-    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
-            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
-    gpus.setSeqs('main', seqs, log)
-    log("")
+#    args.nwalkers = len(seqs)
+#    args.nsteps = 1
+#    args.nlargebuf = 1
+#    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
+#    p.update(gpup)
+#    gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), log, p.wgsize)
+#    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
+#            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
+#    gpus.setSeqs('main', seqs, log)
+#    log("")
 
-    log("Computing Bimarg")
-    log("==================")
+#    log("Computing Bimarg")
+#    log("==================")
 
-    for gpu in gpus:
-        gpu.calcBicounts('main')
-        gpu.bicounts_to_bimarg(gpu.nseq['main'])
-    bbb = readGPUbufs(['bi'], gpus)[0]
-    merge_device_bimarg(gpus)
-    bimarg = gpus[0].getBuf('bi').read()
-    bicounts = readGPUbufs(['bicount'], gpus)[0]
+#    for gpu in gpus:
+#        gpu.calcBicounts('main')
+#        gpu.bicounts_to_bimarg(gpu.nseq['main'])
+#    bbb = readGPUbufs(['bi'], gpus)[0]
+#    merge_device_bimarg(gpus)
+#    bimarg = gpus[0].getBuf('bi').read()
+#    bicounts = readGPUbufs(['bicount'], gpus)[0]
 
-    log("Saving results to file '{}'".format(args.out))
-    for n,b in enumerate(bicounts):
-        np.save(os.path.join(p.outdir, 'bicount-{}'.format(n)), b)
-    for n,b in enumerate(bbb):
-        np.save(os.path.join(p.outdir, 'bimarg-{}'.format(n)), b)
-    np.save(args.out, bimarg)
+#    log("Saving results to file '{}'".format(args.out))
+#    for n,b in enumerate(bicounts):
+#        np.save(os.path.join(p.outdir, 'bicount-{}'.format(n)), b)
+#    for n,b in enumerate(bbb):
+#        np.save(os.path.join(p.outdir, 'bimarg-{}'.format(n)), b)
+#    np.save(args.out, bimarg)
 
 
 def MCMCbenchmark(orig_args, args, log):
@@ -632,7 +643,7 @@ def MCMCbenchmark(orig_args, args, log):
     needed_seqs = None
     use_seed = False
     if args.seqs is not None:
-        needed_seqs = np.sum(gpus.nseq['main'])
+        needed_seqs = gpus.nseq['main']
     elif args.seedseq is not None:
         use_seed = True
     else:
@@ -641,9 +652,8 @@ def MCMCbenchmark(orig_args, args, log):
                                    nseqs=needed_seqs, needseed=use_seed))
     if p.reseed == 'msa':
         seedseqs = loadSequenceFile(args.seedmsa, alpha, log)
-        gpuwalkers = gpus.nseq['main']
-        seedseqs = repeatseqs(seedseqs, sum(gpuwalkers))
-        p['seedmsa'] = np.split(seedseqs, np.cumsum(gpuwalkers)[:-1])
+        seedseqs = repeatseqs(seedseqs, gpus.nseq['main'])
+        p['seedmsa'] = np.split(seedseqs, gpus.ngpus)
 
     # initialize main buffers with any given sequences
     if use_seed:
@@ -1361,13 +1371,6 @@ def main(args):
         if mpi_rank != 0:
             worker_GPU_main()
             return
-
-    #if not sys.stdin.isatty(): #config file supplied in stdin
-    #    config = readConfig(sys.stdin, known_args.action)
-    #    configargs = [arg for opt,val in config for arg in ('--'+opt, val)]
-    #    remaining_args = configargs + remaining_args
-    if have_configargparse:
-        parser.write_config_file(known_args, ['tmpconfig.cfg'])
 
     actions[known_args.action](args, remaining_args, print)
 
