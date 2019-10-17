@@ -57,8 +57,10 @@ class GPU_node:
 
     @property
     def nseq(self):
-        return {'main': [g.nseq['main'] for g in self.gpus],
-                'large': [g.nseq.get('large', 0) for g in self.gpus]}
+        ret = {'main': sum(g.nseq['main'] for g in self.gpus)}
+        if 'large' in self.gpus[0].nseq:
+            ret['large'] = sum(g.nseq.get('large', 0) for g in self.gpus)
+        return ret
 
     @property
     def ngpus(self):

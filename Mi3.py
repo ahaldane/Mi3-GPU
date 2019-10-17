@@ -23,7 +23,7 @@ from numpy.random import randint, rand
 from scipy.special import logsumexp
 import pyopencl as cl
 import pyopencl.array as cl_array
-import sys, os, errno, time, datetime, socket, signal, atexit, glob
+import sys, os, errno, time, datetime, socket, signal, atexit, glob, argparse
 
 from utils.seqload import loadSeqs, writeSeqs
 from utils.changeGauge import fieldlessGaugeEven
@@ -1334,7 +1334,7 @@ def main(args):
     actions = {
       'inverseIsing':   inverseIsing,
       'getEnergies':    getEnergies,
-      'getBimarg':      getBimarg,
+      #'getBimarg':      getBimarg,
       'benchmark':      MCMCbenchmark,
       'subseqFreq':     subseqFreq,
       'mcmc':           equilibrate,

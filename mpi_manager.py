@@ -55,17 +55,12 @@ class MPI_multinode_controller(GPU_node):
         return self.head_node.head_gpu
 
     @property
-    def nseq(self):
-        return {'main': sum((n.nseq['main'] for n in self.nodes), []),
-                'large': sum((n.nseq['large'] for n in self.nodes), [])}
-
-    @property
     def ngpus(self):
         return sum(n.ngpus for n in self.nodes)
 
     @property
     def gpu_list(self):
-        return [name + ' on node {}'.format(n) 
+        return [name + ' on node {}'.format(n)
                 for n, node in enumerate(self.nodes) for name in node.gpu_list]
 
     def _zip_gpus(self, lst):
@@ -129,7 +124,7 @@ class MPI_multinode_controller(GPU_node):
         elif len(seqs) != self.ngpus:
             raise Exception(("Expected {} sequence bufs, got {}").format(
                              self.ngpus, len(seqs)))
-        
+
         if log:
             log("Transferring {} seqs to gpu's {} seq buffer...".format(
                                          str([len(s) for s in seqs]), bufname))
@@ -144,9 +139,10 @@ class MPI_multinode_controller(GPU_node):
     def merge_bimarg(self):
         self.reduce_node_bimarg()
 
-        bibuf = [n.head_gpu.getBuf('bi')[0] for n in self.nodes]
+        head_bi = self.head_node.gpus[0].getBuf('bi')
+        bibufs = [head_bi] + [n.get_head_bi() for n in self.nodes[1:]]
         # final sum done on CPU.
-        bi = sumarr([b.read() for b in bibuf])
+        bi = sumarr([b.read() for b in bibufs])
         bi = bi/np.sum(bi, axis=1, keepdims=True) # renormalize
 
         self.setBuf('bi', bi)
@@ -163,7 +159,7 @@ class MPI_comm_Mixin:
     def __init__(self):
         self.waitlist = collections.deque()
         self._msg_counts = {}
-    
+
     def check_waitlist(self):
         while len(self.waitlist) > 0 and self.waitlist[0].Test():
             self.waitlist.popleft()
@@ -211,8 +207,10 @@ class MPI_comm_Mixin:
         mpi_comm.Recv(dat, source=self.other_rank, tag=tag)
         return dat
 
-    def Irecv(self, dat, tag=0):
-        self._debug('Irecv', tag)
+    def Irecv(self, tag=0):
+        shape, dtype = self.recv(tag=tag)
+        dat = np.empty(shape, dtype)
+        self._debug('IRecv', tag, val='arr: {} {}'.format(shape, dtype))
         return FutureBuf_MPI(dat, self.other_rank, tag)
 
 
@@ -330,7 +328,7 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
     # CPU receives the GPU buffer, which conflicts with the "non-overtaking"
     # order guarantee of MPI in case we want to emit other mpi_sends in the
     # meantime.
-    # 
+    #
     # The solution is to use tags, as the "non-overlapping" guarantee only
     # appies to messages with the same source/tag combination, allowing
     # reordering of different tags. We still have to make sure MPI sends
@@ -348,9 +346,7 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
 
         bufs = []
         for n in range(self._ngpus):
-            shape, dtype = self.recv(tag=n+1)
-            dat = np.empty(shape, dtype)
-            bufs.append(self.Irecv(dat, tag=n+1))
+            bufs.append(self.Irecv(tag=n+1))
         return bufs
 
     def collect(self, bufs):
@@ -400,6 +396,10 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
     def reduce_node_bimarg(self):
         self.isend('reduce_node_bimarg')
 
+    def get_head_bi(self):
+        self.isend('get_head_bi')
+        return self.Irecv()
+
     def merge_bimarg(self):
         # this is implemented on manager's node_controller
         # (when using MPI we want to do this across nodes, not a single node)
@@ -411,7 +411,7 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
     def logProfile(self):
         self.isend('logProfile')
 
-        
+
 # this runs on a worker node
 class MPI_worker(GPU_node, MPI_comm_Mixin):
     def __init__(self, rank, gpus):
@@ -490,7 +490,7 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
     def setBuf(self):
         bufname = self.recv()
         is_list = self.recv()
-        
+
         # Use blocking Recv for now. Do we want non-blocking? Probably, since
         # CL enqueue_copy is non-blocking, but then again it shouldn't matter
         # for now since we do all CL ops in order anyway.
@@ -567,3 +567,9 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
     def merge_bimarg(self):
         # this is implemented on manager's node_controller
         raise NotImplementedError
+
+    def get_head_bi(self):
+        buf = self.gpus[0].getBuf('bi')
+        self.isend((buf.shape, buf.dtype))
+        buf.event.set_callback(cl.command_execution_status.COMPLETE,
+                               lambda s: self.Isend_raw(buf.read()))
