@@ -617,12 +617,6 @@ def newtonMCMC(param, gpus, start_run, log):
     if seqs is not None and param.reseed == 'single_best':
         gpus.calcEnergies()
         es = gpus.collect('E main')
-    def get_seq(n):
-        rseq = None
-        for s in seqs:
-            if n < s.shape[0]:
-                return s[n]
-            n -= s.shape[0]
 
     # solve using newton-MCMC
     Jstep = Jsteps
@@ -641,9 +635,9 @@ def newtonMCMC(param, gpus, start_run, log):
         elif param.reseed == 'single_random':
             #choose random seed from the final sequences from last round
             nseq = np.sum(s.shape[0] for s in seqs)
-            seed = get_seq(randint(0, nseq))
+            seed = seqs[randint(0, nseq)]
         elif param.reseed == 'single_best':
-            seed = get_seq(np.argmin(es))
+            seed = seqs[np.argmin(es)]
 
         # fill sequence buffers (with seed or otherwise)
         mkdir_p(os.path.join(param.outdir, runname))

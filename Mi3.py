@@ -749,7 +749,7 @@ def equilibrate(orig_args, args, log):
     nseqs = None
     needseed = False
     if args.seqs is not None:
-        nseqs = sum(gpus.nseq['main'])
+        nseqs = gpus.nseq['main']
     if args.seedseq is not None:
         needseed = True
     else:
@@ -1194,7 +1194,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
                            args.seqbimarg is not None):
         log("loading bimarg from {} for independent model sequence "
             "generation".format(args.seqbimarg))
-        bimarg = load(args.seqbimarg)
+        bimarg = np.load(args.seqbimarg)
 
     q = len(alpha)
     seedseq, seqs = None, None

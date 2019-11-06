@@ -189,12 +189,13 @@ class GPU_node:
             if not isinstance(seqs, np.ndarray):
                 seqs = seqs[0]
             sizes = self.nseq[bufname]
+            nbuf = self.nseq[bufname]
 
-            if len(seqs) != sum(sizes):
+            if seqs.shape[0] != nbuf:
                 raise Exception(("Expected {} total sequences, got {}").format(
-                                 sum(sizes), len(seqs)))
+                                 nbuf, seqs.shape[0]))
 
-            seqs = np.split(seqs, np.cumsum(sizes)[:-1])
+            seqs = np.split(seqs, self.ngpus)
         elif len(seqs) != self.ngpus:
             raise Exception(("Expected {} sequence bufs, got {}").format(
                              self.ngpus, len(seqs)))
