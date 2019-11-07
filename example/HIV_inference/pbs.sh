@@ -5,7 +5,7 @@
 
 cd $PBS_O_WORKDIR
 
-execpath=../../IvoGPU.py
+execpath=../../Mi3.py
 
 margfile="example_bimarg_pc.npy"
 logfile="hiv_pr_inference.log"

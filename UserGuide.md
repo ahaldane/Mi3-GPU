@@ -1,10 +1,10 @@
 
-Mi-3-GPU User Guide
+Mi3-GPU User Guide
 ===================
 
 Mi3-GPU ("Mee-three") solves the "inverse Ising problem" using a GPU-parallelized Monte-Carlo sequence generation algorithm, to infer Pott models parameters for analyzing coevolutionary mutation patterns in Multiple Sequence Alignements (MSAs).
 
-This software is meant for generation of high-accuracy Potts models of an MSA, in the sense that few analytic approximations are used and the model can be used to generate synthetic MSAs whose mutational frequencies match the dataset MSA frequencies with very low statistical error.
+This software is meant for generation of statistically accurate Potts models of an MSA, in the sense that few analytic approximations are used and the model can be used to generate synthetic MSAs whose mutational frequencies match the dataset MSA frequencies with very low statistical error.
 
 More precisely, this program solves for the real-valued coupling parameters `J^{ij}_{\alpha \beta}` of an infinite-range q-state Potts model with Hamiltonian `H(s) = \sum_{i < j}^L J^{ij}_{s_i s_j}` which best model the pairwise residue-frequencies obtained from an MSA containing sequences `s` with length `L` and `q` residue types.
 
@@ -33,8 +33,7 @@ To check that the script is correctly detecting the system's OpenCL installation
 
     ./Mi3.py --clinfo
 
-which should output information on the available GPUs. XXX with MPI
-Mi3-GPU was developed and tested on Linux systems using the Anaconda3 python package manager. Note that it is best to install mpi4py using pip and not using conda, to avoid overriding the system MPI installation.
+which should output information on the available GPUs. Mi3-GPU was developed and tested on Linux systems using the Anaconda3 python package manager. Note that it is best to install mpi4py using pip and not using conda, to avoid overriding the system MPI installation.
 
 Overview of Functionality
 -------------------------
@@ -44,7 +43,6 @@ The `Mi3.py` script can be run in different modes:
  * `infer` : Perform inverse Ising inference of a Potts model given bivariate marginals
  * `gen` : Generate new sequences given a Potts model
  * `energies` : Compute Potts energies of sequences in an MSA
- * `bimarg` : Compute bivariate residue frequencies (marginals) of an MSA
  * `subseq` : Estimate long subsequences frequencies
  * `benchmark` : Estimate computational speed of the MCMC generation
 
@@ -85,9 +83,9 @@ To monitor progress and check for convergence, a simple way is to do `grep Error
     run_05 J-Step   5115  Error: SSR:   0.204  Ferr:  0.00984  X: -120.186 (-122.374) 
     run_06 J-Step   6138  Error: SSR:   0.203  Ferr:  0.00971  X: -120.275 (-122.534)
 
-This shows the result of each round of synthetic MSA generation, one round per line, with the following information from left to right: First, the "run_04" shows the round number. Next, "Jstep 6138" shows the number of Potts parameter-updates performed so far (many may be performed per round as described further below). Next, the sum-of-square-residuals (SSR) between the synthetic bivariate marginals and the dataset mbivariate marginals is shown, followed by the average bivariate marginal relative error "Ferr", computed as the sum of the relative errors |f^data - f^synth|/f^data limited to marginals $f^data > 0.01$. Finally, the "correlated energy" X is displayed, computed in two different ways. See PRE for further description of this value.
+This shows the result of each round of synthetic MSA generation, one round per line, with the following information from left to right: First, the "run_04" shows the round number. Next, "Jstep 6138" shows the number of Potts parameter-updates performed so far (many may be performed per round as described further below). Next, the sum-of-square-residuals (SSR) between the synthetic bivariate marginals and the dataset mbivariate marginals is shown, followed by the average bivariate marginal relative error "Ferr", computed as the sum of the relative errors |f^data - f^synth|/f^data limited to marginals `f^data > 0.01`. Finally, the "correlated energy" X is displayed, computed in two different ways. See PRE for further description of this value.
 
-The correlated energy X should be the primary way of evaluating convergence. This value should initially become more and more negative, but after enough steps should roughly level off to a negative value, and the inference can be considered finished. X is calculated as $sum_{ij\alpha\beta} J^ij_ab C^ij_ab$ using correlation terms $C^ij_ab = f^ij_ab - f^i_a f^j_b$. In the output above the first value after "X: " is computed using the bivariate marginals of the synthetic MSA, and the value in parentheses is computed using the dataset bivariate marginals. Once near convergence these two values should become fairly close to each other and it should not matter which is tracked. The value of X give you information about how much correlated effects influence your MSA: If the abolute magnitude of X is small or 0 compared to the typical statistical energy of sequences (visible with `grep mean hiv_pr_inference.log`) this means correlated effects contribute little to mutational statistics.
+The correlated energy X should be the primary way of evaluating convergence. This value should initially become more and more negative, but after enough steps should roughly level off to a negative value, and the inference can be considered finished. X is calculated as `sum_{ij\alpha\beta} J^ij_ab C^ij_ab` using correlation terms `C^ij_ab = f^ij_ab - f^i_a f^j_b`. In the output above the first value after "X: " is computed using the bivariate marginals of the synthetic MSA, and the value in parentheses is computed using the dataset bivariate marginals. Once near convergence these two values should become fairly close to each other and it should not matter which is tracked. The value of X give you information about how much correlated effects influence your MSA: If the abolute magnitude of X is small or 0 compared to the typical statistical energy of sequences (visible with `grep mean hiv_pr_inference.log`) this means correlated effects contribute little to mutational statistics.
 
 Near convergence, the SSR and Ferr should become small as well, although these values are also influenced by various additional statistical errors and are not reliable indicators of convergence, and may level off prematurely due to finite-sampling effects, or occasionally increase slightly between rounds due to statistical fluctuations. Ferr is meant to be a simple and intuitive measure of the percent error in the bivariate marginals.
 
@@ -133,4 +131,4 @@ The Potts couplings are stored according to the following sign conventions: `P(S
 
 Mi3-GPU performs almost all calculations in a "fieldless" gauge, so in general the couplings file fully specifies the model and no fields are needed. The `changeGauge.py` script can output fields, and these are output as a 2-dimensional `float32` array of dimension `(L, q)`.
 
-MSAs are stored in a custom format to help optimize writing to and from disk, which is simply the ASCII sequences, one sequence per line, with all sequence ID information stripped. The sequences must have the same length. These MSA files can sometimes contain header lines starting with `#`. In some cases GIIIM outputs sequence files compressed with bzip2.
+MSAs are stored in a custom format to help optimize writing to and from disk, which is simply the ASCII sequences, one sequence per line, with all sequence ID information stripped. The sequences must have the same length. These MSA files can sometimes contain header lines starting with `#`. In some cases Mi3-GPU outputs sequence files compressed with bzip2.

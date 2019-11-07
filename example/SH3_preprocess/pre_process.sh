@@ -51,7 +51,7 @@ alpha=${alpha:0:$q}
 
 echo "--> get phylogenetic weights and 21-letter bivariate marginals"
 phyloWeights.py $phy seqs21 weights$phy >Neff$phy
-getSeqBimarg.py --weights weights${phy}.npy seqs21 bim21
+getMarginals.py --weights weights${phy}.npy seqs21 bim21
 pseudocount.py bim21.npy $(cat Neff$phy) --mode jeffreys -o bim21Jeff.npy
 
 echo "--> reduce alphabet (takes a minute)"
@@ -60,6 +60,6 @@ grep ALPHA$q alphamaps >map$q
 apply_alphamap.py seqs21 map$q >seqs$q
 
 echo "--> compute final bimarg: reduced, weighted, pseudocounted, regularized"
-getSeqBimarg.py --alpha $alpha --weights weights${phy}.npy seqs$q bim$q
+getMarginals.py --alpha $alpha --weights weights${phy}.npy seqs$q bim$q
 pseudocount.py bim$q.npy $(cat Neff$phy) -o bim${q}Jeff.npy
 pre_regularize.py bim${q}Jeff.npy $(cat Neff$phy) bimSH3_Reg

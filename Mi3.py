@@ -1332,14 +1332,14 @@ class CLInfoAction(argparse.Action):
 
 def main(args):
     actions = {
-      'inverseIsing':   inverseIsing,
-      'getEnergies':    getEnergies,
-      #'getBimarg':      getBimarg,
-      'benchmark':      MCMCbenchmark,
-      'subseqFreq':     subseqFreq,
-      'mcmc':           equilibrate,
-      'test':           testing,
-      'nestedZ':        nestedZ,
+      'infer':   inverseIsing,
+      'energies':    getEnergies,
+      #'getBimarg':  getBimarg,
+      'benchmark':   MCMCbenchmark,
+      'subseq':      subseqFreq,
+      'gen':         equilibrate,
+      #'test':        testing,
+      #'nestedZ':     nestedZ,
       #'measureFPerror': measureFPerror,
      }
 
