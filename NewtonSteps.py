@@ -646,12 +646,11 @@ def newtonMCMC(param, gpus, start_run, log):
                 f.write("".join(param.alpha[c] for c in seed))
             gpus.fillSeqs(seed)
         elif param.reseed == 'independent':
-            indep_seqs = [generateSequences('independent', param.L, param.q,
-                                            g.nwalkers, param.bimarg, log)
-                          for g in gpus]
-            gpus.setBuf('seq main', indep_seqs)
+            indep_seqs = generateSequences('independent', param.L, param.q,
+                                            gpus.nwalkers, param.bimarg, log)
+            gpus.setSeqs('main', indep_seqs)
         elif param.reseed == 'msa':
-            gpus.setBuf('seq main', param.seedmsa)
+            gpus.setSeqs('main', param.seedmsa)
 
         Jstep, seqs, es, J = MCMCstep(runname, Jstep, J, param, gpus, log)
 
