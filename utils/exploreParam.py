@@ -309,20 +309,20 @@ def main():
     elif args.gauge == '0':
         h, J = changeGauge.zeroGauge(zeros((L,q)), J)
     elif args.gauge == 'w':
-        h, J = changeGauge.weightedGauge(zeros((L,q)), J, weights=ff)
+        h, J = changeGauge.zeroGauge(zeros((L,q)), J, weights=ff)
     elif args.gauge == 'wsqrt':
-        h, J = changeGauge.weightedGauge(zeros((L,q)), J, weights=sqrt(ff))
+        h, J = changeGauge.zeroGauge(zeros((L,q)), J, weights=sqrt(ff))
 
     if args.score == 'fb':
         h0, J0 = changeGauge.zeroGauge(h, J)
         pottsScore = sqrt(sum(J0**2, axis=1))
     elif args.score == 'fbw':
         w = ff
-        hw, Jw = changeGauge.weightedGauge(zeros((L,q)), J, weights=w)
+        hw, Jw = changeGauge.zeroGauge(zeros((L,q)), J, weights=w)
         pottsScore = sqrt(sum((Jw*w)**2, axis=1))
     elif args.score == 'fbwsqrt':
         w = sqrt(ff)
-        hw, Jw = changeGauge.weightedGauge(zeros((L,q)), J, weights=w)
+        hw, Jw = changeGauge.zeroGauge(zeros((L,q)), J, weights=w)
         pottsScore = sqrt(sum((Jw*w)**2, axis=1))
     elif args.score == 'Xij':
         C = ff - indepF(ff)

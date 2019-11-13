@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-#Copyright 2018 Allan Haldane.
+#Copyright 2019 Allan Haldane.
 
 #This file is part of Mi3-GPU.
 
