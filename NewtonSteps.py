@@ -316,16 +316,23 @@ def swapTemps(gpus, dummy, N):
     #print(t2-t1)
     return Bs, r
 
-def track_main_bufs(gpus, savedir=None, step=None):
+def track_main_bufs(param, gpus, savedir=None, step=None, saveseqs=False):
     gpus.calcBicounts('main')
     gpus.calcEnergies('main')
 
     bicounts, energies = gpus.collect(['bicount', 'E main'])
     bimarg_model = bicounts.astype('f4')/np.float32(np.sum(bicounts[0,:]))
 
+    if saveseqs:
+        seqs = gpus.collect('seq main')
+
     if savedir:
         np.save(os.path.join(savedir, 'bimarg_{}'.format(step)), bimarg_model)
         np.save(os.path.join(savedir, 'energies_{}'.format(step)), energies)
+
+        if saveseqs:
+            writeSeqs(os.path.join(savedir, 'seqs_{}'.format(step)), seqs, 
+                      param.alpha, zipf=True)
     return energies, bimarg_model
 
 def runMCMC(gpus, couplings, runName, param, log):
@@ -353,7 +360,7 @@ def runMCMC(gpus, couplings, runName, param, log):
                 gpus.runMCMC()
 
             step += loops
-            energies, _ = track_main_bufs(gpus, equil_dir, step=step)
+            energies, _ = track_main_bufs(param, gpus, equil_dir, step)
             equil_e.append(energies)
 
             rstr = "Step {} <E>={:.2f}. ".format(step, np.mean(energies))
@@ -390,7 +397,7 @@ def runMCMC(gpus, couplings, runName, param, log):
         for j in range(nloop//trackequil):
             for i in range(trackequil):
                 gpus.runMCMC()
-            energies, _ = track_main_bufs(gpus, equil_dir, step=j*trackequil)
+            energies, _ = track_main_bufs(param, gpus, equil_dir, j*trackequil)
             equil_e.append(energies)
 
         step = nloop
@@ -438,7 +445,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
                 Bs,r = swapTemps(gpus, param.tempering, param.nswaps)
 
             step += loops
-            energies, _ = track_main_bufs(gpus, equil_dir, step=step)
+            energies, _ = track_main_bufs(param, gpus, equil_dir, step)
             equil_e.append(energies)
             np.save(os.path.join(outdir, runName,
                     'equilibration', 'Bs_{}'.format(step)), np.concatenate(Bs))
@@ -482,7 +489,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
                     gpu.runMCMC()
                 Bs,r = swapTemps(gpus, param.tempering, param.nswaps)
 
-            energies, _ = track_main_bufs(gpus, equil_dir, step=step)
+            energies, _ = track_main_bufs(param, gpus, equil_dir, step)
             np.save(os.path.join(outdir, runName,
                     'equilibration', 'Bs_{}'.format(j)), np.concatenate(Bs))
 
