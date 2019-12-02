@@ -20,26 +20,12 @@
 import numpy as np
 import sys, argparse
 from scipy.special import rel_entr
+from potts_common import indepF
 
 np.seterr(all='ignore')
 
-def indepF(fab):
-    L = int( (1+np.sqrt(1+8*fab.shape[0]))/2 + 0.5)
-    nB = int(np.sqrt(fab.shape[1]) + 0.5)
-
-    fabx = fab.reshape((fab.shape[0], nB, nB))
-    fa1, fb2 = np.sum(fabx,axis=2), np.sum(fabx,axis=1)
-    fafb = np.array([np.outer(fa, fb).flatten() for fa,fb in zip(fa1, fb2)])
-    return fafb
-
 def KL(f1, f2):
     return np.sum(rel_entr(f1, f2), axis=-1)
-
-def ExpEnt(f, N):
-    Np = (N-1)/(2*N*N)
-    fp = f + (1-f)/N
-    terms = np.log(fp) - Np*f*(1-f)/fp**2
-    return np.sum(f*terms, axis=-1)
 
 def regularize_bayesian_KL(fab, N):
     fafb = indepF(fab)

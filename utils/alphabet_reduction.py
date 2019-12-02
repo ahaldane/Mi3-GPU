@@ -25,17 +25,12 @@ import sys, os, argparse
 from Bio.Alphabet import IUPAC
 from scipy.stats import spearmanr, pearsonr
 from scipy.special import entr, rel_entr
-
-def getL(size):
-    return int(((1+sqrt(1+8*size))/2) + 0.5)
-
-def getLq(J):
-    return getL(J.shape[0]), int(sqrt(J.shape[1]) + 0.5)
+from potts_common import getLq
 
 def MI(ffij):
-    fi = sum(ffij,axis=1)
-    fj = sum(ffij,axis=0)
-    return sum(rel_entr(ffij, outer(fi,fj)))
+    fi = np.sum(ffij, axis=1)
+    fj = np.sum(ffij, axis=0)
+    return np.sum(rel_entr(ffij, np.outer(fi,fj)))
 
 class PairData:
     def __init__(self, pairvals):

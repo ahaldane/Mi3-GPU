@@ -19,11 +19,7 @@
 #Contact: allan.haldane _AT_ gmail.com
 import sys, argparse
 import numpy as np
-
-def getLq(J):
-    L = int(((1+np.sqrt(1+8*J.shape[0]))//2) + 0.5)
-    q = int(np.sqrt(J.shape[1]) + 0.5)
-    return L, q
+from potts_common import getLq
 
 def getCouplingMatrix(couplings):
     #compute the blocks that make up Ciajb, that is, compute the block Cij
@@ -72,9 +68,10 @@ def zeroJGauge(hs, Js, weights=None):
         mJ1, mJ2 = np.mean(Jx, axis=1), np.mean(Jx, axis=2)
         mJ = np.mean(mJ1, axis=1)
     else:
-        mJ1 = np.average(Jx, weights=weightsx, axis=1),
-        mJ2 = np.average(Jx, weights=weightsx, axis=2),
-        mJ = np.average(Jx, weights=weightsx, axis=(1,2))
+        weights = weights.reshape((L*(L-1)//2, q, q))
+        mJ1 = np.average(Jx, weights=weights, axis=1),
+        mJ2 = np.average(Jx, weights=weights, axis=2),
+        mJ = np.average(Jx, weights=weights, axis=(1,2))
 
     J0 = Jx - mJ1[:,None,:] - mJ2[:,:,None] + mJ[:,None,None]
     J0 = J0.reshape((J0.shape[0], q**2))
