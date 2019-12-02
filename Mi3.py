@@ -143,7 +143,7 @@ def optionRegistry():
         help="Perform a round of newton steps before first MCMC run")
     add('reseed',
         choices=['none', 'single_best', 'single_random', 'single_indep',
-                 'independent', 'msa'],
+                 'independent', 'uniform', 'msa'],
         default='single_indep',
         help="Strategy to reset walkers after each MCMC round")
     add('seedmsa', default=None,
@@ -1145,7 +1145,7 @@ def getCouplings(args, L, q, bimarg, log):
                 raise Exception("Need L to generate couplings")
         if args.couplings == 'uniform':
             log("Setting Initial couplings to uniform frequencies")
-            h = -log(1.0/q)
+            h = -np.log(1.0/q)
             J = np.zeros((L*(L-1)//2,q*q), dtype='<f4')
             couplings = fieldlessGaugeEven(h, J)[1]
         elif args.couplings == 'independent':
@@ -1253,7 +1253,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
 def generateSequences(gentype, L, q, nseqs, bimarg, log):
     if gentype == 'zero' or gentype == 'uniform':
         log("Generating {} random sequences...".format(nseqs))
-        return randint(0,q,size=(nseqs, L)).astype('<u1')
+        return randint(0, q, size=(nseqs, L)).astype('<u1')
     elif gentype == 'independent':
         log("Generating {} independent-model sequences...".format(nseqs))
         if bimarg is None:
