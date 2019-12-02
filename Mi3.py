@@ -169,6 +169,8 @@ def optionRegistry():
     # Sampling Param
     add('equiltime', default='auto',
         help="Number of MC kernel calls to equilibrate")
+    add('min_equil', default=64, type=int,
+        help="minimum MC calls to equilibrate when using 'equiltime=auto'")
     add('trackequil', type=np.uint32, default=0,
         help='Save bimarg every TRACKEQUIL steps during equilibration')
     add('tempering',
@@ -340,7 +342,7 @@ def inverseIsing(orig_args, args, log):
     addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps fracNeff '
                                           'damping reg distribute_jstep gamma '
                                           'preopt reseed seedmsa')
-    addopt(parser, 'Sampling Options',    'equiltime '
+    addopt(parser, 'Sampling Options',    'equiltime min_equil '
                                           'trackequil tempering nswaps_temp ')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'seqmodel outdir rngseed config '
@@ -447,8 +449,9 @@ def inverseIsing(orig_args, args, log):
     log("====================")
     log("Running {} Newton-MCMC rounds".format(p.mcmcsteps))
     if p.equiltime == 'auto':
-        log("In each round, running {} MC walkers until equilibrated".format(
-            p.nwalkers))
+        log(("In each round, running {} MC walkers until equilibrated, with a "
+             "minimum of {} equilibration loops").format(
+              p.nwalkers, p.min_equil))
     else:
         log(("In each round, running {} MC walkers for {} equilibration loops "
              "with {} MC steps per loop (Each walker equilibrated a total of "
@@ -711,7 +714,7 @@ def equilibrate(orig_args, args, log):
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs seqbimarg')
-    addopt(parser, 'Sampling Options',    'equiltime '
+    addopt(parser, 'Sampling Options',    'equiltime min_equil '
                                           'trackequil tempering nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'seqmodel outdir rngseed')
@@ -761,8 +764,9 @@ def equilibrate(orig_args, args, log):
     log("Computation Overview")
     log("====================")
     if p.equiltime == 'auto':
-        log("Running {} MC walkers until equilibrated".format(
-            p.nwalkers))
+        log(("In each round, running {} MC walkers until equilibrated, with a "
+             "minimum of {} equilibration loops").format(
+              p.nwalkers, p.min_equil))
     else:
         log(("Running {} MC walkers for {} equilibration loops "
              "with {} MC steps per loop (Each walker equilibrated a total of "
@@ -1286,10 +1290,12 @@ def loadSequenceDir(sdir, bufname, alpha, log):
 
 def process_sample_args(args, log):
     p = attrdict({'equiltime': args.equiltime,
+                  'min_equil': args.min_equil,
                   'trackequil': args.trackequil})
 
     if p['equiltime'] != 'auto':
         p['equiltime'] = int(p['equiltime'])
+
 
     if 'tempering' in args and args.tempering:
         try:
