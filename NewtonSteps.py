@@ -379,12 +379,12 @@ def runMCMC(gpus, couplings, runName, param, log):
                 fmt = "({:.3f}, {:.2g}) ".format
                 rstr += "r={} prev:{}".format(fmt(r1, p1), fmt(r2, p2))
 
-                if p1 > 0.02 and p2 > 0.02:
+                if p1 > 0.02 and p2 > 0.02 and step >= param.min_equil:
                     log(rstr + "Equilibrated.")
                     break
 
-            loops = loops*2
             log(rstr + "Continuing.")
+            loops = loops*2
 
         e_rho = [spearmanr(ei, equil_e[-1]) for ei in equil_e]
 
