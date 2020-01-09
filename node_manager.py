@@ -182,6 +182,10 @@ class GPU_node:
             for gpu in self.gpus:
                 gpu.setBuf(bufname, dat)
 
+    def fillBuf(self, bufname, val):
+        for gpu in self.gpus:
+            gpu.fillBuf(bufname, val)
+
     def setSeqs(self, bufname, seqs, log=None):
         
         if isinstance(seqs, np.ndarray) or len(seqs) == 1:
@@ -249,6 +253,8 @@ class GPU_node:
 
     def merge_bimarg(self):
         if len(self.gpus) == 1:
+            # other code expects merge_bimarg to do renormalization
+            self.gpus[0].renormalize_bimarg()
             return
 
         self.reduce_node_bimarg()

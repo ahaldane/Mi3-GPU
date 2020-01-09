@@ -319,7 +319,7 @@ class MCMCGPU:
         self._initcomponent('Jstep')
 
         nPairs, q = self.nPairs, self.q
-        self._setupBuffer('       dJ', '<f4',  (nPairs, q*q))
+        self._setupBuffer(       'dJ', '<f4',  (nPairs, q*q))
         self._setupBuffer('bi target', '<f4',  (nPairs, q*q))
         self._setupBuffer(     'Creg', '<f4',  (nPairs, q*q))
         self._setupBuffer( 'Xlambdas', '<f4',  (nPairs,))

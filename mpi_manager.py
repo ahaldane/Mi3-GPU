@@ -371,6 +371,11 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
         else:
             self.Isend(dat)
 
+    def fillBuf(self, bufname, val):
+        self.isend('fillBuf')
+        self.isend(bufname)
+        self.isend(val)
+
     def setSeqs(self, bufname, seqs, log=None):
         # note, unlike node_manager.seqSeqs, here seqs must be a list of len == ngpus
         self.isend('seqSeqs')
@@ -499,6 +504,11 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
         else:
             dat = self.Recv()
         super().setBuf(bufname, dat)
+
+    def fillBuf(self, bufname, val):
+        bufname = self.recv()
+        val = self.recv()
+        super().fillBuf(bufname, val)
 
     def getBuf(self):
         def make_cl_callback(b, n):

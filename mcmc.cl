@@ -459,7 +459,8 @@ void perturbedWeights(__global float *dJ,
                       __global float *energies) {
     __local float lJ[2*WGSIZE];
     float dE = getEnergiesf(dJ, seqmem, buflen, lJ);
-    weights[get_global_id(0)] = exp(-dE);
+    weights[get_global_id(0)] = dE;
+    //weights[get_global_id(0)] = exp(-dE);
 }
 
 __kernel //sums a vector. Call with 1 group of size VSIZE, must be power of two

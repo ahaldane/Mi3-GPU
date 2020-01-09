@@ -188,10 +188,13 @@ def iterNewton(param, bimarg_model, gpus, log):
     for i in range(newtonSteps):
         updateJ()
         gpus.calcWeights(seqbuf)
+        weights = gpus.collect(wbuf)
+        log("weights", printsome(weights))
+        weights = np.exp(np.min(weights) - weights)
+        gpus.setBuf('weights', weights)
         gpus.weightedMarg(seqbuf)
         gpus.merge_bimarg()
 
-        weights = gpus.collect(wbuf)
         Neff = getNeff(weights)
         if i%64 == 0 or abs(lastNeff - Neff)/N > 0.05 or Neff < Nfrac*N:
             log("J-step {: 5d}   Neff: {:.1f}   ({:.1f}% of {})".format(
@@ -204,6 +207,7 @@ def iterNewton(param, bimarg_model, gpus, log):
 
     # print status
     bi, J, dJ = gpus.head_gpu.readBufs(['bi', 'J', 'dJ'])
+    log("dJ", printsome(dJ[0]))
     weights = gpus.collect('weights')
     bimarg_model, weights, trialJ = bi[0], weights, J[0] + dJ[0]
     gpus.setBuf('J', trialJ)
