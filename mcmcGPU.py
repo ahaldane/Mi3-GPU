@@ -319,6 +319,7 @@ class MCMCGPU:
         self._initcomponent('Jstep')
 
         nPairs, q = self.nPairs, self.q
+        self._setupBuffer('       dJ', '<f4',  (nPairs, q*q))
         self._setupBuffer('bi target', '<f4',  (nPairs, q*q))
         self._setupBuffer(     'Creg', '<f4',  (nPairs, q*q))
         self._setupBuffer( 'Xlambdas', '<f4',  (nPairs,))
@@ -575,7 +576,7 @@ class MCMCGPU:
 
         return self.logevt('perturbedWeights',
             self.prg.perturbedWeights(self.queue, (nseq,), (self.wgsize,),
-                           self.bufs['J'], seq_dev, np.uint32(buflen),
+                           self.bufs['dJ'], seq_dev, np.uint32(buflen),
                            weights_dev, E_dev,
                            wait_for=self._waitevt(wait_for)))
 
@@ -639,7 +640,7 @@ class MCMCGPU:
         nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
 
         bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs['J']
+        Jin = Jout = self.bufs['dJ']
         self.unpackedJ = False
         return self.logevt('updateJ',
             self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,),
@@ -653,7 +654,7 @@ class MCMCGPU:
         q, nPairs = self.q, self.nPairs
 
         bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs['J']
+        Jin = Jout = self.bufs['dJ']
         self.unpackedJ = None
         return self.logevt('updateJ_l2z',
             self.prg.updatedJ_l2z(self.queue, (nPairs*q*q,), (q*q,),
@@ -668,7 +669,7 @@ class MCMCGPU:
         q, nPairs = self.q, self.nPairs
 
         bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs['J']
+        Jin = Jout = self.bufs['dJ']
         self.unpackedJ = None
         return self.logevt('updateJ_X',
             self.prg.updatedJ_X(self.queue, (nPairs*q*q,), (q*q,),
@@ -683,7 +684,7 @@ class MCMCGPU:
         q, nPairs = self.q, self.nPairs
 
         bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs['J']
+        Jin = Jout = self.bufs['dJ']
         self.unpackedJ = None
         return self.logevt('updateJ_Xself',
             self.prg.updatedJ_Xself(self.queue, (nPairs*q*q,), (q*q,),

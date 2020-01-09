@@ -25,7 +25,7 @@ import sys, os, argparse
 from Bio.Alphabet import IUPAC
 from scipy.stats import spearmanr, pearsonr
 from scipy.special import entr, rel_entr
-from potts_common import getLq
+from potts_common import getLq, getL
 
 def MI(ffij):
     fi = np.sum(ffij, axis=1)

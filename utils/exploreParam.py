@@ -10,7 +10,7 @@ import sys, time, argparse
 from Bio.Alphabet import IUPAC
 import seqload, changeGauge
 from matplotlib.colors import LinearSegmentedColormap
-from potts_common import getLq, getUnimarg, indepF
+from potts_common import getLq, getUnimarg, indepF, getM
 
 o = -0.5 # coordinate offset in pairwise image plot
 
@@ -280,7 +280,7 @@ def main():
     parser.add_argument('-gauge', choices=['nofield', '0', 'w', 'wsqrt'],
                                              default='wsqrt')
     parser.add_argument('-alpha', default=alpha21)
-    parser.add_argument('-regions', help='comma separated list of indices')
+    parser.add_argument('-annotimg', help='region annotation image')
     parser.add_argument('-title', help='Figure title')
 
     args = parser.parse_args(sys.argv[1:])
@@ -407,12 +407,6 @@ def main():
         cbar = plt.colorbar()
         cbar = DraggableColorbar(cbar, img)
         cbar.connect()
-
-    if args.regions:
-        regions = [int(x) for x in args.regions.split(',')]
-        for r in regions:
-            plt.axvline(r+o, color='k', alpha=0.2)
-            plt.axhline(r+o, color='k', alpha=0.2)
 
     if args.title:
         plt.title(args.title)

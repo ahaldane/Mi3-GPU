@@ -41,7 +41,7 @@ def indepF(fab):
 
 def getM(x, diag_fill=0):
     L = getL(len(x))
-    M = np.empty((L,L))
+    M = np.zeros((L,L))
     M[np.triu_indices(L,k=1)] = x
     M = M + M.T
     M[np.diag_indices(L)] = diag_fill

@@ -34,11 +34,11 @@ def getMarginals(seqs, q, weights=None, nrmlz=True):
     else:
         nrmlz = lambda x: x
 
-    def freqs(s, bins):
+    def counts(s, bins):
         return np.bincount(s, minlength=bins, weights=weights)
 
-    f = nrmlz(np.array([freqs(seqs[:,i], q) for i in range(L)]))
-    ff = nrmlz(np.array([freqs(seqs[:,j] + q*seqs[:,i], q*q)
+    f = nrmlz(np.array([counts(seqs[:,i], q) for i in range(L)]))
+    ff = nrmlz(np.array([counts(seqs[:,j] + q*seqs[:,i], q*q)
                          for i in range(L-1) for j in range(i+1, L)]))
     return f, ff
 
@@ -58,12 +58,12 @@ class BiCounter:
             seqs = seqs.astype('i4')
         
         if self.weights is not None:
-            if counts is 0:
+            if not isinstance(counts, np.ndarray) and counts == 0:
                 counts = np.zeros((L*(L-1)//2, q*q), dtype='f8')
             w = self.weights[self.pos:self.pos+nSeq]
             self.pos += nSeq
         else:
-            if counts is 0:
+            if not isinstance(counts, np.ndarray) and counts == 0:
                 counts = np.zeros((L*(L-1)//2, q*q), dtype='i4')
             w = None
 
@@ -89,12 +89,12 @@ class UniCounter:
         nbins = q
 
         if self.weights is not None:
-            if counts is 0:
+            if not isinstance(counts, np.ndarray) and counts == 0:
                 counts = np.zeros((L,q), dtype='f8')
             w = self.weights[self.pos:self.pos+nSeq]
             self.pos += nSeq
         else:
-            if counts is 0:
+            if not isinstance(counts, np.ndarray) and counts == 0:
                 counts = np.zeros((L,q), dtype='i4')
             w = None
 

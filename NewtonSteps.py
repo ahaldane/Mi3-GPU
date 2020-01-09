@@ -181,6 +181,8 @@ def iterNewton(param, bimarg_model, gpus, log):
     else:
         updateJ = lambda: gpus.updateJ(gamma, pc)
 
+    gpus.fillBuf('dJ', 0)
+
     # do coupling updates
     lastNeff = 2*N
     for i in range(newtonSteps):
@@ -201,9 +203,10 @@ def iterNewton(param, bimarg_model, gpus, log):
     log("Performed {} coupling update steps".format(i))
 
     # print status
-    bi, J = gpus.head_gpu.readBufs(['bi', 'J'])
+    bi, J, dJ = gpus.head_gpu.readBufs(['bi', 'J', 'dJ'])
     weights = gpus.collect('weights')
-    bimarg_model, weights, trialJ = bi[0], weights, J[0]
+    bimarg_model, weights, trialJ = bi[0], weights, J[0] + dJ[0]
+    gpus.setBuf('J', trialJ)
     NewtonStatus(i, trialJ, weights, bimarg_model, bimarg_target, log)
 
     Neff = np.sum(weights)

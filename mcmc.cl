@@ -452,14 +452,14 @@ void bicounts_to_bimarg(__global uint *bicount,
 }
 
 __kernel //call with global work size = to # sequences
-void perturbedWeights(__global float *J,
+void perturbedWeights(__global float *dJ,
                       __global uint *seqmem,
                                uint  buflen,
                       __global float *weights,
                       __global float *energies) {
     __local float lJ[2*WGSIZE];
-    float energy = getEnergiesf(J, seqmem, buflen, lJ);
-    weights[get_global_id(0)] = exp(-(energy - energies[get_global_id(0)]));
+    float dE = getEnergiesf(dJ, seqmem, buflen, lJ);
+    weights[get_global_id(0)] = exp(-dE);
 }
 
 __kernel //sums a vector. Call with 1 group of size VSIZE, must be power of two
