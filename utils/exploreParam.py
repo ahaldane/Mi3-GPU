@@ -11,6 +11,7 @@ from Bio.Alphabet import IUPAC
 import seqload, changeGauge
 from matplotlib.colors import LinearSegmentedColormap
 from potts_common import getLq, getUnimarg, indepF, getM, getXij
+from pseudocount import mutation_pc
 
 o = -0.5 # coordinate offset in pairwise image plot
 
@@ -19,7 +20,7 @@ class DraggableColorbar(object):
         self.cbar = cbar
         self.mappable = mappable
         self.press = None
-        #self.cycle = sorted([i for i in dir(plt.cm) 
+        #self.cycle = sorted([i for i in dir(plt.cm)
         #                     if hasattr(getattr(plt.cm,i),'N')])
         #self.index = self.cycle.index(cbar.get_cmap().name)
 
@@ -278,7 +279,7 @@ def main():
                         choices=['split', 'overlay', 'splitoverlay'],
                         default='overlay',
                         help='how to draw contact map')
-    parser.add_argument('-score',
+    parser.add_argument('-score', default='fbwsqrt',
                         choices=['fb', 'fbw', 'fbwsqrt', 'DI', 'MI', 'Xij'])
     parser.add_argument('-gauge', default='skip',
                         choices=['skip', 'nofield', '0', 'w', 'wsqrt'])
@@ -289,6 +290,7 @@ def main():
     parser.add_argument('-cnsrv', help='show conservation score')
     parser.add_argument('-Xijseq', help='seq ')
     parser.add_argument('-deltaXijseq', help='seq ')
+    parser.add_argument('-pcN', help='small jeffreys pseudocount to add')
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -297,6 +299,10 @@ def main():
 
     ff = np.load(args.bimarg)
     J = np.load(args.couplings)
+
+    if args.pcN:
+        N = float(args.pcN)
+        ff = mutation_pc(ff, N)
 
     unimarg = getUnimarg(ff)
 
@@ -312,7 +318,7 @@ def main():
         h, J = changeGauge.zeroGauge(zeros((L,q)), J, weights=np.sqrt(ff))
     else:
         h = zeros((L,q))
-    
+
     if args.deltaXijseq or args.Xijseq:
         Xij, Xijab = getXij(J, ff)
 
@@ -323,10 +329,10 @@ def main():
             Xijab = Xijab - Xij
         else:
             seq = args.Xijseq
-            
+
         seq = np.array([alpha.index(c) for c in seq], dtype='u4')
-        pottsScore = np.array([Xijab[n, q*seq[i] + seq[j]] for n,(i,j) in 
-                               enumerate((i,j) for i in range(L-1) 
+        pottsScore = np.array([Xijab[n, q*seq[i] + seq[j]] for n,(i,j) in
+                               enumerate((i,j) for i in range(L-1)
                                                for j in range(i+1,L))])
     elif args.score == 'fb':
         h0, J0 = changeGauge.zeroGauge(h, J)
@@ -450,7 +456,7 @@ def main():
         cbar = DraggableColorbar(cbar,img)
         cbar.connect()
     else:
-        img = main_ax.imshow(getM(pottsScore), origin='lower', cmap='bwr',
+        img = main_ax.imshow(getM(pottsScore), origin='lower', cmap='gray_r',
                              extent=(+o,L+o,+o,L+o), interpolation='nearest')
         cbar = contactfig.colorbar(img, cax=cbar_ax)
         cbar = DraggableColorbar(cbar, img)

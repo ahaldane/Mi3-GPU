@@ -111,6 +111,7 @@ def main():
     parser.add_argument('--weights')
     parser.add_argument('--counts', action='store_true')
     parser.add_argument('--uni', action='store_true')
+    parser.add_argument('--dtype', default='f4')
     parser.add_argument('seqfile')
     parser.add_argument('outfile')
 
@@ -140,7 +141,7 @@ def main():
     if args.counts:
         np.save(args.outfile, counts)
     else:
-        ff = counts.astype('f4')/np.float32(sum(counts[0,:]))
+        ff = counts.astype(args.dtype)/np.sum(counts[0,:])
         np.save(args.outfile, ff)
 
 if __name__ == '__main__':

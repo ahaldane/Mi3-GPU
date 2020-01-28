@@ -475,9 +475,9 @@ def inverseIsing(orig_args, args, log):
     expected_SSR = np.sum(f*(1-f))/N
     absexp = np.sqrt(2/np.pi)*np.sqrt(f*(1-f)/N)/f
     expected_Ferr = np.mean(absexp[f>0.01])
-    log("\nEstimated lowest achievable error for this nwalkers and bimarg is:"
-        "\nMIN:    SSR = {:.4f}   Ferr = {:.3f}".format(expected_SSR,
-                                                        expected_Ferr))
+    log("\nEstimated lowest achievable statistical error for this nwalkers and "
+        "bimarg is:\nMIN:    SSR = {:.4f}   Ferr = {:.3f}".format(expected_SSR,
+                                                                 expected_Ferr))
     log("(Statistical error only. Modeling biases and perturbation procedure "
         "may cause additional error)")
 

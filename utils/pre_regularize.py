@@ -20,7 +20,7 @@
 import numpy as np
 import sys, argparse
 from scipy.special import rel_entr
-from .potts_common import indepF
+from potts_common import indepF
 
 np.seterr(all='ignore')
 

@@ -19,7 +19,7 @@
 #Contact: allan.haldane _AT_ gmail.com
 import sys, argparse
 import numpy as np
-from .potts_common import getLq
+from potts_common import getLq
 
 def getCouplingMatrix(couplings):
     #compute the blocks that make up Ciajb, that is, compute the block Cij
