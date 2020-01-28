@@ -36,7 +36,7 @@ def indepF(fab):
     L, q = getLq(fab)
     fabx = fab.reshape((fab.shape[0], q, q))
     fa1, fb2 = np.sum(fabx,axis=2), np.sum(fabx,axis=1)
-    fafb = np.array([np.outer(fa, fb).flatten() for fa,fb in zip(fa1, fb2)])
+    fafb = np.array([np.outer(fa, fb).ravel() for fa,fb in zip(fa1, fb2)])
     return fafb
 
 def getM(x, diag_fill=0):

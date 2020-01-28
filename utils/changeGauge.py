@@ -69,8 +69,8 @@ def zeroJGauge(hs, Js, weights=None):
         mJ = np.mean(mJ1, axis=1)
     else:
         weights = weights.reshape((L*(L-1)//2, q, q))
-        mJ1 = np.average(Jx, weights=weights, axis=1),
-        mJ2 = np.average(Jx, weights=weights, axis=2),
+        mJ1 = np.average(Jx, weights=weights, axis=1)
+        mJ2 = np.average(Jx, weights=weights, axis=2)
         mJ = np.average(Jx, weights=weights, axis=(1,2))
 
     J0 = Jx - mJ1[:,None,:] - mJ2[:,:,None] + mJ[:,None,None]

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import numpy as np
 import argparse, sys
-from potts_common import getLq, getUnimarg
+from potts_common import getLq, getUnimarg, indepF
 
 nrmlz = lambda x: x/np.sum(x,axis=1)[:,None]
 
@@ -15,7 +15,7 @@ def main():
     parser.add_argument('margfile')
     parser.add_argument('pc', nargs='*', type=float)
     parser.add_argument('--mode', choices=['jeffreys', 'bayes', 'meanfield',
-                                 'Jeven', 'constant'], default='jeffreys')
+                                 'unijmix', 'constant'], default='jeffreys')
     parser.add_argument('-o', '--out', default='outpc', help="Output file")
 
     args = parser.parse_args(sys.argv[1:])
@@ -46,7 +46,7 @@ def main():
 
         # nrmlz only needed to correct fp error
         ff = nrmlz((1-mu)**2*ff + (1-mu)*mu*indepF(ff)/q + (mu/q)**2)
-    elif args.mode == 'Jeven':
+    elif args.mode == 'unijmix':
         if len(pc) != 2:
             raise ValueError("pc should be two values representing (pc, w)"
                              "where the weight is 0 <= w <= 1 and pc is "
