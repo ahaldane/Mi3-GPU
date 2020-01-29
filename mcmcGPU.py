@@ -512,7 +512,7 @@ class MCMCGPU:
                      self.bufs['bicount'], self.bufs['bi'], np.uint32(nseq),
                      wait_for=self._waitevt(wait_for)))
 
-    def calcEnergies(self, seqbufname, wait_for=None):
+    def calcEnergies(self, seqbufname, Jbufname='J', wait_for=None):
         self.log("calcEnergies " + seqbufname)
 
         energies_dev = self.Ebufs[seqbufname]
@@ -528,57 +528,8 @@ class MCMCGPU:
 
         return self.logevt('getEnergies',
             self.prg.getEnergies(self.queue, (nseq,), (self.wgsize,),
-                             self.bufs['J'], seq_dev, np.uint32(buflen),
+                             self.bufs[Jbufname], seq_dev, np.uint32(buflen),
                              energies_dev, wait_for=self._waitevt(wait_for)))
-
-    #def calcEnergies(self, seqbufname, wait_for=None):
-    #    self.log("calcEnergies " + seqbufname)
-
-    #    energies_dev = self.Ebufs[seqbufname]
-    #    seq_dev = self.seqbufs[seqbufname]
-    #    buflen = self.nseq[seqbufname]
-
-    #    if seqbufname == 'main':
-    #        nseq = self.nseq[seqbufname]
-    #    else:
-    #        nseq = self.nstoredseqs
-    #        # pad to be a multiple of wgsize (uses dummy seqs at end)
-    #        nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
-
-    #    wait_evt = self._waitevt(wait_for)
-    #    wait_unpack = self.unpackJ(wait_for=wait_evt)
-    #    wait = self._evtlist(wait_unpack)
-
-    #    return self.logevt('getEnergies',
-    #        self.prg.getEnergiesX(self.queue, (nseq,), (self.wgsize,),
-    #                         self.bufs['Junpacked'], seq_dev, np.uint32(buflen),
-    #                         energies_dev, wait_for=wait))
-
-    def calcWeights(self, seqbufname='main', wait_for=None):
-        #overwrites weights, neff
-        #assumes seqmem_dev, energies_dev are filled in
-        self.require('Jstep')
-        self.log("calcWeights")
-
-        if seqbufname == 'main':
-            nseq = self.nseq[seqbufname]
-            buflen = nseq
-            weights_dev = self.bufs['weights']
-        else:
-            nseq = self.nstoredseqs
-            # pad to be a multiple of wgsize (uses dummy seqs at end)
-            nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
-
-            buflen = self.nseq[seqbufname]
-            weights_dev = self.bufs['weights large']
-        seq_dev = self.seqbufs[seqbufname]
-        E_dev = self.Ebufs[seqbufname]
-
-        return self.logevt('perturbedWeights',
-            self.prg.perturbedWeights(self.queue, (nseq,), (self.wgsize,),
-                           self.bufs['dJ'], seq_dev, np.uint32(buflen),
-                           weights_dev, E_dev,
-                           wait_for=self._waitevt(wait_for)))
 
     def weightedMarg(self, seqbufname='main', wait_for=None):
         self.require('Jstep')
@@ -632,7 +583,7 @@ class MCMCGPU:
             self.prg.addBiBufs(self.queue, (nworkunits,), (self.wgsize,),
                        selfbuf, otherbuf, wait_for=self._waitevt(wait_for)))
 
-    def updateJ(self, gamma, pc, wait_for=None):
+    def updateJ(self, gamma, pc, Jbuf='J', wait_for=None):
         self.require('Jstep')
         self.log("updateJ")
         q, nPairs = self.q, self.nPairs
@@ -640,7 +591,7 @@ class MCMCGPU:
         nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
 
         bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs['dJ']
+        Jin = Jout = self.bufs[Jbuf]
         self.unpackedJ = False
         return self.logevt('updateJ',
             self.prg.updatedJ(self.queue, (nworkunits,), (self.wgsize,),
@@ -648,13 +599,13 @@ class MCMCGPU:
                                 np.float32(gamma), np.float32(pc), Jin, Jout,
                                 wait_for=self._waitevt(wait_for)))
 
-    def updateJ_l2z(self, gamma, pc, lh, lJ, wait_for=None):
+    def updateJ_l2z(self, gamma, pc, lh, lJ, Jbuf='J', wait_for=None):
         self.require('Jstep')
         self.log("updateJ_l2z")
         q, nPairs = self.q, self.nPairs
 
         bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs['dJ']
+        Jin = Jout = self.bufs[Jbuf]
         self.unpackedJ = None
         return self.logevt('updateJ_l2z',
             self.prg.updatedJ_l2z(self.queue, (nPairs*q*q,), (q*q,),
@@ -663,13 +614,41 @@ class MCMCGPU:
                             np.float32(2*lh), np.float32(2*lJ), Jin, Jout,
                             wait_for=self._waitevt(wait_for)))
 
-    def updateJ_X(self, gamma, pc, wait_for=None):
+    def updateJ_l1z(self, gamma, pc, lJ, Jbuf='J', wait_for=None):
+        self.require('Jstep')
+        self.log("updateJ_l1z")
+        q, nPairs = self.q, self.nPairs
+
+        bibuf = self.bufs['bi']
+        Jin = Jout = self.bufs[Jbuf]
+        self.unpackedJ = None
+        return self.logevt('updateJ_l1z',
+            self.prg.updatedJ_l1z(self.queue, (nPairs*q*q,), (q*q,),
+                            self.bufs['bi target'], bibuf,
+                            np.float32(gamma), np.float32(pc),
+                            np.float32(lJ), Jin, Jout,
+                            wait_for=self._waitevt(wait_for)))
+
+    def reg_l1z(self, gamma, pc, lJ, wait_for=None):
+        self.require('Jstep')
+        self.log("reg_l1z")
+        q, nPairs = self.q, self.nPairs
+
+        bibuf = self.bufs['bi']
+        self.unpackedJ = None
+        return self.logevt('reg_l1z',
+            self.prg.reg_l1z(self.queue, (nPairs*q*q,), (q*q,),
+                            bibuf, np.float32(gamma), np.float32(pc),
+                            np.float32(lJ), self.bufs['J'], self.bufs['dJ'],
+                            wait_for=self._waitevt(wait_for)))
+
+    def updateJ_X(self, gamma, pc, Jbuf='J', wait_for=None):
         self.require('Jstep')
         self.log("updateJ X")
         q, nPairs = self.q, self.nPairs
 
         bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs['dJ']
+        Jin = Jout = self.bufs[Jbuf]
         self.unpackedJ = None
         return self.logevt('updateJ_X',
             self.prg.updatedJ_X(self.queue, (nPairs*q*q,), (q*q,),
@@ -678,13 +657,13 @@ class MCMCGPU:
                                 np.float32(gamma), np.float32(pc), Jin, Jout,
                                 wait_for=self._waitevt(wait_for)))
 
-    def updateJ_Xself(self, gamma, pc, wait_for=None):
+    def updateJ_Xself(self, gamma, pc, Jbuf='J', wait_for=None):
         self.require('Jstep')
         self.log("updateJ Xself")
         q, nPairs = self.q, self.nPairs
 
         bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs['dJ']
+        Jin = Jout = self.bufs[Jbuf]
         self.unpackedJ = None
         return self.logevt('updateJ_Xself',
             self.prg.updatedJ_Xself(self.queue, (nPairs*q*q,), (q*q,),

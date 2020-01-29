@@ -451,18 +451,6 @@ void bicounts_to_bimarg(__global uint *bicount,
     bimarg[n] = ((float)bicount[n])/((float)nseq);
 }
 
-__kernel //call with global work size = to # sequences
-void perturbedWeights(__global float *dJ,
-                      __global uint *seqmem,
-                               uint  buflen,
-                      __global float *weights,
-                      __global float *energies) {
-    __local float lJ[2*WGSIZE];
-    float dE = getEnergiesf(dJ, seqmem, buflen, lJ);
-    weights[get_global_id(0)] = dE;
-    //weights[get_global_id(0)] = exp(-dE);
-}
-
 __kernel //sums a vector. Call with 1 group of size VSIZE, must be power of two
 void sumFloats(__global float *data,
                __global float *output,
@@ -710,6 +698,66 @@ void updatedJ_l2z(__global float *bimarg_target,
 }
 
 __kernel
+void updatedJ_l1z(__global float *bimarg_target,
+                  __global float *bimarg,
+                           float gamma,
+                           float pc,
+                           float lJ,
+                  __global float *Ji,
+                  __global float *Jo) {
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float hi[q], hj[q];
+    __local float scratch[q*q];
+
+    //Jo[n] = zeroGauge(Ji[n], li, scratch, hi, hj);;
+
+    float Jp = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc);
+
+    float J0 = zeroGauge(Jp, li, scratch, hi, hj);
+    float R = -lJ*sign(J0)*gamma/(bimarg[n] + pc);
+    if (sign(J0) != sign(J0 + R)){ 
+        Jp = Jp - J0;
+    }
+    else {
+        Jp = Jp + R;
+    }
+    Jo[n] = Jp;
+
+    //float J0 = zeroGauge(Ji[n], li, scratch, hi, hj);
+    //float R = lJ*sign(J0);
+    //Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + R)/(bimarg[n] + pc);
+}
+
+__kernel
+void reg_l1z(__global float *bimarg,
+                      float gamma,
+                      float pc,
+                      float lJ,
+             __global float *J,
+             __global float *dJ) {
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float hi[q], hj[q];
+    __local float scratch[q*q];
+
+    float Jp = dJ[n];
+    float J0 = zeroGauge(J[n] + Jp, li, scratch, hi, hj);
+    float R = -lJ*sign(J0)*gamma/(bimarg[n] + pc);
+    if (sign(J0) != sign(J0 + R)){ 
+        Jp = Jp - J0;
+    }
+    else {
+        Jp = Jp + R;
+    }
+    dJ[n] = Jp;
+}
+
+__kernel
 void updatedJ_X(__global float *bimarg_target,
                 __global float *bimarg,
                 __global float *Creg,
@@ -807,7 +855,7 @@ void updatedJ_Xself(__global float *bimarg_target,
     float X = getXC(Ji[n], bimarg[n], li, C, hi, hj);
     float bias = lambdas[gi]*C[li]*sign(X);
 
-    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n]+pc);
+    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] - bias)/(bimarg[n]+pc);
 }
 
 

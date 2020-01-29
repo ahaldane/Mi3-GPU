@@ -927,11 +927,11 @@ def nestedZ(args, log):
 
 def ExactZS(args, log):
     raise Exception("Not implemented yet")
-    # plan is to implement exact solution of small systems by enumeration on
-    # GPU. Would need to compute energy of all sequences, so kernel
-    # would be similar to energy calculation kernel, except the actual
-    # sequences would not need to be loaded from memory, but could
-    # be computed on the fly. Z = sum(exp(-E)), and S = -sum(p*log(p))
+    # plan would be to implement exact solution of small systems by enumeration
+    # on GPU. Would need to compute energy of all sequences, so kernel would be
+    # similar to energy calculation kernel, except the actual sequences would
+    # not need to be loaded from memory, but could be computed on the fly. Z =
+    # sum(exp(-E)), and S = -sum(p*log(p))
     #
     # For q=8, probably limited to about L=16: Would precompute partial E
     # for positions 1-10 to a buffer, then have GPU kernel iterate over
@@ -949,9 +949,10 @@ def testing(orig_args, args, log):
     parser = argparse.ArgumentParser(prog=progname + ' getEnergies',
                                      description=descr)
     add = parser.add_argument
-    add('out', default='output', help='Output File')
+    #add('out', default='output', help='Output File')
     addopt(parser, 'GPU Options',         'wgsize gpus profile')
     addopt(parser, 'Potts Model Options', 'alpha couplings')
+    addopt(parser, 'Newton Step Options', 'bimarg ')
     addopt(parser, 'Sequence Options',    'seqs')
     addopt(parser,  None,                 'outdir')
 
@@ -981,32 +982,79 @@ def testing(orig_args, args, log):
     args.nwalkers = len(seqs)
     args.nsteps = 1
     args.nlargebuf = 1
-    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, log)
+
+    gpup = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
-    gpuwalkers = divideWalkers(p.nwalkers, len(gdevs), log, p.wgsize)
-    gpus = [initGPU(n, cldat, dev, nwalk, p, log)
-            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
-    gpus.setSeqs('main', seqs, log)
+    gpus = setup_GPUs(p, log)
+    gpus.initMCMC(63)
+    gpus.initJstep()
+
+    p['bimarg'] = np.load(args.bimarg)
     log("")
 
+    log("Setup:")
+    J = p.couplings
+    gpus.setSeqs('main', seqs, log)
+    gpus.setBuf('J', J)
+    gpus.setBuf('bi target', p.bimarg)
+    gpus.calcBicounts('main')
+    gpus.bicounts_to_bimarg('main')
+    gpus.merge_bimarg()
+    bi = gpus.head_gpu.readBufs('bi')[0]
 
-    log("Computing Energies")
-    log("==================")
+    gamma = 0.004
+    pc = 0.2
+    lJ = 0.1
+    import utils.changeGauge as changeGauge
 
-    for gpu in gpus:
-        gpu.setBuf('J', p.couplings)
+    #gpus.updateJ_l1z(gamma, pc, lam, Jbuf='J')
+    #J0cpu = changeGauge.zeroGauge(None, p.couplings)[1]
+    #np.save(os.path.join(p.outdir, 'J0gpu'), J0gpu)
+    #np.save(os.path.join(p.outdir, 'J0cpu'), J0cpu)
+    #log("Coupling results:")
+    #log("GPU:", printsome(J0gpu))
+    #log("CPU:", printsome(J0cpu))
 
+    gpus.updateJ_l1z(gamma, pc, lJ, Jbuf='J')
+    Jgpu = gpus.head_gpu.getBuf('J')[0].read()
+    log("bim:", printsome(bi))
+    log("bimt:", printsome(p.bimarg))
+    log("df:", printsome(p.bimarg - bi))
+    Jcpu = J - gamma*(p.bimarg - bi)/(bi + pc)
+    log("org:", printsome(J, prec=6))
+    log("unr:", printsome(Jcpu, prec=6))
 
-    t1 = time.time()
-    for i in range(1000):
-        for gpu in gpus:
-            gpu.calcEnergies('main')
-    es = np.concatenate(readGPUbufs(['E main'], gpus)[0])
-    print("Time", time.time() - t1)
-    log(printsome(es))
+    
+    J0 = changeGauge.zeroGauge(None, Jcpu)[1]
+    log("J0: ", printsome(J0, prec=6))
 
-    log("Saving results to file '{}'".format(args.out))
-    np.save(args.out, es)
+    R = -lJ*np.sign(J0)*gamma/(bi + pc)
+    cond = np.sign(J0) != np.sign(J0 + R)
+    cont = np.ones(J0.shape, dtype=bool)
+    Jcpu[cond] = Jcpu[cond] - J0[cond]
+    Jcpu[~cond] = Jcpu[~cond] + R[~cond]
+    log("GPU:", printsome(Jgpu, prec=6))
+    log("CPU:", printsome(Jcpu, prec=6))
+    J0p = changeGauge.zeroGauge(None, Jcpu)[1]
+    log("J0: ", printsome(J0p, prec=6))
+
+    np.save(os.path.join(p.outdir, 'J'), J)
+    np.save(os.path.join(p.outdir, 'Jgpu'), Jgpu)
+    np.save(os.path.join(p.outdir, 'Jcpu'), Jcpu)
+
+    #log("Computing Energies")
+    #log("==================")
+
+    #t1 = time.time()
+    #for i in range(1000):
+    #    for gpu in gpus:
+    #        gpu.calcEnergies('main')
+    #es = np.concatenate(readGPUbufs(['E main'], gpus)[0])
+    #print("Time", time.time() - t1)
+    #log(printsome(es))
+
+    #log("Saving results to file '{}'".format(args.out))
+    #np.save(args.out, es)
 
 ################################################################################
 
@@ -1068,7 +1116,7 @@ def process_newton_args(args, log):
 
     if args.reg is not None:
         rtype, dummy, rarg = args.reg.partition(':')
-        rtypes = ['X', 'Xself', 'l2z', 'L']
+        rtypes = ['X', 'Xself', 'l2z', 'l1z', 'L']
         if rtype not in rtypes:
             raise Exception("reg must be one of {}".format(str(rtypes)))
         p['reg'] = rtype
@@ -1092,6 +1140,14 @@ def process_newton_args(args, log):
                 raise Exception("l2z specifier must be of form 'l2z:lh,lJ', eg "
                                 "'l2z:0.01,0.01'. Got '{}'".format(args.reg))
             p['regarg'] = (lh, lJ)
+        elif rtype == 'l1z':
+            try:
+                lJ = float(rargs[0])
+                log("Regularizing using l1 norm with lambda_J = {}".format(lJ))
+            except:
+                raise Exception("l1z specifier must be of form 'l1z:lJ', eg "
+                                "'l1z:0.01'. Got '{}'".format(args.reg))
+            p['regarg'] = (lJ,)
 
     log("")
     return p
@@ -1344,7 +1400,7 @@ def main(args):
       'benchmark':   MCMCbenchmark,
       'subseq':      subseqFreq,
       'gen':         equilibrate,
-      #'test':        testing,
+      'test':        testing,
       #'nestedZ':     nestedZ,
       #'measureFPerror': measureFPerror,
      }

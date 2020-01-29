@@ -152,7 +152,8 @@ def iterNewton(param, bimarg_model, gpus, log):
     head_node = gpus.head_node
 
     seqbuf = 'main'
-    wbuf = 'weights'
+    wbufname = 'weights'
+    ebufname = 'E main'
     if param.distribute_jstep != 'all':
         seqs = gpus.collect('seq main')
 
@@ -165,7 +166,8 @@ def iterNewton(param, bimarg_model, gpus, log):
 
         gpus.setSeqs('large', [seqs])
         seqbuf = 'large'
-        wbuf = 'weights large'
+        wbufname = 'weights large'
+        ebufname = 'E large'
 
     gpus.calcEnergies(seqbuf)
     gpus.calcBicounts(seqbuf)
@@ -173,13 +175,15 @@ def iterNewton(param, bimarg_model, gpus, log):
     gpus.merge_bimarg()
 
     if param.reg == 'l2z':
-        updateJ = lambda: gpus.updateJ_l2z(gamma, pc, *param.regarg)
+        updateJ = lambda: gpus.updateJ_l2z(gamma, pc, *param.regarg, Jbuf='dJ')
+    #elif param.reg == 'l1z':
+    #    updateJ = lambda: gpus.updateJ_l1z(gamma, pc, *param.regarg, Jbuf='dJ')
     elif param.reg == 'X':
-        updateJ = lambda: gpus.updateJ_X(gamma, pc)
+        updateJ = lambda: gpus.updateJ_X(gamma, pc, Jbuf='dJ')
     elif param.reg == 'Xself':
-        updateJ = lambda: gpus.updateJ_Xself(gamma, pc)
+        updateJ = lambda: gpus.updateJ_Xself(gamma, pc, Jbuf='dJ')
     else:
-        updateJ = lambda: gpus.updateJ(gamma, pc)
+        updateJ = lambda: gpus.updateJ(gamma, pc, Jbuf='dJ')
 
     gpus.fillBuf('dJ', 0)
 
@@ -187,14 +191,20 @@ def iterNewton(param, bimarg_model, gpus, log):
     lastNeff = 2*N
     for i in range(newtonSteps):
         updateJ()
-        gpus.calcWeights(seqbuf)
-        weights = gpus.collect(wbuf)
-        log("weights", printsome(weights))
-        weights = np.exp(np.min(weights) - weights)
-        gpus.setBuf('weights', weights)
+        if param.reg == 'l1z':
+            gpus.reg_l1z(gamma, pc, *param.regarg)
+        gpus.calcEnergies(seqbuf, 'dJ')
+
+        # compute weights on CPU (since we want to subtract max for precision)
+        dJ = gpus.readBufs(ebufname)
+        mindJ = np.min([np.min(x) for x in dJ])
+        weights = [np.exp(mindJ - x) for x in dJ]
+        gpus.setBuf(wbufname, weights)
+
         gpus.weightedMarg(seqbuf)
         gpus.merge_bimarg()
-
+    
+        weights = np.concatenate(weights)
         Neff = getNeff(weights)
         if i%64 == 0 or abs(lastNeff - Neff)/N > 0.05 or Neff < Nfrac*N:
             log("J-step {: 5d}   Neff: {:.1f}   ({:.1f}% of {})".format(
@@ -207,9 +217,7 @@ def iterNewton(param, bimarg_model, gpus, log):
 
     # print status
     bi, J, dJ = gpus.head_gpu.readBufs(['bi', 'J', 'dJ'])
-    log("dJ", printsome(dJ[0]))
-    weights = gpus.collect('weights')
-    bimarg_model, weights, trialJ = bi[0], weights, J[0] + dJ[0]
+    bimarg_model, trialJ = bi[0], J[0] + dJ[0]
     gpus.setBuf('J', trialJ)
     NewtonStatus(i, trialJ, weights, bimarg_model, bimarg_target, log)
 
@@ -415,7 +423,7 @@ def runMCMC(gpus, couplings, runName, param, log):
     gpus.calcBicounts('main')
     gpus.calcEnergies('main')
     bicount, es = gpus.collect(['bicount', 'E main'])
-    bimarg_model = bicount.astype(np.float32)/np.float32(np.sum(bicount[0,:]))
+    bimarg_model = bicount/np.sum(bicount[0,:])
 
     gpus.logProfile()
 
@@ -621,7 +629,7 @@ def newtonMCMC(param, gpus, start_run, log):
     # pre-optimization
     Jsteps = 0
     if param.preopt:
-        J, Jstep = preOpt(param, gpus, log)
+        J, Jsteps = preOpt(param, gpus, log)
     else:
         log("No Pre-optimization")
     

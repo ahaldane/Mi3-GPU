@@ -279,9 +279,10 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
     def runMCMC(self):
         self.isend('runMCMC')
 
-    def calcEnergies(self, seqbufname):
+    def calcEnergies(self, seqbufname, Jbufname='J'):
         self.isend('calcEnergies')
         self.isend(seqbufname)
+        self.isend(Jbufname)
 
     def calcBicounts(self, seqbufname):
         self.isend('calcBicounts')
@@ -291,21 +292,25 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
         self.isend('bicounts_to_bimarg')
         self.isend(seqbufname)
 
-    def updateJ(self, gamma, pc):
+    def updateJ(self, gamma, pc, Jbuf='J'):
         self.isend('updateJ')
-        self.isend((gamma, pc))
+        self.isend((gamma, pc, Jbuf))
 
-    def updateJ_l2z(self, gamma, pc, lh, lJ):
+    def updateJ_l2z(self, gamma, pc, lh, lJ, Jbuf='J'):
         self.isend('updateJ_l2z')
-        self.isend((gamma, pc, lh, lJ))
+        self.isend((gamma, pc, lh, lJ, Jbuf))
 
-    def updateJ_X(self, gamma, pc):
+    def updateJ_l1z(self, gamma, pc, lJ, Jbuf='J'):
+        self.isend('updateJ_l1z')
+        self.isend((gamma, pc, lJ, Jbuf))
+
+    def updateJ_X(self, gamma, pc, Jbuf='J'):
         self.isend('updateJ_X')
-        self.isend((gamma, pc))
+        self.isend((gamma, pc, Jbuf))
 
-    def updateJ_Xself(self, gamma, pc):
+    def updateJ_Xself(self, gamma, pc, Jbuf='J'):
         self.isend('updateJ_Xself')
-        self.isend((gamma, pc))
+        self.isend((gamma, pc, Jbuf))
 
     def calcWeights(self, seqbufname):
         self.isend('calcWeights')
@@ -455,7 +460,8 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
 
     def calcEnergies(self):
         seqbufname = self.recv()
-        super().calcEnergies(seqbufname)
+        Jbufname = self.recv()
+        super().calcEnergies(seqbufname, Jbufname)
 
     def calcBicounts(self):
         seqbufname = self.recv()
@@ -472,6 +478,10 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
     def updateJ_l2z(self):
         args = self.recv()
         super().updateJ_l2z(*args)
+
+    def updateJ_l1z(self):
+        args = self.recv()
+        super().updateJ_l1z(*args)
 
     def updateJ_X(self):
         args = self.recv()
