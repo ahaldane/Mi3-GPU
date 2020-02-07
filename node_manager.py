@@ -116,29 +116,25 @@ class GPU_node:
         for gpu in self.gpus:
             gpu.bicounts_to_bimarg(seqbufname)
 
-    def updateJ(self, gamma, pc, Jbuf='J'):
+    def updateJ(self, gamma, pc, Jbuf='dJ'):
         for gpu in self.gpus:
             gpu.updateJ(gamma, pc, Jbuf)
-
-    def updateJ_l2z(self, gamma, pc, lh, lJ, Jbuf='J'):
-        for gpu in self.gpus:
-            gpu.updateJ_l2z(gamma, pc, lh, lJ, Jbuf)
-
-    def updateJ_l1z(self, gamma, pc, lJ, Jbuf='J'):
-        for gpu in self.gpus:
-            gpu.updateJ_l1z(gamma, pc, lJ, Jbuf)
 
     def reg_l1z(self, gamma, pc, lJ):
         for gpu in self.gpus:
             gpu.reg_l1z(gamma, pc, lJ)
 
-    def updateJ_X(self, gamma, pc, Jbuf='J'):
+    def reg_l2z(self, gamma, pc, lh, lJ):
         for gpu in self.gpus:
-            gpu.updateJ_X(gamma, pc, Jbuf)
+            gpu.reg_l2z(gamma, pc, lh, lJ)
 
-    def updateJ_Xself(self, gamma, pc, Jbuf='J'):
+    def reg_X(self, gamma, pc):
         for gpu in self.gpus:
-            gpu.updateJ_Xself(gamma, pc, Jbuf)
+            gpu.reg_X(gamma, pc)
+
+    def reg_ddE(self, gamma, pc, lam):
+        for gpu in self.gpus:
+            gpu.reg_ddE(gamma, pc, lam)
 
     def calcWeights(self, seqbufname):
         for gpu in self.gpus:

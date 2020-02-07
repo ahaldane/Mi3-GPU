@@ -173,26 +173,25 @@ def iterNewton(param, bimarg_model, gpus, log):
     gpus.calcBicounts(seqbuf)
     gpus.bicounts_to_bimarg(seqbuf)
     gpus.merge_bimarg()
-
-    if param.reg == 'l2z':
-        updateJ = lambda: gpus.updateJ_l2z(gamma, pc, *param.regarg, Jbuf='dJ')
-    #elif param.reg == 'l1z':
-    #    updateJ = lambda: gpus.updateJ_l1z(gamma, pc, *param.regarg, Jbuf='dJ')
+    
+    reg = None
+    if param.reg == 'l1z':
+        reg = lambda: gpus.reg_l1z(gamma, pc, *param.regarg)
+    elif param.reg == 'l2z':
+        reg = lambda: gpus.reg_l2z(gamma, pc, *param.regarg)
     elif param.reg == 'X':
-        updateJ = lambda: gpus.updateJ_X(gamma, pc, Jbuf='dJ')
-    elif param.reg == 'Xself':
-        updateJ = lambda: gpus.updateJ_Xself(gamma, pc, Jbuf='dJ')
-    else:
-        updateJ = lambda: gpus.updateJ(gamma, pc, Jbuf='dJ')
+        reg = lambda: gpus.reg_X(gamma, pc, *param.regarg)
+    elif param.reg == 'ddE':
+        reg = lambda: gpus.reg_ddE(gamma, pc, *param.regarg)
 
     gpus.fillBuf('dJ', 0)
 
     # do coupling updates
     lastNeff = 2*N
     for i in range(newtonSteps):
-        updateJ()
-        if param.reg == 'l1z':
-            gpus.reg_l1z(gamma, pc, *param.regarg)
+        gpus.updateJ(gamma, pc)
+        if reg is not None:
+            reg()
         gpus.calcEnergies(seqbuf, 'dJ')
 
         # compute weights on CPU (since we want to subtract max for precision)

@@ -439,6 +439,8 @@ def inverseIsing(orig_args, args, log):
     if p.preopt or p.reseed == 'none':
         if p.seqs is None:
             raise Exception("Need to provide seqs if not using seedseq")
+        log("")
+        log("Initializing main seq buf with loaded seqs.")
         gpus.setSeqs('main', p.seqs, log)
     elif use_seed and p.seedseq is None:
         raise Exception("Must provide seedseq if using reseed=single_*")
@@ -996,65 +998,91 @@ def testing(orig_args, args, log):
     J = p.couplings
     gpus.setSeqs('main', seqs, log)
     gpus.setBuf('J', J)
+    gpus.fillBuf('dJ', 0)
     gpus.setBuf('bi target', p.bimarg)
     gpus.calcBicounts('main')
     gpus.bicounts_to_bimarg('main')
     gpus.merge_bimarg()
     bi = gpus.head_gpu.readBufs('bi')[0]
 
+
     gamma = 0.004
     pc = 0.2
     lJ = 0.1
     import utils.changeGauge as changeGauge
+    
+    JJ = np.zeros(J.shape, dtype='f4')
+    JJ[:,1] = 3
+    gpus.setBuf('J', JJ)
+    gpus.reg_ddE(gamma, pc, lJ)
+    dJ = gpus.head_gpu.getBuf('dJ')[0].read()
+    print(JJ)
+    print(dJ)
+    print(dJ[0].reshape((q,q)))
 
-    #gpus.updateJ_l1z(gamma, pc, lam, Jbuf='J')
-    #J0cpu = changeGauge.zeroGauge(None, p.couplings)[1]
-    #np.save(os.path.join(p.outdir, 'J0gpu'), J0gpu)
-    #np.save(os.path.join(p.outdir, 'J0cpu'), J0cpu)
-    #log("Coupling results:")
-    #log("GPU:", printsome(J0gpu))
-    #log("CPU:", printsome(J0cpu))
 
-    gpus.updateJ_l1z(gamma, pc, lJ, Jbuf='J')
-    Jgpu = gpus.head_gpu.getBuf('J')[0].read()
-    log("bim:", printsome(bi))
-    log("bimt:", printsome(p.bimarg))
-    log("df:", printsome(p.bimarg - bi))
-    Jcpu = J - gamma*(p.bimarg - bi)/(bi + pc)
-    log("org:", printsome(J, prec=6))
-    log("unr:", printsome(Jcpu, prec=6))
+    def R(J):
+        J = J.reshape((nPair, q, q))
+        Rab = np.zeros(J.shape)
+        b,a = np.meshgrid(np.arange(q), np.arange(q))
+
+        for g in range(1,q):
+            jr = J[...,a,b] - J[...,(a+g)%q,b]
+            for d in range(1,q):
+                jc = -J[...,a,(b+d)%q] + J[...,(a+g)%q,(b+d)%q]
+                Rab += jr + jc
+        R = np.sum(Rab, axis=(-1,-2))
+
+    print(R(JJ))
+
+    ##gpus.updateJ_l1z(gamma, pc, lam, Jbuf='J')
+    ##J0cpu = changeGauge.zeroGauge(None, p.couplings)[1]
+    ##np.save(os.path.join(p.outdir, 'J0gpu'), J0gpu)
+    ##np.save(os.path.join(p.outdir, 'J0cpu'), J0cpu)
+    ##log("Coupling results:")
+    ##log("GPU:", printsome(J0gpu))
+    ##log("CPU:", printsome(J0cpu))
+
+    #gpus.updateJ_l1z(gamma, pc, lJ, Jbuf='J')
+    #Jgpu = gpus.head_gpu.getBuf('J')[0].read()
+    #log("bim:", printsome(bi))
+    #log("bimt:", printsome(p.bimarg))
+    #log("df:", printsome(p.bimarg - bi))
+    #Jcpu = J - gamma*(p.bimarg - bi)/(bi + pc)
+    #log("org:", printsome(J, prec=6))
+    #log("unr:", printsome(Jcpu, prec=6))
 
     
-    J0 = changeGauge.zeroGauge(None, Jcpu)[1]
-    log("J0: ", printsome(J0, prec=6))
+    #J0 = changeGauge.zeroGauge(None, Jcpu)[1]
+    #log("J0: ", printsome(J0, prec=6))
 
-    R = -lJ*np.sign(J0)*gamma/(bi + pc)
-    cond = np.sign(J0) != np.sign(J0 + R)
-    cont = np.ones(J0.shape, dtype=bool)
-    Jcpu[cond] = Jcpu[cond] - J0[cond]
-    Jcpu[~cond] = Jcpu[~cond] + R[~cond]
-    log("GPU:", printsome(Jgpu, prec=6))
-    log("CPU:", printsome(Jcpu, prec=6))
-    J0p = changeGauge.zeroGauge(None, Jcpu)[1]
-    log("J0: ", printsome(J0p, prec=6))
+    #R = -lJ*np.sign(J0)*gamma/(bi + pc)
+    #cond = np.sign(J0) != np.sign(J0 + R)
+    #cont = np.ones(J0.shape, dtype=bool)
+    #Jcpu[cond] = Jcpu[cond] - J0[cond]
+    #Jcpu[~cond] = Jcpu[~cond] + R[~cond]
+    #log("GPU:", printsome(Jgpu, prec=6))
+    #log("CPU:", printsome(Jcpu, prec=6))
+    #J0p = changeGauge.zeroGauge(None, Jcpu)[1]
+    #log("J0: ", printsome(J0p, prec=6))
 
-    np.save(os.path.join(p.outdir, 'J'), J)
-    np.save(os.path.join(p.outdir, 'Jgpu'), Jgpu)
-    np.save(os.path.join(p.outdir, 'Jcpu'), Jcpu)
+    #np.save(os.path.join(p.outdir, 'J'), J)
+    #np.save(os.path.join(p.outdir, 'Jgpu'), Jgpu)
+    #np.save(os.path.join(p.outdir, 'Jcpu'), Jcpu)
 
-    #log("Computing Energies")
-    #log("==================")
+    ##log("Computing Energies")
+    ##log("==================")
 
-    #t1 = time.time()
-    #for i in range(1000):
-    #    for gpu in gpus:
-    #        gpu.calcEnergies('main')
-    #es = np.concatenate(readGPUbufs(['E main'], gpus)[0])
-    #print("Time", time.time() - t1)
-    #log(printsome(es))
+    ##t1 = time.time()
+    ##for i in range(1000):
+    ##    for gpu in gpus:
+    ##        gpu.calcEnergies('main')
+    ##es = np.concatenate(readGPUbufs(['E main'], gpus)[0])
+    ##print("Time", time.time() - t1)
+    ##log(printsome(es))
 
-    #log("Saving results to file '{}'".format(args.out))
-    #np.save(args.out, es)
+    ##log("Saving results to file '{}'".format(args.out))
+    ##np.save(args.out, es)
 
 ################################################################################
 
@@ -1116,7 +1144,7 @@ def process_newton_args(args, log):
 
     if args.reg is not None:
         rtype, dummy, rarg = args.reg.partition(':')
-        rtypes = ['X', 'Xself', 'l2z', 'l1z', 'L']
+        rtypes = ['l2z', 'l1z', 'X', 'ddE']
         if rtype not in rtypes:
             raise Exception("reg must be one of {}".format(str(rtypes)))
         p['reg'] = rtype
@@ -1126,11 +1154,10 @@ def process_newton_args(args, log):
             p['regarg'] = np.load(rargs[0])
             if p['regarg'].shape != bimarg.shape:
                 raise Exception("X in wrong format")
-        elif rtype == 'Xself':
-            log("Regularizing with X-lambdas from file {}".format(rargs[0]))
-            p['regarg'] = np.load(rargs[0])
-            if p['regarg'].shape != (bimarg.shape[0],):
-                raise Exception("X in wrong format")
+        elif rtype == 'ddE':
+            lam = float(rargs[0])
+            log("Regularizing using ddE with lambda = {}".format(lam))
+            p['regarg'] = (lam,)
         elif rtype == 'l2z':
             try:
                 lh, lJ = float(rargs[0]), float(rargs[1])

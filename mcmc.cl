@@ -678,60 +678,6 @@ void updatedJ(__global float *bimarg_target,
 }
 
 __kernel
-void updatedJ_l2z(__global float *bimarg_target,
-                  __global float *bimarg,
-                           float gamma,
-                           float pc,
-                           float lh, float lJ,
-                  __global float *Ji,
-                  __global float *Jo) {
-    uint li = get_local_id(0);
-    uint gi = get_group_id(0);
-    uint n = gi*q*q + li;
-
-    __local float hi[q], hj[q];
-    __local float scratch[q*q];
-
-    float J0 = zeroGauge(Ji[n], li, scratch, hi, hj);
-    float R = lJ*J0 + lh*(hi[li/q] + hj[li%q]);
-    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + R)/(bimarg[n] + pc);
-}
-
-__kernel
-void updatedJ_l1z(__global float *bimarg_target,
-                  __global float *bimarg,
-                           float gamma,
-                           float pc,
-                           float lJ,
-                  __global float *Ji,
-                  __global float *Jo) {
-    uint li = get_local_id(0);
-    uint gi = get_group_id(0);
-    uint n = gi*q*q + li;
-
-    __local float hi[q], hj[q];
-    __local float scratch[q*q];
-
-    //Jo[n] = zeroGauge(Ji[n], li, scratch, hi, hj);;
-
-    float Jp = Ji[n] - gamma*(bimarg_target[n] - bimarg[n])/(bimarg[n] + pc);
-
-    float J0 = zeroGauge(Jp, li, scratch, hi, hj);
-    float R = -lJ*sign(J0)*gamma/(bimarg[n] + pc);
-    if (sign(J0) != sign(J0 + R)){ 
-        Jp = Jp - J0;
-    }
-    else {
-        Jp = Jp + R;
-    }
-    Jo[n] = Jp;
-
-    //float J0 = zeroGauge(Ji[n], li, scratch, hi, hj);
-    //float R = lJ*sign(J0);
-    //Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + R)/(bimarg[n] + pc);
-}
-
-__kernel
 void reg_l1z(__global float *bimarg,
                       float gamma,
                       float pc,
@@ -748,6 +694,9 @@ void reg_l1z(__global float *bimarg,
     float Jp = dJ[n];
     float J0 = zeroGauge(J[n] + Jp, li, scratch, hi, hj);
     float R = -lJ*sign(J0)*gamma/(bimarg[n] + pc);
+
+    // to reduce numerical fluctuations, if the regularization step
+    // would change the sign of J0, instead set J0 to 0.
     if (sign(J0) != sign(J0 + R)){ 
         Jp = Jp - J0;
     }
@@ -758,23 +707,33 @@ void reg_l1z(__global float *bimarg,
 }
 
 __kernel
-void updatedJ_X(__global float *bimarg_target,
-                __global float *bimarg,
-                __global float *Creg,
-                         float gamma,
-                         float pc,
-                __global float *Ji,
-                __global float *Jo) {
+void reg_l2z(__global float *bimarg,
+                      float gamma,
+                      float pc,
+                      float lh, float lJ,
+             __global float *J,
+             __global float *dJ) {
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
     uint n = gi*q*q + li;
 
-    __local float l_qq[q*q];
-    float X = sumqq(Ji[n]*Creg[n], li, l_qq);
-    float bias = Creg[n]*sign(X);
-    //float bias = -Creg[n];  // equivalent to pre_regularize
+    __local float hi[q], hj[q];
+    __local float scratch[q*q];
 
-    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] + bias)/(bimarg[n] + pc);
+    float Jp = dJ[n];
+    float J0 = zeroGauge(J[n] + Jp, li, scratch, hi, hj);
+    float R = -(lJ*J0 + lh*(hi[li/q] + hj[li%q]))*gamma/(bimarg[n] + pc);
+ 
+    // to reduce numerical fluctuations, if the regularization step
+    // would change the sign of J0, instead set J0 to 0.
+    if (sign(J0) != sign(J0 + R)){ 
+        Jp = Jp - J0;
+    }
+    else {
+        Jp = Jp + R;
+    }
+
+    dJ[n] = Jp;
 }
 
 // expects to be called with work-group size of q*q
@@ -838,13 +797,12 @@ float getXC(float J, float bimarg, uint li, __local float *scratch,
 }
 
 __kernel
-void updatedJ_Xself(__global float *bimarg_target,
-              __global float *bimarg,
-              __global float *lambdas,
-                       float gamma,
-                       float pc,
-              __global float *Ji,
-              __global float *Jo) {
+void reg_X(__global float *bimarg,
+           __global float *lambdas,
+                    float gamma,
+                    float pc,
+           __global float *J,
+           __global float *dJ) {
     uint li = get_local_id(0);
     uint gi = get_group_id(0);
     uint n = gi*q*q + li;
@@ -852,10 +810,49 @@ void updatedJ_Xself(__global float *bimarg_target,
     __local float hi[q], hj[q];
     __local float C[q*q];
 
-    float X = getXC(Ji[n], bimarg[n], li, C, hi, hj);
-    float bias = lambdas[gi]*C[li]*sign(X);
-
-    Jo[n] = Ji[n] - gamma*(bimarg_target[n] - bimarg[n] - bias)/(bimarg[n]+pc);
+    float Jp = dJ[n];
+    
+    // XXX this derivative is missing a second term, hard to compute
+    float X = getXC(J[n] + Jp, bimarg[n], li, C, hi, hj);
+    float R = -lambdas[gi]*C[li]*sign(X);
+    dJ[n] = Jp - gamma*R/(bimarg[n]+pc);
 }
+
+__kernel
+void reg_ddE(__global float *bimarg,
+                      float  gamma,
+                      float  pc,
+                      float  lambda,
+             __global float *J,
+             __global float *dJ) {
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float lJ[q*q];
+    lJ[li] = J[n] + dJ[n];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    #define a (li/q)
+    #define b (li%q)
+    #define JJ(a,b) lJ[q*(a) + (b)]
+
+    float dR = 0;
+    for (int g = 1; g < q; g++) {
+        float jr = JJ(a, b) - JJ((a+g)%q, b);
+        for (int d = 1; d < q; d++) {
+            float jc = -JJ(a, (b+d)%q) + JJ((a+g)%q, (b+d)%q);
+            dR += sign(jr + jc);
+        }
+    }
+
+    dR = dR/((q-1)*(q-1));
+    dJ[n] = dJ[n] - lambda*dR*gamma/(bimarg[n]+pc);
+
+    #undef a
+    #undef b
+    #undef JJ
+}
+
 
 

@@ -292,25 +292,21 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
         self.isend('bicounts_to_bimarg')
         self.isend(seqbufname)
 
-    def updateJ(self, gamma, pc, Jbuf='J'):
+    def updateJ(self, gamma, pc, Jbuf='dJ'):
         self.isend('updateJ')
         self.isend((gamma, pc, Jbuf))
 
-    def updateJ_l2z(self, gamma, pc, lh, lJ, Jbuf='J'):
-        self.isend('updateJ_l2z')
-        self.isend((gamma, pc, lh, lJ, Jbuf))
+    def reg_l1z(self, gamma, pc, lJ):
+        self.isend('reg_l1z')
+        self.isend((gamma, pc, lJ))
 
-    def updateJ_l1z(self, gamma, pc, lJ, Jbuf='J'):
-        self.isend('updateJ_l1z')
-        self.isend((gamma, pc, lJ, Jbuf))
+    def reg_l2z(self, gamma, pc, lh, lJ):
+        self.isend('reg_l2z')
+        self.isend((gamma, pc, lh, lJ))
 
-    def updateJ_X(self, gamma, pc, Jbuf='J'):
-        self.isend('updateJ_X')
-        self.isend((gamma, pc, Jbuf))
-
-    def updateJ_Xself(self, gamma, pc, Jbuf='J'):
-        self.isend('updateJ_Xself')
-        self.isend((gamma, pc, Jbuf))
+    def reg_X(self, gamma, pc):
+        self.isend('reg_X')
+        self.isend((gamma, pc))
 
     def calcWeights(self, seqbufname):
         self.isend('calcWeights')
@@ -475,21 +471,17 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
         args = self.recv()
         super().updateJ(*args)
 
-    def updateJ_l2z(self):
+    def reg_l1z(self):
         args = self.recv()
-        super().updateJ_l2z(*args)
+        super().reg_l1z(*args)
 
-    def updateJ_l1z(self):
+    def reg_l2z(self):
         args = self.recv()
-        super().updateJ_l1z(*args)
+        super().reg_l2z(*args)
 
-    def updateJ_X(self):
+    def reg_X(self):
         args = self.recv()
-        super().updateJ_X(*args)
-
-    def updateJ_Xself(self):
-        args = self.recv()
-        super().updateJ_Xself(*args)
+        super().reg_X(*args)
 
     def calcWeights(self):
         seqbufname = self.recv()

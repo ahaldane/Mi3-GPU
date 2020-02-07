@@ -583,7 +583,7 @@ class MCMCGPU:
             self.prg.addBiBufs(self.queue, (nworkunits,), (self.wgsize,),
                        selfbuf, otherbuf, wait_for=self._waitevt(wait_for)))
 
-    def updateJ(self, gamma, pc, Jbuf='J', wait_for=None):
+    def updateJ(self, gamma, pc, Jbuf='dJ', wait_for=None):
         self.require('Jstep')
         self.log("updateJ")
         q, nPairs = self.q, self.nPairs
@@ -599,36 +599,6 @@ class MCMCGPU:
                                 np.float32(gamma), np.float32(pc), Jin, Jout,
                                 wait_for=self._waitevt(wait_for)))
 
-    def updateJ_l2z(self, gamma, pc, lh, lJ, Jbuf='J', wait_for=None):
-        self.require('Jstep')
-        self.log("updateJ_l2z")
-        q, nPairs = self.q, self.nPairs
-
-        bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs[Jbuf]
-        self.unpackedJ = None
-        return self.logevt('updateJ_l2z',
-            self.prg.updatedJ_l2z(self.queue, (nPairs*q*q,), (q*q,),
-                            self.bufs['bi target'], bibuf,
-                            np.float32(gamma), np.float32(pc),
-                            np.float32(2*lh), np.float32(2*lJ), Jin, Jout,
-                            wait_for=self._waitevt(wait_for)))
-
-    def updateJ_l1z(self, gamma, pc, lJ, Jbuf='J', wait_for=None):
-        self.require('Jstep')
-        self.log("updateJ_l1z")
-        q, nPairs = self.q, self.nPairs
-
-        bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs[Jbuf]
-        self.unpackedJ = None
-        return self.logevt('updateJ_l1z',
-            self.prg.updatedJ_l1z(self.queue, (nPairs*q*q,), (q*q,),
-                            self.bufs['bi target'], bibuf,
-                            np.float32(gamma), np.float32(pc),
-                            np.float32(lJ), Jin, Jout,
-                            wait_for=self._waitevt(wait_for)))
-
     def reg_l1z(self, gamma, pc, lJ, wait_for=None):
         self.require('Jstep')
         self.log("reg_l1z")
@@ -642,34 +612,46 @@ class MCMCGPU:
                             np.float32(lJ), self.bufs['J'], self.bufs['dJ'],
                             wait_for=self._waitevt(wait_for)))
 
-    def updateJ_X(self, gamma, pc, Jbuf='J', wait_for=None):
+    def reg_l2z(self, gamma, pc, lh, lJ, wait_for=None):
         self.require('Jstep')
-        self.log("updateJ X")
+        self.log("reg_l2z")
         q, nPairs = self.q, self.nPairs
 
         bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs[Jbuf]
         self.unpackedJ = None
-        return self.logevt('updateJ_X',
-            self.prg.updatedJ_X(self.queue, (nPairs*q*q,), (q*q,),
-                                self.bufs['bi target'], bibuf,
-                                self.bufs['Creg'],
-                                np.float32(gamma), np.float32(pc), Jin, Jout,
+        return self.logevt('reg_l2z',
+            self.prg.reg_l2z(self.queue, (nPairs*q*q,), (q*q,),
+                            bibuf, np.float32(gamma), np.float32(pc),
+                            np.float32(lh), np.float32(lJ), 
+                            self.bufs['J'], self.bufs['dJ'],
+                            wait_for=self._waitevt(wait_for)))
+
+    def reg_X(self, gamma, pc, wait_for=None):
+        self.require('Jstep')
+        self.log("reg X")
+        q, nPairs = self.q, self.nPairs
+
+        bibuf = self.bufs['bi']
+        self.unpackedJ = None
+        return self.logevt('reg_X',
+            self.prg.reg_X(self.queue, (nPairs*q*q,), (q*q,),
+                                bibuf, self.bufs['Creg'],
+                                np.float32(gamma), np.float32(pc),
+                                self.bufs['J'], self.bufs['dJ'],
                                 wait_for=self._waitevt(wait_for)))
 
-    def updateJ_Xself(self, gamma, pc, Jbuf='J', wait_for=None):
+    def reg_ddE(self, gamma, pc, lam, wait_for=None):
         self.require('Jstep')
-        self.log("updateJ Xself")
+        self.log("reg ddE")
         q, nPairs = self.q, self.nPairs
 
         bibuf = self.bufs['bi']
-        Jin = Jout = self.bufs[Jbuf]
         self.unpackedJ = None
-        return self.logevt('updateJ_Xself',
-            self.prg.updatedJ_Xself(self.queue, (nPairs*q*q,), (q*q,),
-                                self.bufs['bi target'], bibuf,
-                                self.bufs['Xlambdas'],
-                                np.float32(gamma), np.float32(pc), Jin, Jout,
+        return self.logevt('reg_ddE',
+            self.prg.reg_ddE(self.queue, (nPairs*q*q,), (q*q,),
+                                bibuf, np.float32(gamma), np.float32(pc),
+                                np.float32(lam),
+                                self.bufs['J'], self.bufs['dJ'],
                                 wait_for=self._waitevt(wait_for)))
 
     def getBuf(self, bufname, truncateLarge=True, wait_for=None):
