@@ -10,7 +10,7 @@ import sys, time, argparse
 from Bio.Alphabet import IUPAC
 import seqload, changeGauge
 from matplotlib.colors import LinearSegmentedColormap
-from potts_common import getLq, getUnimarg, indepF, getM
+from .potts_common import getLq, getUnimarg, indepF, getM
 
 o = -0.5 # coordinate offset in pairwise image plot
 
