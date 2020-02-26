@@ -17,4 +17,4 @@ while s.shape[0] != 0:
     print(s.shape, file=sys.stderr)
 
 with os.fdopen(sys.stdout.fileno(), 'wb', closefd=False) as fp:
-    seqload.writeSeqs(fp, np.array(out_seq))
+    seqload.writeSeqs(fp, np.array(out_seq), noheader=True)

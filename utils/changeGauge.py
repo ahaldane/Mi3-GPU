@@ -38,7 +38,7 @@ def zeroJGauge(hs, Js, weights=None):
     """
     Changes to a gauge where $\sum_a J^{ij}_{ab} = 0$ for all $i, j, b$,
     and updates field terms so that sequence energies are preserved. The
-    mean resulting coupling value is 0. This gauge is not fully contrained
+    mean resulting coupling value is 0. This gauge is not fully constrained
     because the resulting h values depend on the gauge of the input,
     though the coupling values will be independent of the input gauge. This
     gauge minimizes the Frobenius norm of the couplings.
