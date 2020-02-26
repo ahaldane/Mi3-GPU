@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import numpy as np
 import argparse, sys
-from .potts_common import getLq, getUnimarg
+from potts_common import getLq, getUnimarg, indepF
 
 nrmlz = lambda x: x/np.sum(x,axis=1)[:,None]
 
@@ -15,7 +15,7 @@ def main():
     parser.add_argument('margfile')
     parser.add_argument('pc', nargs='*', type=float)
     parser.add_argument('--mode', choices=['jeffreys', 'bayes', 'meanfield',
-                                 'Jeven', 'constant'], default='jeffreys')
+                                 'unijmix', 'constant', 'tst'], default='jeffreys')
     parser.add_argument('-o', '--out', default='outpc', help="Output file")
 
     args = parser.parse_args(sys.argv[1:])
@@ -46,7 +46,7 @@ def main():
 
         # nrmlz only needed to correct fp error
         ff = nrmlz((1-mu)**2*ff + (1-mu)*mu*indepF(ff)/q + (mu/q)**2)
-    elif args.mode == 'Jeven':
+    elif args.mode == 'unijmix':
         if len(pc) != 2:
             raise ValueError("pc should be two values representing (pc, w)"
                              "where the weight is 0 <= w <= 1 and pc is "
@@ -65,6 +65,21 @@ def main():
             raise ValueError("pc should be a single value 0 <= x <= 1")
         pc = pc[0]/(1-pc[0])
         ff = nrmlz(ff + pc/(q*q))
+
+    elif args.mode == 'tst':
+        if len(pc) != 2:
+            raise ValueError("pc should be two values representing (pc, w)"
+                             "where the weight is 0 <= w <= 1 and pc is "
+                             "a pseudocount on the univariate marginals, eg "
+                             "put 0.5/Neff for Jeffrey's prior.")
+        pc, l = pc
+        f = getUnimarg(ff)
+        fpc = nrmlz(f + pc)
+        z = (fpc - (1-l)*f)/l
+
+        zizj = np.array([np.outer(z[i],z[j]).flatten() 
+                         for i in range(L-1) for j in range(i+1,L)])
+        ff = nrmlz((1-l)*ff + l*zizj)
 
     ssr = np.sum((ff - ff_orig)**2)
     with np.errstate(divide='ignore', invalid='ignore'):

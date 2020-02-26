@@ -36,7 +36,7 @@ def indepF(fab):
     L, q = getLq(fab)
     fabx = fab.reshape((fab.shape[0], q, q))
     fa1, fb2 = np.sum(fabx,axis=2), np.sum(fabx,axis=1)
-    fafb = np.array([np.outer(fa, fb).flatten() for fa,fb in zip(fa1, fb2)])
+    fafb = np.array([np.outer(fa, fb).ravel() for fa,fb in zip(fa1, fb2)])
     return fafb
 
 def getM(x, diag_fill=0):
@@ -46,3 +46,27 @@ def getM(x, diag_fill=0):
     M = M + M.T
     M[np.diag_indices(L)] = diag_fill
     return M
+
+def getXij(J, fab):
+    L, q = getLq(fab)
+    npr = fab.shape[0]
+
+    fqq = fab.reshape((npr, q, q))
+    Jqq = J.reshape((npr, q, q))
+
+    fi, fj = np.sum(fqq,axis=2), np.sum(fqq,axis=1)
+    fafb = np.array([np.outer(fa, fb).ravel() for fa,fb in zip(fi, fj)])
+
+    tij = np.sum(J*fafb, axis=1)[:,None,None]
+    ti = np.sum(Jqq*fi[:,:,None], axis=1)[:,None,:]
+    tj = np.sum(Jqq*fj[:,None,:], axis=2)[:,:,None]
+    t = Jqq
+
+    Xij = -np.sum((fab - fafb)*J, axis=1)
+    Xijab = (-tij + ti + tj - t).reshape((npr, q*q))
+    return Xij, Xijab
+
+    ## sanity check
+    #print(Xij)
+    #print(np.sum(Xijab*fab, axis=1))
+    #print(np.sum(Xij), np.sum(Xijab*fab))  # should be equal

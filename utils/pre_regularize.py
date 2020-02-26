@@ -40,8 +40,8 @@ def regularize_bayesian_KL(fab, N):
 
         lambdas[observed_KL < expected_KL] = l
     
-    lambdas = lambdas[:,None]
-    return (1-lambdas)*fab + lambdas*fafb, lambdas
+    l = lambdas[:,None]
+    return (1-l)*fab + l*fafb, lambdas
 
 def main():
     parser = argparse.ArgumentParser(description='Regularizer Pre-processing')

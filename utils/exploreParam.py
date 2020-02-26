@@ -10,7 +10,7 @@ import sys, time, argparse
 from Bio.Alphabet import IUPAC
 import seqload, changeGauge
 from matplotlib.colors import LinearSegmentedColormap
-from .potts_common import getLq, getUnimarg, indepF, getM
+from potts_common import getLq, getUnimarg, indepF, getM, getXij
 
 o = -0.5 # coordinate offset in pairwise image plot
 
@@ -19,7 +19,8 @@ class DraggableColorbar(object):
         self.cbar = cbar
         self.mappable = mappable
         self.press = None
-        #self.cycle = sorted([i for i in dir(plt.cm) if hasattr(getattr(plt.cm,i),'N')])
+        #self.cycle = sorted([i for i in dir(plt.cm) 
+        #                     if hasattr(getattr(plt.cm,i),'N')])
         #self.index = self.cycle.index(cbar.get_cmap().name)
 
     def connect(self):
@@ -141,14 +142,16 @@ def alphatext(ax,x,y,ls,**kw):
             text = ax.text(x,y,s, alpha=c, transform=t, **kw)
             text.draw(ax.figure.canvas.get_renderer())
             ex = text.get_window_extent()
-            t = transforms.offset_copy(text._transform, x=-ex.width, units='dots')
+            t = transforms.offset_copy(text._transform, x=-ex.width,
+                                       units='dots')
     else:
         for s,c in ls:
             text = ax.text(x,y,s,alpha=c, transform=t,
                     va='bottom',ha='center',**kw)
             text.draw(ax.figure.canvas.get_renderer())
             ex = text.get_window_extent()
-            t = transforms.offset_copy(text._transform, y=ex.height, units='dots')
+            t = transforms.offset_copy(text._transform, y=ex.height,
+                                       units='dots')
 
 class PositionPicker:
     def __init__(self, contactfig, ax, alphacolor, J, h, ff, score):
@@ -236,20 +239,21 @@ def drawMarg(alphacolor, q, i,j, marg, J, hi, hj, score, margax, Cax, Jax):
              None, None,
              labeltext=alphatext)
 
-    #fnorm = Normalize(-1, 1.0, clip=True)
-    #drawGrid(Jax, 3, 1, 1, q, q,
-    #         [[bwrtext(x) for x in r] for r in J],
-    #         mapi, mapj, '({}, {})   J score={:.2f}'.format(i, j, score),
-    #         list(map(bwrtext, hi)), list(map(bwrtext, hj)),
-    #         labeltext=alphatext)
-
-    S = rel_entr(marg, outer(sum(marg, axis=1), sum(marg, axis=0)))
-    fnorm = Normalize(0, np.max(S), clip=True)
+    fnorm = Normalize(-1, 1.0, clip=True)
     drawGrid(Jax, 3, 1, 1, q, q,
-             [[graytext(x) for x in r] for r in S],
-             mapi, mapj, '({}, {})   KLab'.format(i, j),
-             None, None,
+             [[bwrtext(x) for x in r] for r in J],
+             mapi, mapj, '({}, {})   J score={:.2f}'.format(i, j, score),
+             list(map(bwrtext, hi)), list(map(bwrtext, hj)),
              labeltext=alphatext)
+
+    # Compute the KL terms that make up the MI scores
+    #S = rel_entr(marg, outer(sum(marg, axis=1), sum(marg, axis=0)))
+    #fnorm = Normalize(0, np.max(S), clip=True)
+    #drawGrid(Jax, 3, 1, 1, q, q,
+    #         [[graytext(x) for x in r] for r in S],
+    #         mapi, mapj, '({}, {})   MIab'.format(i, j),
+    #         None, None,
+    #         labeltext=alphatext)
 
 cdict = {'red':   ((0.0,  1.0, 1.0),
                    (1.0,  1.0, 1.0)),
@@ -264,7 +268,7 @@ alphared = LinearSegmentedColormap('AlphaRed', cdict)
 def main():
     alpha21 = '-' + IUPAC.protein.letters
 
-    parser = argparse.ArgumentParser(description='Run DCA')
+    parser = argparse.ArgumentParser(description='Visualize Potts Models')
     parser.add_argument('bimarg')
     parser.add_argument('couplings')
     parser.add_argument('-alphamap', help='map from 21 letters to alpha')
@@ -275,13 +279,16 @@ def main():
                         default='overlay',
                         help='how to draw contact map')
     parser.add_argument('-score',
-                        choices=['fb', 'fbw', 'fbwsqrt', 'DI', 'MI', 'Xij'],
-                        default='fbwsqrt')
-    parser.add_argument('-gauge', choices=['nofield', '0', 'w', 'wsqrt'],
-                                             default='wsqrt')
+                        choices=['fb', 'fbw', 'fbwsqrt', 'DI', 'MI', 'Xij'])
+    parser.add_argument('-gauge', default='skip',
+                        choices=['skip', 'nofield', '0', 'w', 'wsqrt'])
     parser.add_argument('-alpha', default=alpha21)
-    parser.add_argument('-annotimg', help='region annotation image')
+    parser.add_argument('-annotimg', help='annotation image')
     parser.add_argument('-title', help='Figure title')
+    parser.add_argument('-grid', type=int, default=10, help='grid spacing')
+    parser.add_argument('-cnsrv', help='show conservation score')
+    parser.add_argument('-Xijseq', help='seq ')
+    parser.add_argument('-deltaXijseq', help='seq ')
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -303,8 +310,25 @@ def main():
         h, J = changeGauge.zeroGauge(zeros((L,q)), J, weights=ff)
     elif args.gauge == 'wsqrt':
         h, J = changeGauge.zeroGauge(zeros((L,q)), J, weights=np.sqrt(ff))
+    else:
+        h = zeros((L,q))
+    
+    if args.deltaXijseq or args.Xijseq:
+        Xij, Xijab = getXij(J, ff)
 
-    if args.score == 'fb':
+        if args.deltaXijseq:
+            if args.Xijseq:
+                raise ValueError("deltaXijseq, Xijseq are mutually exclusive")
+            seq = args.deltaXijseq
+            Xijab = Xijab - Xij
+        else:
+            seq = args.Xijseq
+            
+        seq = np.array([alpha.index(c) for c in seq], dtype='u4')
+        pottsScore = np.array([Xijab[n, q*seq[i] + seq[j]] for n,(i,j) in 
+                               enumerate((i,j) for i in range(L-1) 
+                                               for j in range(i+1,L))])
+    elif args.score == 'fb':
         h0, J0 = changeGauge.zeroGauge(h, J)
         pottsScore = sqrt(sum(J0**2, axis=1))
     elif args.score == 'fbw':
@@ -317,13 +341,12 @@ def main():
         pottsScore = sqrt(sum((Jw*w)**2, axis=1))
     elif args.score == 'Xij':
         C = ff - indepF(ff)
-        X = np.sum(C*J, axis=1)
-        pottsScore = -X
+        X = -np.sum(C*J, axis=1)
+        pottsScore = X
     elif args.score == 'MI':
         pottsScore = np.sum(rel_entr(ff, indepF(ff)), axis=-1)
     else:
         raise Exception("Not yet implemented")
-    save('score', pottsScore)
 
     if args.alphamap:
         unimarg21 = np.load(args.unimarg21)
@@ -349,21 +372,46 @@ def main():
 
     ss = 0.4
 
-    contactfig = plt.figure()
+    contactfig = plt.figure(figsize=(11, 10))
+    xscale = 10.0/11.0
+    yscale = 10.0/10.0
+
+    main_ax = plt.axes((0.01*xscale, 0.1*yscale, 0.89*xscale, 0.89*yscale),
+                       zorder=3)
+    cbar_ax = plt.axes((10.05/11, 0.1*yscale, 0.3/11, 0.89*yscale), zorder=3)
+
+    if args.annotimg:
+        try:
+            ssim = np.load(args.annotimg)
+        except ValueError:
+            from PIL import Image
+            ssim = np.array(Image.open(args.annotimg))
+
+        ax = plt.axes((0.01*xscale, 0.02*yscale, 0.89*xscale, 0.08*yscale),
+                      sharex=main_ax)
+        ax.set_axis_off()
+        ax.imshow(ssim, extent=(-0.5,L-0.5, 0, 16), interpolation='bicubic',
+                  aspect='auto')
+        ax = plt.axes((0.9*xscale, 0.1*yscale, 0.08*xscale, 0.89*yscale),
+                      sharey=main_ax)
+        ax.set_axis_off()
+        ax.imshow(ssim.transpose((1,0,2))[::-1,:,:], extent=(0,16,-0.5,L-0.5),
+                  interpolation='bicubic', aspect='auto')
 
 
     if args.contactfreq and args.contactmode == 'overlay':
         cont = getM(np.load(args.contactfreq))
         # assume grayscale [0,1]
         cont = cm.gray_r(cont*0.2)
-        plt.imshow(cont, origin='lower',
-                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
+        main_ax.imshow(cont, origin='lower',
+                       extent=(+o,L+o,+o,L+o), interpolation='nearest')
+
 
         scores = getM(pottsScore)
-        img = plt.imshow(scores, origin='lower', cmap=alphared,
-                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
-        cbar = plt.colorbar()
-        cbar = DraggableColorbar(cbar,img)
+        img = main_ax.imshow(scores, origin='lower', cmap=alphared,
+                             extent=(+o,L+o,+o,L+o), interpolation='nearest')
+        cbar = contactfig.colorbar(img, cax=cbar_ax)
+        cbar = DraggableColorbar(cbar, img)
         cbar.connect()
     elif args.contactfreq and args.contactmode == 'split':
         lotri = ones((L,L), dtype=bool)
@@ -373,16 +421,16 @@ def main():
 
         upper = getM(pottsScore)
         upper[hitri] = nan
-        img = plt.imshow(upper, origin='lower', cmap='Blues',
-                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
-        cbar = plt.colorbar()
+        img = main_ax.imshow(upper, origin='lower', cmap='Blues',
+                             extent=(+o,L+o,+o,L+o), interpolation='nearest')
+        cbar = contactfig.colorbar(img, cax=cbar_ax)
         cbar = DraggableColorbar(cbar,img)
         cbar.connect()
 
         lower = getM(np.load(args.contactfreq))
         lower[lotri] = nan
-        plt.imshow(lower, origin='lower', cmap='Reds',
-                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
+        main_ax.imshow(lower, origin='lower', cmap='Reds',
+                       extent=(+o,L+o,+o,L+o), interpolation='nearest')
     if args.contactfreq and args.contactmode == 'splitoverlay':
         lotri = ones((L,L), dtype=bool)
         lotri[triu_indices(L,k=1)] = False
@@ -391,25 +439,30 @@ def main():
 
         cont = getM(np.load(args.contactfreq))
         cont = cm.gray_r(cont*0.2)
-        plt.imshow(cont, origin='lower',
-                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
+        main_ax.imshow(cont, origin='lower',
+                       extent=(+o,L+o,+o,L+o), interpolation='nearest')
 
         upper = getM(pottsScore)
         upper[hitri] = nan
-        img = plt.imshow(upper, origin='lower', cmap=alphared,
-                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
-        cbar = plt.colorbar()
+        img = main_ax.imshow(upper, origin='lower', cmap=alphared,
+                             extent=(+o,L+o,+o,L+o), interpolation='nearest')
+        cbar = contactfig.colorbar(img, cax=cbar_ax)
         cbar = DraggableColorbar(cbar,img)
         cbar.connect()
     else:
-        img = plt.imshow(getM(pottsScore), origin='lower', cmap='Blues',
-                     extent=(+o,L+o,+o,L+o), interpolation='nearest')
-        cbar = plt.colorbar()
+        img = main_ax.imshow(getM(pottsScore), origin='lower', cmap='bwr',
+                             extent=(+o,L+o,+o,L+o), interpolation='nearest')
+        cbar = contactfig.colorbar(img, cax=cbar_ax)
         cbar = DraggableColorbar(cbar, img)
         cbar.connect()
 
     if args.title:
         plt.title(args.title)
+
+    if args.grid:
+        main_ax.set_xticks(np.arange(0, L, 10))
+        main_ax.set_yticks(np.arange(0, L, 10))
+        main_ax.grid(color='black', linestyle=':', linewidth=0.2)
 
     gridfig_size = tuple(0.2*x for x in (6+q, 6+q))
 
@@ -422,7 +475,8 @@ def main():
     Jfig = plt.figure(figsize=gridfig_size, facecolor='white')
     Jax = plt.axes([0, 0, 1, 1])
 
-    ijpicker = PositionPicker(contactfig, (margax, Cax, Jax), alphamap_color, J, h, ff, pottsScore)
+    ijpicker = PositionPicker(contactfig, (margax, Cax, Jax), alphamap_color,
+                              J, h, ff, pottsScore)
 
     plt.show()
 
