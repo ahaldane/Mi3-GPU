@@ -98,7 +98,7 @@ def optionRegistry():
 
     # option used by both potts and sequence loaders, designed
     # to load in the output of a previous run
-    add('seqmodel', default='independent',
+    add('init_model', default='independent',
         help=("One of 'zero', 'independent', or a directory name. Generates or "
               "loads 'alpha', 'couplings', 'seedseq' and 'seqs', if not "
               "otherwise supplied.") )
@@ -130,7 +130,9 @@ def optionRegistry():
     add('mcsteps', type=np.uint32, default=64,
         help="Number of rounds of MCMC generation")
     add('newtonsteps', default=1024, type=np.uint32,
-        help="Number of newton steps per round.")
+        help="Initial number of newton steps per round.")
+    add('newton_delta', default=32, type=np.uint32,
+        help="Newton step number tuning scale")
     add('fracNeff', type=np.float32, default=0.9,
         help="stop coupling updates after Neff/N = fracNeff")
     add('gamma', type=np.float32, default=0.0004,
@@ -339,13 +341,14 @@ def inverseIsing(orig_args, args, log):
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs seqs_large')
-    addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps fracNeff '
+    addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps '
+                                          'newton_delta fracNeff '
                                           'damping reg distribute_jstep gamma '
                                           'preopt reseed seedmsa')
     addopt(parser, 'Sampling Options',    'equiltime min_equil '
                                           'trackequil tempering nswaps_temp ')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'seqmodel outdir rngseed config '
+    addopt(parser,  None,                 'init_model outdir rngseed config '
                                           'finish')
 
     args = parser.parse_args(args)
@@ -378,7 +381,7 @@ def inverseIsing(orig_args, args, log):
             raise Exception("Did not find any runs in {}".format(args.finish))
 
         log("Continuing from {}".format(rundir))
-        args.seqmodel = rundir
+        args.init_model = rundir
         log("")
         with open(os.path.join(args.finish, 'config.json'), 'r') as f:
             args.__dict__ = json.load(f)
@@ -482,6 +485,10 @@ def inverseIsing(orig_args, args, log):
     log("")
     log("MCMC Run")
     log("========")
+
+    p['max_ns'] = 2048
+    p['peak_ns'] = 256
+    p['cur_ns'] = 256
 
     NewtonSteps.newtonMCMC(p, gpus, startrun, log)
 
@@ -615,7 +622,7 @@ def MCMCbenchmark(orig_args, args, log):
                                           'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'seqmodel outdir rngseed')
+    addopt(parser,  None,                 'init_model outdir rngseed')
 
     args = parser.parse_args(args)
     nloop = args.nloop
@@ -719,7 +726,7 @@ def equilibrate(orig_args, args, log):
     addopt(parser, 'Sampling Options',    'equiltime min_equil '
                                           'trackequil tempering nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'seqmodel outdir rngseed')
+    addopt(parser,  None,                 'init_model outdir rngseed')
 
     args = parser.parse_args(args)
     args.measurefperror = False
@@ -1117,6 +1124,7 @@ def process_newton_args(args, log):
 
     param = {'mcmcsteps': args.mcsteps,
              'newtonSteps': args.newtonsteps,
+             'newton_delta': args.newton_delta,
              'fracNeff': args.fracNeff,
              'gamma0': args.gamma,
              'pcdamping': args.damping,
@@ -1222,8 +1230,8 @@ def process_potts_args(args, L, q, bimarg, log):
 def getCouplings(args, L, q, bimarg, log):
     couplings = None
 
-    if args.couplings is None and args.seqmodel in ['uniform', 'independent']:
-        args.couplings = args.seqmodel
+    if args.couplings is None and args.init_model in ['uniform', 'independent']:
+        args.couplings = args.init_model
 
     if args.couplings:
         #first try to generate couplings (requires L, q)
@@ -1248,9 +1256,9 @@ def getCouplings(args, L, q, bimarg, log):
             couplings = np.load(args.couplings)
             if couplings.dtype != np.dtype('<f4'):
                 raise Exception("Couplings must be in 'f4' format")
-    elif args.seqmodel and args.seqmodel not in ['uniform', 'independent']:
+    elif args.init_model and args.init_model not in ['uniform', 'independent']:
         # and otherwise try to load them from model directory
-        fn = os.path.join(args.seqmodel, 'J.npy')
+        fn = os.path.join(args.init_model, 'J.npy')
         if os.path.isfile(fn):
             log("Reading couplings from file {}".format(fn))
             couplings = np.load(fn)
@@ -1259,13 +1267,13 @@ def getCouplings(args, L, q, bimarg, log):
         else:
             raise Exception("could not find file {}".format(fn))
     else:
-        raise Exception("didn't get couplings or seqmodel")
+        raise Exception("didn't get couplings or init_model")
     L2, q2 = getLq(couplings)
     L, q = updateLq(L, q, L2, q2, 'couplings')
 
     if couplings is None:
         raise Exception("Could not find couplings. Use either the "
-                        "'couplings' or 'seqmodel' options.")
+                        "'couplings' or 'init_model' options.")
 
     return couplings, L, q
 
@@ -1293,10 +1301,10 @@ def process_sequence_args(args, L, alpha, bimarg, log,
             writeSeqs(os.path.join(args.outdir, 'initial_seqs'), seqs, alpha)
         elif args.seqs is not None:
             seqs = loadSequenceFile(args.seqs, alpha, log)
-        elif args.seqmodel in ['uniform', 'independent']:
-            seqs = generateSequences(args.seqmodel, L, q, nseqs, bimarg, log)
-        elif args.seqmodel is not None:
-            seqs = loadSequenceDir(args.seqmodel, '', alpha, log)
+        elif args.init_model in ['uniform', 'independent']:
+            seqs = generateSequences(args.init_model, L, q, nseqs, bimarg, log)
+        elif args.init_model is not None:
+            seqs = loadSequenceDir(args.init_model, '', alpha, log)
 
         if nseqs is not None and seqs is None:
             raise Exception("Did not find requested {} sequences".format(nseqs))
@@ -1322,11 +1330,11 @@ def process_sequence_args(args, L, alpha, bimarg, log,
             except:
                 seedseq = loadseedseq(args.seedseq, args.alpha.strip(), log)
                 seedseq_origin = 'from file'
-        elif args.seqmodel in ['uniform', 'independent']:
-            seedseq = generateSequences(args.seqmodel, L, q, 1, bimarg, log)[0]
-            seedseq_origin = args.seqmodel
-        elif args.seqmodel is not None:
-            seedseq = loadseedseq(os.path.join(args.seqmodel, 'seedseq'),
+        elif args.init_model in ['uniform', 'independent']:
+            seedseq = generateSequences(args.init_model, L, q, 1, bimarg, log)[0]
+            seedseq_origin = args.init_model
+        elif args.init_model is not None:
+            seedseq = loadseedseq(os.path.join(args.init_model, 'seedseq'),
                                   args.alpha.strip(), log)
             seedseq_origin = 'from file'
 

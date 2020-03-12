@@ -142,6 +142,7 @@ def iterNewton(param, bimarg_model, gpus, log):
     Nfrac = param.fracNeff
     N = param.nwalkers
 
+
     log("")
     log("Perturbation optimization for up to {} steps:".format(newtonSteps))
     if param.reg:
@@ -173,7 +174,7 @@ def iterNewton(param, bimarg_model, gpus, log):
     gpus.calcBicounts(seqbuf)
     gpus.bicounts_to_bimarg(seqbuf)
     gpus.merge_bimarg()
-    
+
     reg = None
     if param.reg == 'l1z':
         reg = lambda: gpus.reg_l1z(gamma, pc, *param.regarg)
@@ -202,7 +203,7 @@ def iterNewton(param, bimarg_model, gpus, log):
 
         gpus.weightedMarg(seqbuf)
         gpus.merge_bimarg()
-    
+
         weights = np.concatenate(weights)
         Neff = getNeff(weights)
         if i%64 == 0 or abs(lastNeff - Neff)/N > 0.05 or Neff < Nfrac*N:
@@ -345,7 +346,7 @@ def track_main_bufs(param, gpus, savedir=None, step=None, saveseqs=False):
         np.save(os.path.join(savedir, 'energies_{}'.format(step)), energies)
 
         if saveseqs:
-            writeSeqs(os.path.join(savedir, 'seqs_{}'.format(step)), seqs, 
+            writeSeqs(os.path.join(savedir, 'seqs_{}'.format(step)), seqs,
                       param.alpha, zipf=True)
     return energies, bimarg_model
 
@@ -360,8 +361,11 @@ def runMCMC(gpus, couplings, runName, param, log):
 
     #equilibration MCMC
     if nloop == 'auto':
-        equil_dir = os.path.join(outdir, runName, 'equilibration')
-        mkdir_p(equil_dir)
+        if trackequil != 0:
+            equil_dir = os.path.join(outdir, runName, 'equilibration')
+            mkdir_p(equil_dir)
+        else:
+            equil_dir = None
 
         loops = 8
         for i in range(loops):
@@ -442,8 +446,11 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
 
     #equilibration MCMC
     if nloop == 'auto':
-        equil_dir = os.path.join(outdir, runName, 'equilibration')
-        mkdir_p(equil_dir)
+        if trackequil != 0:
+            equil_dir = os.path.join(outdir, runName, 'equilibration')
+            mkdir_p(equil_dir)
+        else:
+            equil_dir = None
 
         loops = 8
         for i in range(loops):
@@ -597,7 +604,28 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
         np.save(os.path.join(outdir, runName, 'walker_Es'), e)
         np.save(os.path.join(outdir, runName, 'walker_Bs'), b)
 
+    # tune the number of Newton steps based on whether SSR increased
+    ns_delta = param.newton_delta
+    ssr = np.sum((bimarg_target - bimarg_model)**2)
+    if param.last_ssr is not None:
+        # we take average of last ssr and min ssr to allow some
+        # amount of increase in each step due to statistical fluctuations,
+        # rather than always requiring a decrease.
+        if ssr > (param.last_ssr + param.min_ssr)/2:
+            # 2.0 would make back-steps equal to forward steps. Make it
+            # 1.5 instead to slightly bias towards more newtonsteps on average
+            param.newtonSteps = max(ns_delta,
+                                    param.newtonSteps - int(1.5*ns_delta))
+            log("SSR increased over min. Decreasing newtonsteps to {}".format(
+                param.newtonSteps))
+    param.last_ssr = ssr
+    param.min_ssr = min(ssr, param.min_ssr)
+
     Jsteps, newJ = NewtonSteps(runName, param, bimarg_model, gpus, log)
+    param.newtonSteps = min(2048, Jsteps + ns_delta)
+    log("Increasing newtonsteps to {}".format(param.newtonSteps))
+    with open(os.path.join(outdir, runName, 'nsteps'), 'wt') as f:
+        f.write(str(Jsteps))
 
     return Jstep + Jsteps, seqs, sampledenergies, newJ
 
@@ -631,13 +659,16 @@ def newtonMCMC(param, gpus, start_run, log):
         J, Jsteps = preOpt(param, gpus, log)
     else:
         log("No Pre-optimization")
-    
+
     # do some setup for reseed options
     seqs = param.seqs
     seedseq = param.seedseq
     if seqs is not None and param.reseed == 'single_best':
         gpus.calcEnergies()
         es = gpus.collect('E main')
+
+    param.max_newtonSteps = param.newtonSteps
+    param.min_ssr = np.inf
 
     # solve using newton-MCMC
     Jstep = Jsteps
