@@ -17,8 +17,6 @@
 #along with Mi3-GPU.  If not, see <http://www.gnu.org/licenses/>.
 
 #Contact: allan.haldane _AT_ gmail.com
-import scipy
-from scipy import *
 import numpy as np
 from numpy.random import randint, permutation
 import sys, os, argparse
@@ -53,7 +51,7 @@ class PairData:
         if i < j:
             return self.data[self.coords[(i,j)]]
         else:
-            return transpose(self.data[self.coords[(j,i)]])
+            return np.transpose(self.data[self.coords[(j,i)]])
 
     def __setitem__(self, pair, val):
         if isinstance(pair, int):
@@ -63,17 +61,17 @@ class PairData:
         if i < j:
             self.data[self.coords[(i,j)]] = val
         else:
-            self.data[self.coords[(j,i)]] = transpose(val)
+            self.data[self.coords[(j,i)]] = np.transpose(val)
 
     def copy(self):
-        return PairData([copy(x) for x in self.data])
+        return PairData([np.copy(x) for x in self.data])
 
 
 def msqerr(mi1, mi2):
-    return sum((array(list(mi1)) - array(list(mi2)))**2)
+    return sum((np.array(list(mi1)) - np.array(list(mi2)))**2)
 
 def pearsonGoodness(mi1, mi2):
-    return pearsonr(array(list(mi1)), array(list(mi2)))[0]
+    return pearsonr(np.array(list(mi1)), np.array(list(mi2)))[0]
 
 def calcGoodness(mi1, mi2):
     return -msqerr(mi1, mi2)
@@ -89,12 +87,12 @@ def best_merge(L, q, uni, mis21, mis, ffs, pos):
     It returns the best msqerr, and the changed MIs (a list of length L)
     """
     ffp = [ffs[pos,j] for j in range(L) if j != pos]
-    entrp = np.array([sum(entr(x), axis=1) for x in ffp])
+    entrp = np.array([np.sum(entr(x), axis=1) for x in ffp])
     mip = np.array([mis[pos,j] for j in range(L) if j != pos])
     mi21p = np.array([mis21[pos,j] for j in range(L) if j != pos])
     unientr = entr(uni)
 
-    goodness = inf
+    goodness = np.inf
     for A in range(q-1):
         ffA = [ff[A,:] for ff in ffp]
         eA = entrp[:,A]
@@ -116,7 +114,7 @@ def mergeBimarg(ff, A, B):
     if A > B:
         A,B = B,A
     # copy over old bimarg except for column B
-    newff = empty((ff.shape[0]-1, ff.shape[1]))
+    newff = np.empty((ff.shape[0]-1, ff.shape[1]))
     newff[:B,:] = ff[:B,:]
     newff[B:,:] = ff[B+1:,:]
     newff[A,:] += ff[B,:]
@@ -170,8 +168,9 @@ def reduceSeq(L, q, alphas, ffs, uni):
 
 def getUnimarg(ff):
     L = getL(ff.shape[0])
-    marg = array([sum(ff[0],axis=1)] + [sum(ff[n],axis=0) for n in range(L-1)])
-    return marg/(sum(marg,axis=1)[:,newaxis]) # correct any fp errors
+    marg = np.array([np.sum(ff[0],axis=1)] + 
+                    [np.sum(ff[n],axis=0) for n in range(L-1)])
+    return marg/(np.sum(marg,axis=1)[:,None]) # correct any fp errors
 
 def mergeUnseen(ffs, letters, L):
     """
@@ -245,9 +244,9 @@ def main():
 
     q = len(letters)
     try: 
-        ff = scipy.load(args.marginals)
+        ff = np.load(args.marginals)
     except:
-        ff = loadtxt(args.marginals)
+        ff = np.loadtxt(args.marginals)
 
     ff = ff.reshape((ff.shape[0], q, q))
     L = getL(ff.shape[0])

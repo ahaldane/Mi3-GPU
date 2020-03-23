@@ -2,11 +2,15 @@
 export PYTHONPATH=../../utils:$PYTHONPATH
 export PATH=../../utils:$PATH
 
+fail() {
+    echo 'failed' ; exit 1; 
+}
+
 echo "--> Downloading SH3 MSA from Pfam..."
-wget 'https://pfam.xfam.org/family/PF00018/alignment/full/format?format=fasta&alnType=full&order=t&case=l&gaps=default&download=1' -O PF00018_full.txt
+#wget 'https://pfam.xfam.org/family/PF00018/alignment/full/format?format=fasta&alnType=full&order=t&case=l&gaps=default&download=1' -O PF00018_full.txt || fail
 
 echo "--> convert FASTA to flat MSA format"
-python <<EOF
+python <<EOF || fail
 from Bio import SeqIO
 from Bio.Alphabet import IUPAC
 import re
@@ -25,7 +29,7 @@ with open("seqs21_raw", "wt") as fout:
 EOF
 
 echo "--> remove gapped columns and sequences"
-python <<EOF
+python <<EOF || fail
 import seqload
 import numpy as np
 
@@ -49,16 +53,18 @@ q=8
 alpha=ABCDEFGHIJKLMNOPQRSTUVWXYZ
 alpha=${alpha:0:$q}
 
+export PATH=$PATH:../../utils/
+
 echo "--> get phylogenetic weights and 21-letter bivariate marginals"
-phyloWeights.py $phy seqs21 weights$phy >Neff$phy
-getMarginals.py --weights weights${phy}.npy seqs21 bim21
-pseudocount.py bim21.npy $(cat Neff$phy) --mode jeffreys -o bim21Jeff.npy
+phyloWeights.py $phy seqs21 weights$phy >Neff$phy || fail
+getMarginals.py --weights weights${phy}.npy seqs21 bim21 || fail
+pseudocount.py bim21.npy $(cat Neff$phy) --mode jeffreys -o bim21Jeff.npy || fail
 
 echo "--> reduce alphabet (takes a minute)"
-alphabet_reduction.py bim21Jeff.npy >alphamaps
-grep ALPHA$q alphamaps >map$q
-apply_alphamap.py seqs21 map$q >seqs$q
+alphabet_reduction.py bim21Jeff.npy >alphamaps || fail
+grep ALPHA$q alphamaps >map$q || fail
+apply_alphamap.py seqs21 map$q >seqs$q || fail
 
 echo "--> compute final bimarg: reduced, weighted, pseudocounted"
-getMarginals.py --alpha $alpha --weights weights${phy}.npy seqs$q bim$q
-pseudocount.py bim$q.npy $(cat Neff$phy) -o bim${q}Jeff.npy
+getMarginals.py --alpha $alpha --weights weights${phy}.npy seqs$q bim$q || fail
+pseudocount.py bim$q.npy $(cat Neff$phy) -o bim${q}Jeff.npy || fail

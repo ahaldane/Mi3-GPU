@@ -17,12 +17,7 @@
 #along with Mi3-GPU.  If not, see <http://www.gnu.org/licenses/>.
 
 #Contact: allan.haldane _AT_ gmail.com
-import scipy
-from scipy import *
-import scipy.io
-import scipy.linalg
 import numpy as np
-from numpy.random import seed
 from Bio.Alphabet import IUPAC
 import seqload, seqtools
 import sys, argparse
@@ -61,15 +56,15 @@ def main():
         raise Exception("Similarity threshold must be between 0 and 1")
 
     if sim != 1.0:
-        similarityCutoff = int(ceil((1-sim)*seqLen))
+        similarityCutoff = int(np.ceil((1-sim)*seqLen))
         print("Identity cutoff:", similarityCutoff, file=sys.stderr)
         weights = 1.0/seqtools.nsim(seqs, similarityCutoff)
     else:
-        weights = ones(seqs.shape[0])
-    M_eff = sum(weights)
+        weights = np.ones(seqs.shape[0])
+    M_eff = np.sum(weights)
     print(M_eff)
 
-    save(args.outfile, weights)
+    np.save(args.outfile, weights)
 
 if __name__ == '__main__':
     main()
