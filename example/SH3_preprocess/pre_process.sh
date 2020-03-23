@@ -59,7 +59,6 @@ alphabet_reduction.py bim21Jeff.npy >alphamaps
 grep ALPHA$q alphamaps >map$q
 apply_alphamap.py seqs21 map$q >seqs$q
 
-echo "--> compute final bimarg: reduced, weighted, pseudocounted, regularized"
+echo "--> compute final bimarg: reduced, weighted, pseudocounted"
 getMarginals.py --alpha $alpha --weights weights${phy}.npy seqs$q bim$q
 pseudocount.py bim$q.npy $(cat Neff$phy) -o bim${q}Jeff.npy
-pre_regularize.py bim${q}Jeff.npy $(cat Neff$phy) bimSH3_Reg
