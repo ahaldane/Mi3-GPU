@@ -710,7 +710,7 @@ __kernel
 void reg_l2z(__global float *bimarg,
                       float gamma,
                       float pc,
-                      float lh, float lJ,
+                      float lJ,
              __global float *J,
              __global float *dJ) {
     uint li = get_local_id(0);
@@ -722,7 +722,7 @@ void reg_l2z(__global float *bimarg,
 
     float Jp = dJ[n];
     float J0 = zeroGauge(J[n] + Jp, li, scratch, hi, hj);
-    float R = -(lJ*J0 + lh*(hi[li/q] + hj[li%q]))*gamma/(bimarg[n] + pc);
+    float R = -lJ*J0*gamma/(bimarg[n] + pc);
  
     // to reduce numerical fluctuations, if the regularization step
     // would change the sign of J0, instead set J0 to 0.

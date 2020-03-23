@@ -300,9 +300,9 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
         self.isend('reg_l1z')
         self.isend((gamma, pc, lJ))
 
-    def reg_l2z(self, gamma, pc, lh, lJ):
+    def reg_l2z(self, gamma, pc, lJ):
         self.isend('reg_l2z')
-        self.isend((gamma, pc, lh, lJ))
+        self.isend((gamma, pc, lJ))
 
     def reg_X(self, gamma, pc):
         self.isend('reg_X')

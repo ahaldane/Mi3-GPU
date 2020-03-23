@@ -1166,22 +1166,14 @@ def process_newton_args(args, log):
             lam = float(rargs[0])
             log("Regularizing using ddE with lambda = {}".format(lam))
             p['regarg'] = (lam,)
-        elif rtype == 'l2z':
-            try:
-                lh, lJ = float(rargs[0]), float(rargs[1])
-                log(("Regularizing using l2 norm with lambda_J = {}"
-                     " and lambda_h = {}").format(lJ, lh))
-            except:
-                raise Exception("l2z specifier must be of form 'l2z:lh,lJ', eg "
-                                "'l2z:0.01,0.01'. Got '{}'".format(args.reg))
-            p['regarg'] = (lh, lJ)
-        elif rtype == 'l1z':
+        elif rtype == 'l2z' or rtype == 'l1z':
             try:
                 lJ = float(rargs[0])
-                log("Regularizing using l1 norm with lambda_J = {}".format(lJ))
+                log(("Regularizing using {} norm with lambda_J = {}"
+                     " and lambda_h = {}").format(rtype, lJ, lh))
             except:
-                raise Exception("l1z specifier must be of form 'l1z:lJ', eg "
-                                "'l1z:0.01'. Got '{}'".format(args.reg))
+                raise Exception("{r} specifier must be of form '{r}:lh,lJ', eg "
+                            "'{r}:0.01,0.01'. Got '{}'".format(rtype, args.reg))
             p['regarg'] = (lJ,)
 
     log("")

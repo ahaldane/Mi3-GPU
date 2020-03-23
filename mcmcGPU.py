@@ -612,7 +612,7 @@ class MCMCGPU:
                             np.float32(lJ), self.bufs['J'], self.bufs['dJ'],
                             wait_for=self._waitevt(wait_for)))
 
-    def reg_l2z(self, gamma, pc, lh, lJ, wait_for=None):
+    def reg_l2z(self, gamma, pc, lJ, wait_for=None):
         self.require('Jstep')
         self.log("reg_l2z")
         q, nPairs = self.q, self.nPairs
@@ -622,7 +622,7 @@ class MCMCGPU:
         return self.logevt('reg_l2z',
             self.prg.reg_l2z(self.queue, (nPairs*q*q,), (q*q,),
                             bibuf, np.float32(gamma), np.float32(pc),
-                            np.float32(lh), np.float32(lJ), 
+                            np.float32(lJ), 
                             self.bufs['J'], self.bufs['dJ'],
                             wait_for=self._waitevt(wait_for)))
 

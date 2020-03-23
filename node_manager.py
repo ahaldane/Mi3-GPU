@@ -124,9 +124,9 @@ class GPU_node:
         for gpu in self.gpus:
             gpu.reg_l1z(gamma, pc, lJ)
 
-    def reg_l2z(self, gamma, pc, lh, lJ):
+    def reg_l2z(self, gamma, pc, lJ):
         for gpu in self.gpus:
-            gpu.reg_l2z(gamma, pc, lh, lJ)
+            gpu.reg_l2z(gamma, pc, lJ)
 
     def reg_X(self, gamma, pc):
         for gpu in self.gpus:
