@@ -13,6 +13,7 @@ python -u $Mi3_path infer \
   --nwalkers    262144 \
   --damping     0.01 \
   --mcsteps     64 \
+  --reg         l1z:0.0001 \
   --outdir $outdir >$logfile
 
 # It can be good to run a second round of inference with a very
@@ -27,4 +28,5 @@ python -u $Mi3_path infer \
 #  --nwalkers    1048576 \
 #  --damping     0.01 \
 #  --mcsteps     64 \
+#  --reg         l1z:0.0001 \
 #  --outdir ${outdir}_2 >${logfile}_2

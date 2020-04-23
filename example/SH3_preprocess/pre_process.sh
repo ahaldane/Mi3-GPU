@@ -7,7 +7,7 @@ fail() {
 }
 
 echo "--> Downloading SH3 MSA from Pfam..."
-#wget 'https://pfam.xfam.org/family/PF00018/alignment/full/format?format=fasta&alnType=full&order=t&case=l&gaps=default&download=1' -O PF00018_full.txt || fail
+wget 'https://pfam.xfam.org/family/PF00018/alignment/full/format?format=fasta&alnType=full&order=t&case=l&gaps=default&download=1' -O PF00018_full.txt || fail
 
 echo "--> convert FASTA to flat MSA format"
 python <<EOF || fail
@@ -49,9 +49,7 @@ seqload.writeSeqs('seqs21', seqs)
 EOF
 
 phy=0.2
-q=8
 alpha=ABCDEFGHIJKLMNOPQRSTUVWXYZ
-alpha=${alpha:0:$q}
 
 export PATH=$PATH:../../utils/
 
@@ -59,6 +57,28 @@ echo "--> get phylogenetic weights and 21-letter bivariate marginals"
 phyloWeights.py $phy seqs21 weights$phy >Neff$phy || fail
 getMarginals.py --weights weights${phy}.npy seqs21 bim21 || fail
 pseudocount.py bim21.npy $(cat Neff$phy) --mode jeffreys -o bim21Jeff.npy || fail
+
+# the bim21Jeff.npy file may now be used to infer a Potts model.
+# For instance, the following inference options will run a first round of inference:
+#
+# alpha=-ACDEFGHIKLMNPQRSTVWY
+# bim=bim21Jeff.npy
+# python -u Mi3.py infer --bimarg $bim \
+#                        --mcsteps 128 \
+#                        --nwalkers 262144 \
+#                        --alpha=" $alpha" \
+#                        --init_model independent \
+#                        --reseed independent \
+#                        --damping 0.01 \
+#                        --reg l1z:0.0002 \
+#                        --outdir A1 >A1_log
+#
+
+# As an optional extra step, one may do "alphabet reduction" to reduce the
+# model from 21 letters to fewer. This can make the inference faster or easier
+# and reduce overfitting, but it is *optional* and many studies do not use it.
+q=8
+alpha=${alpha:0:$q}
 
 echo "--> reduce alphabet (takes a minute)"
 alphabet_reduction.py bim21Jeff.npy >alphamaps || fail

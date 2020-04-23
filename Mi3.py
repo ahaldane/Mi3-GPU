@@ -827,7 +827,7 @@ def equilibrate(orig_args, args, log):
     np.savetxt(os.path.join(outdir, 'bicounts'), bicount, fmt='%d')
     np.save(os.path.join(outdir, 'bimarg'), bimarg_model)
     np.save(os.path.join(outdir, 'energies'), sampledenergies)
-    writeSeqs(os.path.join(outdir, 'seqs'), seqs, alpha)
+    writeSeqs(os.path.join(outdir, 'seqs'), seqs, alpha, noheader=True)
 
     if p.tempering is not None:
         e, b = readGPUbufs(['E main', 'Bs'], gpus)
@@ -1156,24 +1156,23 @@ def process_newton_args(args, log):
         if rtype not in rtypes:
             raise Exception("reg must be one of {}".format(str(rtypes)))
         p['reg'] = rtype
-        rargs = rarg.split(',')
         if rtype == 'X':
-            log("Regularizing with X from file {}".format(rargs[0]))
-            p['regarg'] = np.load(rargs[0])
+            log("Regularizing with X from file {}".format(rarg))
+            p['regarg'] = np.load(rarg)
             if p['regarg'].shape != bimarg.shape:
                 raise Exception("X in wrong format")
         elif rtype == 'ddE':
-            lam = float(rargs[0])
+            lam = float(rarg)
             log("Regularizing using ddE with lambda = {}".format(lam))
             p['regarg'] = (lam,)
         elif rtype == 'l2z' or rtype == 'l1z':
             try:
-                lJ = float(rargs[0])
-                log(("Regularizing using {} norm with lambda_J = {}"
-                     " and lambda_h = {}").format(rtype, lJ, lh))
+                lJ = float(rarg)
+                log(("Regularizing using {} norm with lambda_J = {}").format(
+                                                                     rtype, lJ))
             except:
-                raise Exception("{r} specifier must be of form '{r}:lh,lJ', eg "
-                            "'{r}:0.01,0.01'. Got '{}'".format(rtype, args.reg))
+                raise Exception("{r} specifier must be of form '{r}:lJ', eg "
+                          "'{r}:0.01'. Got '{}'".format(args.reg, r=rtype))
             p['regarg'] = (lJ,)
 
     log("")
