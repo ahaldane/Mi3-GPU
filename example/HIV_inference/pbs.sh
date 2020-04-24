@@ -6,7 +6,7 @@ margfile="example_bimarg_pc.npy"
 logfile="hiv_pr_inference.log"
 outdir="hiv_pr_inference"
 
-python -u $Mi3_path infer \
+python3 -u $Mi3_path infer \
   --init_model  independent \
   --bimarg      $margfile \
   --alpha       ABCD \
@@ -21,7 +21,7 @@ python -u $Mi3_path infer \
 # The commented lines below illustrate how to continue from the last run
 # of the command above.
 
-#python -u $Mi3_path infer \
+#python3 -u $Mi3_path infer \
 #  --init_model  $outdir/run_63 \
 #  --bimarg      $margfile \
 #  --alpha       ABCD \

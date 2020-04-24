@@ -10,7 +10,7 @@ echo "--> Downloading SH3 MSA from Pfam..."
 wget 'https://pfam.xfam.org/family/PF00018/alignment/full/format?format=fasta&alnType=full&order=t&case=l&gaps=default&download=1' -O PF00018_full.txt || fail
 
 echo "--> convert FASTA to flat MSA format"
-python <<EOF || fail
+python3 <<EOF || fail
 from Bio import SeqIO
 from Bio.Alphabet import IUPAC
 import re
@@ -29,7 +29,7 @@ with open("seqs21_raw", "wt") as fout:
 EOF
 
 echo "--> remove gapped columns and sequences"
-python <<EOF || fail
+python3 <<EOF || fail
 import seqload
 import numpy as np
 
@@ -63,7 +63,7 @@ pseudocount.py bim21.npy $(cat Neff$phy) --mode jeffreys -o bim21Jeff.npy || fai
 #
 # alpha=-ACDEFGHIKLMNPQRSTVWY
 # bim=bim21Jeff.npy
-# python -u Mi3.py infer --bimarg $bim \
+# python3 -u Mi3.py infer --bimarg $bim \
 #                        --mcsteps 128 \
 #                        --nwalkers 262144 \
 #                        --alpha=" $alpha" \

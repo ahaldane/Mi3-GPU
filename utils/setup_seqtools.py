@@ -1,8 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 from numpy.distutils.core import setup, Extension
 
 # compile me with
-# python ./setup.py build_ext --inplace
+# python3 ./setup.py build_ext --inplace
 
 module1 = Extension('seqtools',
                     sources = ['seqtools.c'],

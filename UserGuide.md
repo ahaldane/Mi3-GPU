@@ -73,7 +73,7 @@ The reader is referred to Ref. [1] for the main description of the algorithm. Th
 
 The primary purpose of Mi3 is to infer a set of Potts model parameters based on observed site-covariation by performing inverse Ising inference.  An example script showing how to do this is in the file `example/HIV_inference/pbs.sh`, and the main command in this script is
 ```shell
-python -u Mi3.py infer \
+python3 -u Mi3.py infer \
   --init_model  independent \
   --bimarg      $margfile \
   --alpha       ABCD \
