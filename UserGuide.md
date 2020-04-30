@@ -22,16 +22,19 @@ Installation and Requirements
 
 Requirements: 
 
- * Python3 with the scipy, numpy, and pyopencl modules.
+ * Python3 with the scipy, numpy, and pyopencl modules, with a C compiler.
  * OpenCL drivers, ideally accompanied by multiple fast GPUs
- * mwc64x (see below)
- * For extra functionality: biopython, mpi4py, a C compiler
+ * For extra functionality: mpi4py
 
-After cloning this repository, the `mwc64x` software must be extracted into the `mwc64x` directory. This can be done automatically by running the script `dld_mwc64x.sh`. Alternatively, you can download `mwc64x` manually from http://cas.ee.ic.ac.uk/people/dt10/research/rngs-gpu-mwc64x.html and unpack.
+This package supports [python "setuptools"](https://packaging.python.org/tutorials/installing-packages/) for installation. The simplest way to install using setuptools is to use `pip` to install from the cloned source directory:
 
-The helper module "seqtools" in the utils directory must be compiled with `make seqtools` (requires a C compiler). This will speed up writing and loading sequences from file, and also implements phylogenetic weighting tools.
+    $ pip install /path/to/Mi3-GPU
 
-To check that the script is correctly detecting the system's OpenCL installation and GPUs, run `./Mi3.py --clinfo` which should output information on the available GPUs. Mi3-GPU was developed and tested on Linux systems using the Anaconda3 python package manager, see below for recommended hardware setup.
+and uninstall by "pip uninstall mi3gpu". You may consider installing Mi3-GPU inside a python environment, for example using virtualenv or conda env.
+
+After installation using pip you should be able to run the Mi3-GPU script `Mi3.py` in your shell as well as the helper scripts such as `getMarginals.py`, assuming that you have your pip's `/bin` installation directory in your shell's `PATH` environment.
+
+To check that the script is correctly detecting the system's OpenCL installation and GPUs, run `Mi3.py --clinfo` which should output information on the available platforms and GPUs. The GPUs should be listed as entries like `Device 'GeForce GTX TITAN X'`. Mi3-GPU was developed and tested on Linux systems using the Anaconda3 python package manager, see below for recommended hardware setup.
 
 Overview of Functionality
 -------------------------
@@ -46,23 +49,25 @@ The `Mi3.py` script can be run in different modes:
 
 The mode is given as first argument to `Mi3.py`. To see further options for each mode, use the `-h` option:
 
-    ./Mi3.py infer -h
+    Mi3.py infer -h
 
-A number of additional helper scripts are available in the `utils` directory
-which are used for pre- and post- processing of MSAs and Potts model files.
-The main ones are:
+A number of additional helper scripts are available which are used for pre- and
+post- processing of MSAs and Potts model files, which are:
 
- * `changeGauge.py` : Transform a Potts model between different gauges.
- * `phyloWeights.py` : Compute phylogenetic weights for an MSA using a standard downweighting strategy
+ * `getMarginals.py` : Compute univariate/bivariate residue frequencies for an MSA (with optional weights)
  * `pseudocount.py` : Apply pseudocounts to a bivariate marginal file
- * `pre_regularize.py` : Apply a regularization pseudocount to a bivariate marginal file
- * `getMarginals.py` : Compute residue frequencies for an MSA (with optional weights)
+ * `phyloWeights.py` : Compute phylogenetic weights for an MSA using a standard downweighting strategy
  * `getSeqEnergies.py` : Compute Potts energies for sequences in an MSA
+ * `changeGauge.py` : Transform a Potts model between different gauges.
+ * `getXij.py` : Compute covariance energy X for an inferred model
  * `exploreParam.py` : Visualize the Potts model
  * `alphabet_reduction.py` : Find reduction from 21 letters to fewer for and MSA.
  * `apply_alphamap.py` : Given an alphabet mapping, convert an MSA to the reduced alphabet.
+ * `pre_regularize.py` : Apply a regularization pseudocount to a bivariate marginal file
 
-Most of these scripts expect files in the formats described further below. An example of typical usage of these preprocessing scripts to prepare a protein-family MSA from pfam for analysis is given in the file `example/SH3_preprocess/pre_process.sh`.
+Most of these scripts expect files in the formats described further below. An example of typical usage of these preprocessing scripts to prepare a protein-family MSA from pfam for analysis is described further below in "Preprocessing example" and in the script `example/SH3_preprocess/pre_process.sh`.
+
+Additionally, in your own python scripts you can use much of the Mi3-GPU functionality by importing the `mi3gpu` module, in particular the submodules in `mi3gpu.utils`.
 
 Tutorial
 --------
@@ -73,7 +78,7 @@ The reader is referred to Ref. [1] for the main description of the algorithm. Th
 
 The primary purpose of Mi3 is to infer a set of Potts model parameters based on observed site-covariation by performing inverse Ising inference.  An example script showing how to do this is in the file `example/HIV_inference/pbs.sh`, and the main command in this script is
 ```shell
-python3 -u Mi3.py infer \
+Mi3.py infer \
   --init_model  independent \
   --bimarg      $margfile \
   --alpha       ABCD \
@@ -131,13 +136,28 @@ If you do encounter numerical instabilities, besides trying to tune the quasi-ne
 
 ### Recommended Parameters for Protein Covariation Analysis
 
-This software has been used to infer models for a number of protein families by the authors, such as the SH3 family whose pre-processing is shown in the example directory.
+This software has been used to infer models for a number of protein families by the authors, such as the SH3 family whose pre-processing is shown in the examples directory.
 
 Usually, we use 262144 (2^18) walkers in a first round of inference minimization with 64 MCMC steps, with damping parameter 0.1, or occasionally 0.01 if there is little covariation. This first round typically greatly reduces the SSR and Ferr and makes X a larger negative value, particularly in the first 16 MCMC steps. An example first and second roung for HIV datasets is shown in the HIV example folder, and an example first round command for the SH3 Pfam family is shown in the SH3 example script.
 
 For pfam-like data, the X value has typically not yet levelled off in the first round, so we then run a second (or even third) round of inference starting from the final model of the first round. In these subsequent rounds, we often decrease the damping parameter to 0.01 or 0.001 (this changes the speed of inference but does not affect the final result), and increase the number of walkers to 2^19 or 2^20. This round is run until the X value levels off enough, often 64 or 128 MCMC steps. Finally, we often run one final round with 2^22 walkers for 4 MCMC steps to minimize finite-sampling error in the model marginals, to obtain a model with highly-statistically accurate marginals and very small residuals.
 
 We run many inferences on a system with four NVidia V100 GPUs. Fitting a model with L=232 and q=21 over multiple rounds as described here takes about 12-24 hours on this system, for models which equilibrate in 2048 MC steps per MCMC round. The fitting time depends on the regularization strength as this affects the ruggedness of the model and so the equilibration time. We find using l1 regularization strength 0.0002 typically limits equilibration to about 2048 MC steps per MCMC round with minimal bias.
+
+### MSA Preprocessing and Script Tutorial
+
+The example script `examples/SH3_preprocess/pre_process.sh` shows a series of commands which take the SH3 Pfam MSA and process it with pseudocounts and phylogenetic weighting to produce a bivariate file which can be used to infer a Potts model.
+
+This example script does the following, in order:
+
+    1. Downloads the Pfam family MSA `PF00018_full.txt`
+    2. Converts it to the file format used by Mi3-GPU (see below)
+    3. Filters out sequences or columns with too many gaps
+    4. Computes phylogenetic weights at 40% similarity threshold.
+    5. Computes weighted bivariate marginals for this data
+    6. Adds a "Jeffrey's" pseudocount to the marginals.
+
+The final file, `bim21Jeff.npy`, can now be used as input to the inference procedure as described above to produce a Potts model for the SH3 family based on the Pfam alignment.
 
 ### Recommended Hardware Setup
 

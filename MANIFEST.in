@@ -1,0 +1,4 @@
+include mi3gpu/mwc64x/cl/*
+include mi3gpu/mwc64x/cl/*/*
+include mi3gpu/mwc64x/LICENSE.txt
+include mi3gpu/mcmc.cl
