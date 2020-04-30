@@ -23,7 +23,7 @@ import pyopencl as cl
 import pyopencl.array as cl_array
 import os, time, warnings
 import textwrap
-from utils import printsome
+from utils.potts_common import printsome
 import collections
 
 cf = cl.mem_flags

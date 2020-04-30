@@ -70,3 +70,6 @@ def getXij(J, fab):
     #print(Xij)
     #print(np.sum(Xijab*fab, axis=1))
     #print(np.sum(Xij), np.sum(Xijab*fab))  # should be equal
+
+def printsome(a, prec=4):
+    return np.array2string(a.flatten()[:5], precision=prec, sign=' ')[1:-1]

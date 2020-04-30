@@ -22,7 +22,7 @@ import pyopencl as cl
 import sys, os, errno, glob, argparse, time
 from utils.changeGauge import fieldlessGaugeEven
 from utils.seqload import writeSeqs, loadSeqs
-from utils import printsome, getLq, indep_bimarg, unimarg
+from utils.potts_common import printsome, getLq, indepF
 from Mi3 import generateSequences, MPI, mkdir_p
 import time
 
@@ -37,10 +37,10 @@ def printstats(name, jstep, bicount, bimarg_target, bimarg_model, couplings,
         ferr = np.mean(rel_err[topbi])
     ssr = np.sum((bimarg_target - bimarg_model)**2)
 
-    C = bimarg_model - indep_bimarg(bimarg_model)
+    C = bimarg_model - indepF(bimarg_model)
     X = np.sum(couplings*C, axis=1)
 
-    Co = bimarg_target - indep_bimarg(bimarg_target)
+    Co = bimarg_target - indepF(bimarg_target)
     Xo = np.sum(couplings*Co, axis=1)
 
     rhostr = '(none)'

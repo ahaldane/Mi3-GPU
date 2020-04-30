@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-from scipy import *
+import numpy as np
 import pylab as plt
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, LinearSegmentedColormap
 from matplotlib import cm, transforms
 import matplotlib as mpl
-import numpy as np
 from scipy.special import rel_entr
 import sys, time, argparse
 from Bio.Alphabet import IUPAC
 import seqload, changeGauge
-from matplotlib.colors import LinearSegmentedColormap
 from potts_common import getLq, getUnimarg, indepF, getM, getXij
 from pseudocount import mutation_pc
 
@@ -227,12 +225,12 @@ def drawMarg(alphacolor, q, i,j, marg, J, hi, hj, score, margax, Cax, Jax):
     drawGrid(margax, 3, 1, 1, q, q,
              [[graytext(x) for x in r] for r in marg],
              mapi, mapj, '({}, {})   Bimarg'.format(i,j),
-             list(map(graytext, sum(marg, axis=1))),
-             list(map(graytext, sum(marg, axis=0))),
+             list(map(graytext, np.sum(marg, axis=1))),
+             list(map(graytext, np.sum(marg, axis=0))),
              labeltext=alphatext)
 
     fnorm = Normalize(-1, 1.0, clip=True)
-    C = marg - outer(sum(marg, axis=1), sum(marg, axis=0))
+    C = marg - outer(np.sum(marg, axis=1), np.sum(marg, axis=0))
     Cmax = np.max(np.abs(C))
     drawGrid(Cax, 3, 1, 1, q, q,
              [[rwbtext(x) for x in r] for r in C/Cmax],
@@ -248,7 +246,7 @@ def drawMarg(alphacolor, q, i,j, marg, J, hi, hj, score, margax, Cax, Jax):
              labeltext=alphatext)
 
     # Compute the KL terms that make up the MI scores
-    #S = rel_entr(marg, outer(sum(marg, axis=1), sum(marg, axis=0)))
+    #S = rel_entr(marg, outer(np.sum(marg, axis=1), np.sum(marg, axis=0)))
     #fnorm = Normalize(0, np.max(S), clip=True)
     #drawGrid(Jax, 3, 1, 1, q, q,
     #         [[graytext(x) for x in r] for r in S],
@@ -309,15 +307,15 @@ def main():
     L, q = getLq(J)
 
     if args.gauge == 'nofield':
-        h, J = changeGauge.fieldlessEven(zeros((L,q)), J)
+        h, J = changeGauge.fieldlessEven(np.zeros((L,q)), J)
     elif args.gauge == '0':
-        h, J = changeGauge.zeroGauge(zeros((L,q)), J)
+        h, J = changeGauge.zeroGauge(np.zeros((L,q)), J)
     elif args.gauge == 'w':
-        h, J = changeGauge.zeroGauge(zeros((L,q)), J, weights=ff)
+        h, J = changeGauge.zeroGauge(np.zeros((L,q)), J, weights=ff)
     elif args.gauge == 'wsqrt':
-        h, J = changeGauge.zeroGauge(zeros((L,q)), J, weights=np.sqrt(ff))
+        h, J = changeGauge.zeroGauge(np.zeros((L,q)), J, weights=np.sqrt(ff))
     else:
-        h = zeros((L,q))
+        h = np.zeros((L,q))
 
     if args.deltaXijseq or args.Xijseq:
         Xij, Xijab = getXij(J, ff)
@@ -336,15 +334,15 @@ def main():
                                                for j in range(i+1,L))])
     elif args.score == 'fb':
         h0, J0 = changeGauge.zeroGauge(h, J)
-        pottsScore = sqrt(sum(J0**2, axis=1))
+        pottsScore = np.sqrt(np.sum(J0**2, axis=1))
     elif args.score == 'fbw':
         w = ff
-        hw, Jw = changeGauge.zeroGauge(zeros((L,q)), J, weights=w)
-        pottsScore = sqrt(sum((Jw*w)**2, axis=1))
+        hw, Jw = changeGauge.zeroGauge(np.zeros((L,q)), J, weights=w)
+        pottsScore = np.sqrt(np.sum((Jw*w)**2, axis=1))
     elif args.score == 'fbwsqrt':
-        w = sqrt(ff)
-        hw, Jw = changeGauge.zeroGauge(zeros((L,q)), J, weights=w)
-        pottsScore = sqrt(sum((Jw*w)**2, axis=1))
+        w = np.sqrt(ff)
+        hw, Jw = changeGauge.zeroGauge(np.zeros((L,q)), J, weights=w)
+        pottsScore = np.sqrt(np.sum((Jw*w)**2, axis=1))
     elif args.score == 'Xij':
         C = ff - indepF(ff)
         X = -np.sum(C*J, axis=1)
@@ -368,8 +366,8 @@ def main():
                         clet.append([])
                         continue
                     linds = [alpha21.index(c) for c in g]
-                    f = array([unimarg21[l,i] for i in linds])
-                    let_dat = zip(g, f/sum(f))
+                    f = np.array([unimarg21[l,i] for i in linds])
+                    let_dat = zip(g, f/np.sum(f))
                     let_dat.sort(key=lambda x: x[1], reverse=True)
                     clet.append(let_dat)
                 alphamap_color.append(clet)
@@ -422,7 +420,7 @@ def main():
     elif args.contactfreq and args.contactmode == 'split':
         lotri = ones((L,L), dtype=bool)
         lotri[triu_indices(L,k=1)] = False
-        hitri = zeros((L,L), dtype=bool)
+        hitri = np.zeros((L,L), dtype=bool)
         hitri[triu_indices(L,k=1)] =True
 
         upper = getM(pottsScore)
@@ -440,7 +438,7 @@ def main():
     if args.contactfreq and args.contactmode == 'splitoverlay':
         lotri = ones((L,L), dtype=bool)
         lotri[triu_indices(L,k=1)] = False
-        hitri = zeros((L,L), dtype=bool)
+        hitri = np.zeros((L,L), dtype=bool)
         hitri[triu_indices(L,k=1)] =True
 
         cont = getM(np.load(args.contactfreq))

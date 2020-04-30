@@ -27,7 +27,7 @@ import sys, os, errno, time, datetime, socket, signal, atexit, glob, argparse
 
 from utils.seqload import loadSeqs, writeSeqs
 from utils.changeGauge import fieldlessGaugeEven
-from utils import printsome, getLq, unimarg
+from utils.potts_common import printsome, getLq, getUnimarg
 from mcmcGPU import setup_GPU_context, initGPU, wgsize_heuristic, printGPUs
 import NewtonSteps
 
@@ -1239,7 +1239,7 @@ def getCouplings(args, L, q, bimarg, log):
             if bimarg is None:
                 raise Exception("Need bivariate marginals to generate "
                                 "independent model couplings")
-            h = -np.log(unimarg(bimarg))
+            h = -np.log(getUnimarg(bimarg))
             J = np.zeros((L*(L-1)//2,q*q), dtype='<f4')
             couplings = fieldlessGaugeEven(h, J)[1]
         else: #otherwise load them from file
@@ -1344,7 +1344,7 @@ def generateSequences(gentype, L, q, nseqs, bimarg, log):
         log("Generating {} independent-model sequences...".format(nseqs))
         if bimarg is None:
             raise Exception("Bimarg must be provided to generate sequences")
-        cumprob = np.cumsum(unimarg(bimarg), axis=1)
+        cumprob = np.cumsum(getUnimarg(bimarg), axis=1)
         cumprob = cumprob/(cumprob[:,-1][:,None]) #correct fp errors?
         return np.array([np.searchsorted(cp, rand(nseqs)) for cp in cumprob],
                      dtype='<u1').T
