@@ -90,7 +90,7 @@ def main():
 
     try:
         bimarg = np.load(args.file)
-    except ValueError:
+    except:
         seqs = seqload.loadSeqs(args.file, alpha)[0]
         reduceSeqAlphaPerpos(seqs, newalphas, alpha, args.out)
     else:
