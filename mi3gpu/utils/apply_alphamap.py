@@ -40,7 +40,7 @@ def reduceSeqAlphaPerpos(seqs, newalphas, oldalpha, out=None):
 
     if out is None:
         out = sys.stdout
-    seqload.writeSeqs(out, rseqs, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", noheader=True)
+    seqload.writeSeqs(out, rseqs, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 def reduceBimAlphaPerpos(bimarg, newalphas, oldalpha, out):
     if out is None:
@@ -90,7 +90,7 @@ def main():
 
     try:
         bimarg = np.load(args.file)
-    except ValueError:
+    except:
         seqs = seqload.loadSeqs(args.file, alpha)[0]
         reduceSeqAlphaPerpos(seqs, newalphas, alpha, args.out)
     else:

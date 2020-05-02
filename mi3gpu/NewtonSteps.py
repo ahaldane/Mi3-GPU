@@ -79,8 +79,8 @@ def writeStatus(name, Jstep, bimarg_target, bicount, bimarg_model, couplings,
     np.savetxt(os.path.join(outdir, name, 'bicounts'), bicount, fmt='%d')
     np.save(os.path.join(outdir, name, 'bimarg'), bimarg_model)
     np.save(os.path.join(outdir, name, 'energies'), energies)
-    writeSeqs(os.path.join(outdir, name, 'seqs'), seqs, alpha, zipf=True,
-                           noheader=True)
+    writeSeqs(os.path.join(outdir, name, 'seqs'), seqs, alpha, zipf=True)
+
     if ptinfo != None:
         for n,B in enumerate(ptinfo[0]):
             np.save(os.path.join(outdir, 'Bs-{}'.format(n)), B)
@@ -348,7 +348,7 @@ def track_main_bufs(param, gpus, savedir=None, step=None, saveseqs=False):
 
         if saveseqs:
             writeSeqs(os.path.join(savedir, 'seqs_{}'.format(step)), seqs,
-                      param.alpha, zipf=True, noheader=True)
+                      param.alpha, zipf=True)
     return energies, bimarg_model
 
 def runMCMC(gpus, couplings, runName, param, log):

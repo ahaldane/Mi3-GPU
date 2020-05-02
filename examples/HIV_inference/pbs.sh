@@ -12,7 +12,7 @@ Mi3.py infer \
   --damping     0.01 \
   --mcsteps     64 \
   --reg         l1z:0.0001 \
-  --outdir $outdir | tee $logfile
+  --outdir $outdir >$logfile
 
 # It can be good to run a second round of inference with a very
 # large number of walkers, to obtain a very statistically accurate model.

@@ -177,4 +177,16 @@ The Potts couplings are stored according to the following sign conventions: `P(S
 
 Mi3-GPU performs almost all calculations in a "fieldless" gauge, so in general the couplings file fully specifies the model and no fields are needed. The `changeGauge.py` script can process fields, and these are input and output as a 2-dimensional `float32` array of dimension `(L, q)`.
 
-MSAs are stored in a custom format to help optimize writing to and from disk, which is simply the ASCII sequences, one sequence per line, with all sequence ID information stripped. The sequences must have the same length. These MSA files can sometimes contain header lines starting with `#`. Mi3-GPU typically outputs sequence files compressed with bzip2.
+MSAs are stored in a custom format to help optimize writing to and from disk. In its most general form, this MSA format looks like:
+```
+#PARAM {"alpha": "-ACDEFGHIKLMNPQRSTVWY"}
+# comment
+human      LYDYPMQHEGDLSIQEGDIVTLLESVDENWYKGKIGKEGFFP
+chimpanzee ----ESENNDELSFELGELIYCISEVLGGWMMGRNPEEGLFP
+cat        LYDFTAGQSGELTLRQGDGITVTQQNVGGWSEGVIEEQGLFP
+mouse      LYTYFKQMEDDVNMEPGDKITLLNDDDSDWYQIKTAQEGLYP
+carp       QYPFEAQNDDELSVGVNDTVEVTNVYEDGWAAGTNIRSGRIP
+```
+There is one line per sequence, and all sequences must start at the same text column and must have the same length. Optionally, each line can start with a sequence id separated from the sequence by whitespace, but this may be ommitted. Lines starting with '#' are comments which are ignored. Mi3-GPU can read and write these sequence files compressed with bzip2.
+
+The submodule `mi3gpu.utils.seqload` has functions to read and write these MSA files efficiently, in particular `loadSeqs` and `writeSeqs`. `loadSeqs` returns the MSA as a numpy array of alphabet-index bytes, allowing vectorized MSA processing using numpy "fancy-indexing". Note that this MSA format is similar to the Stockholm MSA format, and Mi3-GPU can read the Stockholm terminator `//`  and so can sometimes directly read the Stockholm output of other programs. Also, in the `extras` folder is a vim syntax plugin which colors these MSA files when viewed in the vim text editor.

@@ -24,7 +24,7 @@ import argparse
 from mi3gpu.utils.potts_common import alpha20
 import mi3gpu.utils.seqload as seqload
 
-def getMarginals(seqs, q, weights=None, nrmlz=True): 
+def getMarginals(seqs, q, weights=None, nrmlz=True):
     nSeq, L = seqs.shape
 
     if q > 16: # the x + q*y operation below may overflow for u1
@@ -48,16 +48,14 @@ class BiCounter:
         self.weights = weights
         self.pos = 0
 
-    def __call__(self, counts, seqs, info): 
-        param, headers = info
-
+    def __call__(self, counts, seqs, ids, headers, alpha):
         nSeq, L = seqs.shape
-        q = len(param['alpha'])
+        q = len(alpha)
         nbins = q*q
 
         if q > 16: # the x + q*y operation below may overflow for u1
             seqs = seqs.astype('i4')
-        
+
         if self.weights is not None:
             if not isinstance(counts, np.ndarray) and counts == 0:
                 counts = np.zeros((L*(L-1)//2, q*q), dtype='f8')
@@ -82,11 +80,9 @@ class UniCounter:
         self.weights = weights
         self.pos = 0
 
-    def __call__(self, counts, seqs, info): 
-        param, headers = info
-
+    def __call__(self, counts, seqs, ids, headers, alpha):
         nSeq, L = seqs.shape
-        q = len(param['alpha'])
+        q = len(alpha)
         nbins = q
 
         if self.weights is not None:
@@ -117,10 +113,10 @@ def main():
     parser.add_argument('outfile')
 
     args = parser.parse_args(sys.argv[1:])
-    
+
     alphabets = {'protein': alpha20,
                  'protgap': '-' + alpha20,
-                 'charge': '0+-', 
+                 'charge': '0+-',
                  'nuc': "ACGT"}
 
     letters = alphabets.get(args.alpha, args.alpha)
@@ -132,7 +128,7 @@ def main():
             weights = np.loadtxt(args.weights)
     else:
         weights = None
-    
+
     if args.uni:
         counter = UniCounter(weights)
     else:

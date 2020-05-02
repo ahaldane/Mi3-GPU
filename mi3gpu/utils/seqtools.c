@@ -1041,12 +1041,12 @@ static PyObject *
 translateascii(PyObject *self, PyObject *args){
     PyArrayObject *seqs;
     uint8 *seqdata;
-    npy_intp nseq, L;
+    npy_intp nseq, L, nstride, Lstride;
     uint8 *alpha;
-    unsigned int i, j, offset;
+    unsigned int i, j, pos;
     uint8 translationtable[256];
 
-    if(!PyArg_ParseTuple(args, "O!yi", &PyArray_Type, &seqs, &alpha, &offset)){
+    if(!PyArg_ParseTuple(args, "O!yi", &PyArray_Type, &seqs, &alpha, &pos)){
         return NULL;
     }
 
@@ -1055,20 +1055,17 @@ translateascii(PyObject *self, PyObject *args){
         return NULL;
     }
 
-    if(!PyArray_ISCARRAY(seqs)){
-        PyErr_SetString( PyExc_ValueError, "seq must be C-contiguous");
-        return NULL;
-    }
-
     nseq = PyArray_DIM(seqs, 0);
-    L = PyArray_DIM(seqs, 1)-1;
+    L = PyArray_DIM(seqs, 1);
+    nstride = PyArray_STRIDE(seqs, 0);
+    Lstride = PyArray_STRIDE(seqs, 1);
     seqdata = PyArray_DATA(seqs);
 
     for(i = 0; i < 256; i++){
         translationtable[i] = 0xff;
     }
     for(i = 0; i < strlen((char*)alpha); i++){
-        if(alpha[i] == 0xff){
+        if(alpha[i] >= 0xff){
             PyErr_SetString(PyExc_ValueError, "Alphabet cannot contain 0xff");
             return NULL;
         }
@@ -1077,27 +1074,25 @@ translateascii(PyObject *self, PyObject *args){
 
     for(i = 0; i < nseq; i++){
         for(j = 0; j < L; j++){
-            uint8 newc = translationtable[seqdata[i*(L+1) + j]];
+
+            int ind = i*nstride + j*Lstride;
+            uint8 c = seqdata[ind];
+            uint8 newc = translationtable[c];
+
             if(newc == 0xff){
-                if(seqdata[i*(L+1) + j] == '\n'){
+                if(c == '\n'){
                     PyErr_Format(PyExc_ValueError,
                        "Sequence %d has length %d (expected %d)",
-                       i+offset, j, (int)L);
+                       i+pos+1, j, (int)L);
                 }
                 else{
                     PyErr_Format(PyExc_ValueError,
-                        "Invalid Residue '%c' in sequence %d position %d",
-                        seqdata[i*(L+1) + j], i+offset, j+1);
+                        "Invalid residue '%c' in sequence %d position %d",
+                        c, i+pos+1, j+1);
                 }
                 return NULL;
             }
-            seqdata[i*(L+1) + j] = newc;
-        }
-        if(seqdata[i*(L+1) + L] != '\n'){
-            PyErr_Format(PyExc_ValueError,
-                       "Sequence %d has length %d (expected %d)",
-                       i+offset, j, (int)L);
-            return NULL;
+            seqdata[ind] = newc;
         }
     }
 

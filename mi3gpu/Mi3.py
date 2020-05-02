@@ -764,7 +764,7 @@ def equilibrate(orig_args, args, log):
     np.savetxt(os.path.join(outdir, 'bicounts'), bicount, fmt='%d')
     np.save(os.path.join(outdir, 'bimarg'), bimarg_model)
     np.save(os.path.join(outdir, 'energies'), sampledenergies)
-    writeSeqs(os.path.join(outdir, 'seqs'), seqs, alpha, noheader=True)
+    writeSeqs(os.path.join(outdir, 'seqs'), seqs, alpha)
 
     if p.tempering is not None:
         e, b = readGPUbufs(['E main', 'Bs'], gpus)
