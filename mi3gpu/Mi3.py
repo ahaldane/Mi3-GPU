@@ -176,7 +176,10 @@ def optionRegistry():
     add('min_equil', default=64, type=int,
         help="minimum MC calls to equilibrate when using 'equiltime=auto'")
     add('trackequil', type=np.uint32, default=0,
-        help='Save bimarg every TRACKEQUIL steps during equilibration')
+        help='Save "--tracked" data every TRACKEQUIL steps during mcmc')
+    add('tracked', default='bim,E',
+        help='Data saved to "equilibration" dir when trackequil is enabled. '
+             'Comma separated allowed options: "bim", "E", "seq"')
     add('tempering',
         help='optional inverse Temperature schedule')
     add('nswaps_temp', type=np.uint32, default=128,
@@ -348,7 +351,8 @@ def inverseIsing(orig_args, args, log):
                                           'damping reg distribute_jstep gamma '
                                           'preopt reseed seedmsa')
     addopt(parser, 'Sampling Options',    'equiltime min_equil '
-                                          'trackequil tempering nswaps_temp ')
+                                          'trackequil tracked '
+                                          'tempering nswaps_temp ')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'init_model outdir rngseed config '
                                           'finish')
@@ -661,7 +665,8 @@ def equilibrate(orig_args, args, log):
                                           'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs seqbimarg')
     addopt(parser, 'Sampling Options',    'equiltime min_equil '
-                                          'trackequil tempering nswaps_temp')
+                                          'trackequil tracked '
+                                          'tempering nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'init_model outdir rngseed')
 
@@ -1136,7 +1141,12 @@ def loadSequenceDir(sdir, bufname, alpha, log):
 def process_sample_args(args, log):
     p = attrdict({'equiltime': args.equiltime,
                   'min_equil': args.min_equil,
-                  'trackequil': args.trackequil})
+                  'trackequil': args.trackequil,
+                  'tracked': args.tracked.split(',')})
+    
+    bad_track = [x for x in p.tracked if x not in ['bim', 'E', 'seq']]
+    if len(bad_track) != 0:
+        raise ValueError('Invalid "--tracked" values: {}'.format(bad_track))
 
     if p['equiltime'] != 'auto':
         p['equiltime'] = int(p['equiltime'])

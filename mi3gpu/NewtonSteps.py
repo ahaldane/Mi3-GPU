@@ -332,23 +332,24 @@ def swapTemps(gpus, dummy, N):
     #print(t2-t1)
     return Bs, r
 
-def track_main_bufs(param, gpus, savedir=None, step=None, saveseqs=False):
+def track_main_bufs(param, gpus, savedir=None, step=None):
     gpus.calcBicounts('main')
     gpus.calcEnergies('main')
 
     bicounts, energies = gpus.collect(['bicount', 'E main'])
     bimarg_model = bicounts.astype('f4')/np.float32(np.sum(bicounts[0,:]))
 
-    if saveseqs:
-        seqs = gpus.collect('seq main')
-
     if savedir:
-        np.save(os.path.join(savedir, 'bimarg_{}'.format(step)), bimarg_model)
-        np.save(os.path.join(savedir, 'energies_{}'.format(step)), energies)
-
-        if saveseqs:
-            writeSeqs(os.path.join(savedir, 'seqs_{}'.format(step)), seqs,
-                      param.alpha, zipf=True)
+        if 'bim' in param.tracked:
+            fn = os.path.join(savedir, 'bimarg_{}'.format(step))
+            np.save(fn, bimarg_model)
+        if 'E' in param.tracked:
+            fn = os.path.join(savedir, 'energies_{}'.format(step))
+            np.save(fn, energies)
+        if 'seq' in param.tracked:
+            seqs = gpus.collect('seq main')
+            fn = os.path.join(savedir, 'seqs_{}'.format(step))
+            writeSeqs(fn, seqs, param.alpha, zipf=True)
     return energies, bimarg_model
 
 def runMCMC(gpus, couplings, runName, param, log):
