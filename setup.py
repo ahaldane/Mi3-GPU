@@ -37,6 +37,11 @@ setuptools.setup(
         "License :: GPLv3",
         "Operating System :: OS Independent",
     ],
+    ext_modules = [seqtools_module],
     python_requires='>=3.6',
-    ext_modules = [seqtools_module]
+    install_requires=[
+       'numpy>=1.14',
+       'scipy>=1.0.0',
+       'pyopencl'
+    ]
 )

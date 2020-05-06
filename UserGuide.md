@@ -22,11 +22,12 @@ Installation and Requirements
 
 Requirements: 
 
- * Python3 with the scipy, numpy, and pyopencl modules, with a C compiler.
+ * Python3 with the scipy, numpy>=1.14, and pyopencl modules, with a C compiler.
  * OpenCL drivers, ideally accompanied by multiple fast GPUs
+ * To run examples: Biopython
  * For extra functionality: mpi4py
 
-This package supports [python "setuptools"](https://packaging.python.org/tutorials/installing-packages/) for installation. The simplest way to install using setuptools is to use `pip` to install from the cloned source directory:
+This package supports standard [python package installation](https://packaging.python.org/tutorials/installing-packages/). The simplest way is to use `pip` to install from the cloned source directory:
 
     $ pip install /path/to/Mi3-GPU
 
@@ -187,6 +188,6 @@ cat        LYDFTAGQSGELTLRQGDGITVTQQNVGGWSEGVIEEQGLFP
 mouse      LYTYFKQMEDDVNMEPGDKITLLNDDDSDWYQIKTAQEGLYP
 carp       QYPFEAQNDDELSVGVNDTVEVTNVYEDGWAAGTNIRSGRIP
 ```
-There is one line per sequence, and all sequences must start at the same text column and must have the same length. Optionally, each line can start with a sequence id separated from the sequence by whitespace, but this may be ommitted. Lines starting with '#' are comments which are ignored. Mi3-GPU can read and write these sequence files compressed with bzip2.
+There is one line per sequence, and all sequences must start at the same text column and must have the same length. Optionally, each line can start with a sequence id separated from the sequence by whitespace, but this may be ommitted. Lines at the top of the file starting with '#' are comments which are ignored, and no further comments should occur after the first sequence. Mi3-GPU can read and write these sequence files compressed with bzip2.
 
 The submodule `mi3gpu.utils.seqload` has functions to read and write these MSA files efficiently, in particular `loadSeqs` and `writeSeqs`. `loadSeqs` returns the MSA as a numpy array of alphabet-index bytes, allowing vectorized MSA processing using numpy "fancy-indexing". Note that this MSA format is similar to the Stockholm MSA format, and Mi3-GPU can read the Stockholm terminator `//`  and so can sometimes directly read the Stockholm output of other programs. Also, in the `extras` folder is a vim syntax plugin which colors these MSA files when viewed in the vim text editor.
