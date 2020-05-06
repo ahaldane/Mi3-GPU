@@ -240,12 +240,12 @@ def main():
     parser = argparse.ArgumentParser(
         description='Convert Potts parameters from one gauge to another')
     parser.add_argument('gauge', choices=['fieldless', 'fieldlessEven',
-                                 'weighted', 'zero', 'minJ', 'zeroJ'])
+                                 'zero', 'zeroJ'])
     parser.add_argument('--hin')
     parser.add_argument('--Jin')
     parser.add_argument('--hout')
     parser.add_argument('--Jout')
-    parser.add_argument('--weights', help='only needed for weighted gauge')
+    parser.add_argument('--weights', help='weights for weighted gauges')
     parser.add_argument('--txt', action='store_true',
                         help='save in text format')
     args = parser.parse_args()

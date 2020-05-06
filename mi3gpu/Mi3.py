@@ -569,6 +569,12 @@ def MCMCbenchmark(orig_args, args, log):
     nloop = args.nloop
     args.measurefperror = False
 
+    if args.couplings is None:
+        raise ValueError("--couplings is required")
+
+    if args.nwalkers is None:
+        raise ValueError("--nwalkers is required")
+
     print_node_startup(log)
 
     log("Initialization")
@@ -1127,14 +1133,14 @@ def loadseedseq(fn, alpha, log):
 
 def loadSequenceFile(sfile, alpha, log):
     log("Loading sequences from file {}".format(sfile))
-    seqs = loadSeqs(sfile, names=alpha)[0].astype('<u1')
+    seqs = loadSeqs(sfile, alpha=alpha)[0].astype('<u1')
     log("Found {} sequences".format(seqs.shape[0]))
     return seqs
 
 def loadSequenceDir(sdir, bufname, alpha, log):
     log("Loading {} sequences from dir {}".format(bufname, sdir))
     sfile = os.path.join(sdir, 'seqs')
-    seqs = loadSeqs(sfile, names=alpha)[0].astype('<u1')
+    seqs = loadSeqs(sfile, alpha=alpha)[0].astype('<u1')
     log("Found {} sequences".format(seqs.shape[0]))
     return seqs
 
