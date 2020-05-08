@@ -232,7 +232,7 @@ def drawMarg(alphacolor, q, i,j, marg, J, hi, hj, score, margax, Cax, Jax):
              labeltext=alphatext)
 
     fnorm = Normalize(-1, 1.0, clip=True)
-    C = marg - outer(np.sum(marg, axis=1), np.sum(marg, axis=0))
+    C = marg - np.outer(np.sum(marg, axis=1), np.sum(marg, axis=0))
     Cmax = np.max(np.abs(C))
     drawGrid(Cax, 3, 1, 1, q, q,
              [[rwbtext(x) for x in r] for r in C/Cmax],
