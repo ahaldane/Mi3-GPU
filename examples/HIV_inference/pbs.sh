@@ -6,7 +6,7 @@ outdir="hiv_pr_inference"
 
 # this disables python's output buffering of the logfile so that Mi3 output is
 # immediately printed to file for inspection while it is running.
-PYTHONUNBUFFERED=1
+export PYTHONUNBUFFERED=1
 
 Mi3.py infer \
   --init_model  independent \

@@ -7,11 +7,11 @@ fail() {
 }
 
 
-if [ -f PF00018_full ]; then
+if [ -f PF00018_full.txt ]; then
+    echo "--> SH3 MSA already downloaded from Pfam."
+else
     echo -e "\n--> Downloading SH3 MSA from Pfam..."
     wget 'https://pfam.xfam.org/family/PF00018/alignment/full/format?format=fasta&alnType=full&order=t&case=l&gaps=default&download=1' -O PF00018_full.txt || fail
-else
-    echo "--> SH3 MSA already downloaded from Pfam."
 fi
 
 
@@ -69,22 +69,27 @@ pseudocount.py bim21.npy $(cat Neff$phy) --mode jeffreys -o bim21Jeff.npy || fai
 # the bim21Jeff.npy file may now be used to infer a Potts model.
 # For instance, the following inference options will run a first round of inference:
 #
-# alpha=-ACDEFGHIKLMNPQRSTVWY
-# bim=bim21Jeff.npy
-# python3 -u Mi3.py infer --bimarg $bim \
-#                        --mcsteps 128 \
-#                        --nwalkers 262144 \
-#                        --alpha=" $alpha" \
-#                        --init_model independent \
-#                        --reseed independent \
-#                        --damping 0.01 \
-#                        --reg l1z:0.0002 \
-#                        --outdir A1 >A1_log
+<<EOF
+alpha=-ACDEFGHIKLMNPQRSTVWY
+bim=bim21Jeff.npy
+export PYTHONUNBUFFERED=1
+Mi3.py infer --bimarg $bim \
+          --mcsteps 128 \
+          --nwalkers 262144 \
+          --alpha=" $alpha" \
+          --init_model independent \
+          --reseed independent \
+          --damping 0.01 \
+          --reg l1z:0.0002 \
+          --outdir A1 >A1_log
+EOF
 #
 # A slightly more converged model can be produced by continuing the inference
 # with nwalkers=1048576 for 16 mcsteps.
 
 
+# exit now to skip alphabet reduction example
+exit 0
 
 # As an optional extra step, one may do "alphabet reduction" to reduce the
 # model from 21 letters to fewer. This can make the inference faster or easier
