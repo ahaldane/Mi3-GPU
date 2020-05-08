@@ -382,7 +382,7 @@ def main():
     main_ax = plt.axes((0.01*xscale, 0.1*yscale, 0.89*xscale, 0.89*yscale),
                        zorder=3)
     cbar_ax = plt.axes((10.05/11, 0.1*yscale, 0.3/11, 0.89*yscale), zorder=3)
-
+    
     if args.annotimg:
         try:
             ssim = np.load(args.annotimg)
@@ -417,13 +417,13 @@ def main():
         cbar = DraggableColorbar(cbar, img)
         cbar.connect()
     elif args.contactfreq and args.contactmode == 'split':
-        lotri = ones((L,L), dtype=bool)
-        lotri[triu_indices(L,k=1)] = False
+        lotri = np.ones((L,L), dtype=bool)
+        lotri[np.triu_indices(L,k=1)] = False
         hitri = np.zeros((L,L), dtype=bool)
-        hitri[triu_indices(L,k=1)] =True
+        hitri[np.triu_indices(L,k=1)] =True
 
         upper = getM(pottsScore)
-        upper[hitri] = nan
+        upper[hitri] = np.nan
         img = main_ax.imshow(upper, origin='lower', cmap='Blues',
                              extent=(+o,L+o,+o,L+o), interpolation='nearest')
         cbar = contactfig.colorbar(img, cax=cbar_ax)
@@ -431,14 +431,14 @@ def main():
         cbar.connect()
 
         lower = getM(np.load(args.contactfreq))
-        lower[lotri] = nan
+        lower[lotri] = np.nan
         main_ax.imshow(lower, origin='lower', cmap='Reds',
                        extent=(+o,L+o,+o,L+o), interpolation='nearest')
-    if args.contactfreq and args.contactmode == 'splitoverlay':
-        lotri = ones((L,L), dtype=bool)
-        lotri[triu_indices(L,k=1)] = False
+    elif args.contactfreq and args.contactmode == 'splitoverlay':
+        lotri = np.ones((L,L), dtype=bool)
+        lotri[np.triu_indices(L,k=1)] = False
         hitri = np.zeros((L,L), dtype=bool)
-        hitri[triu_indices(L,k=1)] =True
+        hitri[np.triu_indices(L,k=1)] =True
 
         cont = getM(np.load(args.contactfreq))
         cont = cm.gray_r(cont*0.2)
@@ -446,7 +446,7 @@ def main():
                        extent=(+o,L+o,+o,L+o), interpolation='nearest')
 
         upper = getM(pottsScore)
-        upper[hitri] = nan
+        upper[hitri] = np.nan
         img = main_ax.imshow(upper, origin='lower', cmap=alphared,
                              extent=(+o,L+o,+o,L+o), interpolation='nearest')
         cbar = contactfig.colorbar(img, cax=cbar_ax)
