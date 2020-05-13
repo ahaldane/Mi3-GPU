@@ -212,7 +212,8 @@ class PositionPicker:
                 self.Jax.figure.canvas.draw()
 
 def drawMarg(alphacolor, q, i,j, marg, J, hi, hj, score, margax, Cax, Jax):
-    graytext = lambda x: {'text': "{:.2f}".format(x), 'color': cm.gray_r(fnorm(x))}
+    graytext = lambda x: {'text': "{:.2f}".format(x), 
+                          'color': cm.gray_r(fnorm(x))}
     bwrtext = lambda x: {'text': "{:.2f}".format(x), 'color': cm.bwr(fnorm(x))}
     rwbtext = lambda x: {'text': "{:.2f}".format(x), 'color': cm.bwr_r(fnorm(x))}
     mapi = alphacolor[i]
@@ -289,6 +290,7 @@ def main():
     parser.add_argument('-Xijseq', help='seq ')
     parser.add_argument('-deltaXijseq', help='seq ')
     parser.add_argument('-pcN', help='small jeffreys pseudocount to add')
+    parser.add_argument('-outscore', help='output interaction scores to file')
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -350,6 +352,9 @@ def main():
         pottsScore = np.sum(rel_entr(ff, indepF(ff)), axis=-1)
     else:
         raise Exception("Not yet implemented")
+
+    if args.outscore:
+        np.save(args.outscore, pottsScore)
 
     if args.alphamap:
         unimarg21 = np.load(args.unimarg21)

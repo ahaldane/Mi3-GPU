@@ -297,9 +297,9 @@ def loadSeqsChunked(f, alpha=None, chunksize=None):
             break # reached end of file
 
         seqmat, ids = chunk_firstpass(dat, idL, lineL, pos)
-        seqs = translateascii(seqmat, alpha, pos)
+        seqs = translateascii(seqmat.copy(), alpha, pos)
         pos += seqmat.shape[0]
-        yield seqs.copy(), ids
+        yield seqs, ids
 
     if dat.size == 0:
         return
