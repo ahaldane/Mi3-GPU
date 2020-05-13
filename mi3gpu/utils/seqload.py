@@ -299,7 +299,7 @@ def loadSeqsChunked(f, alpha=None, chunksize=None):
         seqmat, ids = chunk_firstpass(dat, idL, lineL, pos)
         seqs = translateascii(seqmat, alpha, pos)
         pos += seqmat.shape[0]
-        yield seqs, ids
+        yield seqs.copy(), ids
 
     if dat.size == 0:
         return
