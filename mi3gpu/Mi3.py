@@ -19,6 +19,7 @@
 #Contact: allan.haldane _AT_ gmail.com
 
 import sys, os, errno, time, datetime, socket, signal, atexit, glob, argparse
+from pathlib import Path
 import numpy as np
 from numpy.random import randint, rand
 from scipy.special import logsumexp
@@ -26,19 +27,19 @@ import pyopencl as cl
 import pyopencl.array as cl_array
 
 import mi3gpu
+import mi3gpu.NewtonSteps
 from mi3gpu.utils.seqload import loadSeqs, writeSeqs
 from mi3gpu.utils.changeGauge import fieldlessGaugeEven
 from mi3gpu.utils.potts_common import printsome, getLq, getUnimarg
 from mi3gpu.mcmcGPU import (setup_GPU_context, initGPU, wgsize_heuristic, 
                             printGPUs)
-import mi3gpu.NewtonSteps as NewtonSteps
+from mi3gpu.node_manager import GPU_node
 
 try:
     from shlex import quote as cmd_quote
 except ImportError:
     from pipes import quote as cmd_quote
 
-from mi3gpu.node_manager import GPU_node
 
 MPI = None
 def setup_MPI():
@@ -60,15 +61,8 @@ def setup_MPI():
 
 progname = 'Mi3.py'
 
-def mkdir_p(path):
-    try:
-        os.makedirs(path)
-    except OSError as exc:
-        if not (exc.errno == errno.EEXIST and os.path.isdir(path)):
-            raise
-
-scriptPath = os.path.dirname(mi3gpu.__file__)
-scriptfile = os.path.join(scriptPath, "mcmc.cl")
+scriptPath = Path(mi3gpu.__file__).parent
+scriptfile = scriptPath / "mcmc.cl"
 
 class attrdict(dict):
     def __getattr__(self, attr):
@@ -104,7 +98,7 @@ def optionRegistry():
         help=("One of 'zero', 'independent', or a directory name. Generates or "
               "loads 'alpha', 'couplings', 'seedseq' and 'seqs', if not "
               "otherwise supplied.") )
-    add('outdir', default='output', help='Output Directory')
+    add('outdir', type=Path, default='output', help='Output Directory')
     add('finish', help='Dir. of an unfinished run to finish')
     #add('continue', help='Dir. of finished run, to start a new run from')
     add('config', #is_config_file_arg=True,
@@ -281,7 +275,7 @@ def worker_GPU_main():
 def setup_GPUs_MPI(p, log):
     # setup context for head node
     clinfo, gpudevs, cllog = setup_GPU_context(scriptPath, scriptfile, p, log)
-    with open(os.path.join(p.outdir, 'ptx'), 'wt') as f:
+    with open(p.outdir / 'ptx', 'wt') as f:
         f.write(cllog[1])
         f.write(cllog[0])
 
@@ -316,7 +310,7 @@ def setup_GPUs(p, log):
         return setup_GPUs_MPI(p, log)
 
     clinfo, gpudevs, cllog = setup_GPU_context(scriptPath, scriptfile, p, log)
-    with open(os.path.join(p.outdir, 'ptx'), 'wt') as f:
+    with open(p.outdir / 'ptx', 'wt') as f:
         f.write(cllog[1])
         f.write(cllog[0])
 
@@ -376,11 +370,11 @@ def inverseIsing(orig_args, args, log):
 
     if args.finish:
         # search for last completed run (contains a perturbedJ file)
-        rundirs = glob.glob(os.path.join(args.finish, 'run_*'))
+        rundirs = Path(args.finish).glob('run_*')
         rundirs.sort()
         rundir = None
         for fn in reversed(rundirs):
-            if os.path.isfile(os.path.join(fn, 'perturbedJ.npy')):
+            if (fn / 'perturbedJ.npy').is_file():
                 rundir = fn
                 break
         if rundir is None:
@@ -389,14 +383,14 @@ def inverseIsing(orig_args, args, log):
         log("Continuing from {}".format(rundir))
         args.init_model = rundir
         log("")
-        with open(os.path.join(args.finish, 'config.json'), 'r') as f:
+        with open(Path(args.finish, 'config.json'), 'r') as f:
             args.__dict__ = json.load(f)
 
         startrun = int(re.match('[0-9]*$', rundir).groups()) + 1
     else:
         startrun = 0
-        mkdir_p(args.outdir)
-        with open(os.path.join(args.outdir, 'command.txt'), 'w') as f:
+        args.outdir.mkdir(parents=True, exist_ok=True)
+        with open(args.outdir / 'command.txt', 'w') as f:
             f.write(" ".join(cmd_quote(a) for a in orig_args))
 
     # collect all detected parameters in "p"
@@ -496,7 +490,7 @@ def inverseIsing(orig_args, args, log):
     p['peak_ns'] = 256
     p['cur_ns'] = 256
 
-    NewtonSteps.newtonMCMC(p, gpus, startrun, log)
+    mi3gpu.NewtonSteps.newtonMCMC(p, gpus, startrun, log)
 
 def getEnergies(orig_args, args, log):
     descr = ('Compute Potts Energy of a set of sequences')
@@ -522,7 +516,7 @@ def getEnergies(orig_args, args, log):
     log("")
 
     p = attrdict({'outdir': args.outdir})
-    mkdir_p(args.outdir)
+    args.outdir.mkdir(parents=True, exist_ok=True)
     p.update(process_potts_args(args, None, None, None, log))
     L, q, alpha = p.L, p.q, p.alpha
     log("Sequence Setup")
@@ -583,7 +577,7 @@ def MCMCbenchmark(orig_args, args, log):
 
 
     p = attrdict({'outdir': args.outdir})
-    mkdir_p(args.outdir)
+    args.outdir.mkdir(parents=True, exist_ok=True)
 
     setup_seed(args, p, log)
     p.update(process_potts_args(args, p.L, p.q, None, log))
@@ -688,7 +682,7 @@ def equilibrate(orig_args, args, log):
     log("===============")
 
     p = attrdict({'outdir': args.outdir})
-    mkdir_p(args.outdir)
+    args.outdir.mkdir(parents=True, exist_ok=True)
 
     setup_seed(args, p, log)
 
@@ -746,11 +740,11 @@ def equilibrate(orig_args, args, log):
     log("Equilibrating")
     log("====================")
 
-    MCMC_func = NewtonSteps.runMCMC
+    MCMC_func = mi3gpu.NewtonSteps.runMCMC
 
     # set up tempering if needed
     if p.tempering is not None:
-        MCMC_func = NewtonSteps.runMCMC_tempered
+        MCMC_func = mi3gpu.NewtonSteps.runMCMC_tempered
         B0 = np.max(p.tempering)
 
         if p.nwalkers % len(p.tempering) != 0:
@@ -772,15 +766,15 @@ def equilibrate(orig_args, args, log):
     seqs = gpus.collect('seq main')
 
     outdir = p.outdir
-    np.savetxt(os.path.join(outdir, 'bicounts'), bicount, fmt='%d')
-    np.save(os.path.join(outdir, 'bimarg'), bimarg_model)
-    np.save(os.path.join(outdir, 'energies'), sampledenergies)
-    writeSeqs(os.path.join(outdir, 'seqs'), seqs, alpha)
+    np.savetxt(outdir / 'bicounts', bicount, fmt='%d')
+    np.save(outdir / 'bimarg', bimarg_model)
+    np.save(outdir / 'energies', sampledenergies)
+    writeSeqs(outdir / 'seqs', seqs, alpha)
 
     if p.tempering is not None:
         e, b = readGPUbufs(['E main', 'Bs'], gpus)
-        np.save(os.path.join(outdir, 'walker_Bs'), np.concatenate(b))
-        np.save(os.path.join(outdir, 'walker_Es'), np.concatenate(e))
+        np.save(outdir / 'walker_Bs', np.concatenate(b))
+        np.save(outdir / 'walker_Es', np.concatenate(e))
         log("Final PT swap rate: {}".format(ptinfo[1]))
 
     log("Mean energy:", np.mean(sampledenergies))
@@ -811,7 +805,7 @@ def subseqFreq(orig_args, args, log):
 
     p = attrdict({'outdir': args.outdir})
     args.trackequil = 0
-    mkdir_p(args.outdir)
+    args.outdir.mkdir(parents=True, exist_ok=True)
     p.update(process_potts_args(args, p.L, p.q, None, log))
     L, q, alpha = p.L, p.q, p.alpha
 
@@ -1023,8 +1017,8 @@ def getCouplings(args, L, q, bimarg, log):
                 raise Exception("Couplings must be in 'f4' format")
     elif args.init_model and args.init_model not in ['uniform', 'independent']:
         # and otherwise try to load them from model directory
-        fn = os.path.join(args.init_model, 'J.npy')
-        if os.path.isfile(fn):
+        fn = Path(args.init_model, 'J.npy')
+        if fn.is_file():
             log("Reading couplings from file {}".format(fn))
             couplings = np.load(fn)
             if couplings.dtype != np.dtype('<f4'):
@@ -1063,7 +1057,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
     if nseqs is not None:
         if args.seqs in ['uniform', 'independent']:
             seqs = generateSequences(args.seqs, L, q, nseqs, bimarg, log)
-            writeSeqs(os.path.join(args.outdir, 'initial_seqs'), seqs, alpha)
+            writeSeqs(args.outdir / 'initial_seqs', seqs, alpha)
         elif args.seqs is not None:
             seqs = loadSequenceFile(args.seqs, alpha, log)
         elif args.init_model in ['uniform', 'independent']:
@@ -1099,7 +1093,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
             seedseq = generateSequences(args.init_model, L, q, 1, bimarg,log)[0]
             seedseq_origin = args.init_model
         elif args.init_model is not None:
-            seedseq = loadseedseq(os.path.join(args.init_model, 'seedseq'),
+            seedseq = loadseedseq(Path(args.init_model, 'seedseq'),
                                   args.alpha.strip(), log)
             seedseq_origin = 'from file'
 
@@ -1139,7 +1133,7 @@ def loadSequenceFile(sfile, alpha, log):
 
 def loadSequenceDir(sdir, bufname, alpha, log):
     log("Loading {} sequences from dir {}".format(bufname, sdir))
-    sfile = os.path.join(sdir, 'seqs')
+    sfile = sdir / 'seqs'
     seqs = loadSeqs(sfile, alpha=alpha)[0].astype('<u1')
     log("Found {} sequences".format(seqs.shape[0]))
     return seqs

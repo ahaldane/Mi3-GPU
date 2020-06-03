@@ -17,6 +17,7 @@
 #Contact: allan.haldane _AT_ gmail.com
 
 import os, time, warnings, textwrap, collections
+from pathlib import Path
 import numpy as np
 from numpy.random import RandomState
 import pyopencl as cl
@@ -138,7 +139,7 @@ class MCMCGPU:
         if wgsize < q*q:
             raise Exception("wgsize cannot be less than q*q")
 
-        self.logfn = os.path.join(outdir, 'gpu-{}.log'.format(gpunum))
+        self.logfn = outdir / 'gpu-{}.log'.format(gpunum)
         with open(self.logfn, "wt") as f:
             printDevice(f.write, device)
 

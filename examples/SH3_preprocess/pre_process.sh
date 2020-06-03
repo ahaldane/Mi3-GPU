@@ -63,7 +63,10 @@ echo -e "\n--> get phylogenetic weights and 21-letter bivariate marginals"
 phy=0.4
 alpha=ABCDEFGHIJKLMNOPQRSTUVWXYZ
 phyloWeights.py $phy seqs21 weights$phy >Neff$phy || fail
+echo -e "Effective Number of Sequences:  $(cat Neff$phy)"
 getMarginals.py --weights weights${phy}.npy seqs21 bim21 || fail
+
+echo -e "\n--> Apply small pseudocount"
 pseudocount.py bim21.npy $(cat Neff$phy) --mode jeffreys -o bim21Jeff.npy || fail
 
 # the bim21Jeff.npy file may now be used to infer a Potts model.

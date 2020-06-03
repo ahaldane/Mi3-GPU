@@ -21,10 +21,11 @@ from numpy.random import randint
 from scipy.stats import pearsonr, dirichlet, spearmanr
 import pyopencl as cl
 
+import mi3gpu
+import mi3gpu.Mi3
 from mi3gpu.utils.changeGauge import fieldlessGaugeEven
 from mi3gpu.utils.seqload import writeSeqs, loadSeqs
 from mi3gpu.utils.potts_common import printsome, getLq, indepF
-from mi3gpu.Mi3 import generateSequences, MPI, mkdir_p
 
 ################################################################################
 #Helper funcs
@@ -72,18 +73,18 @@ def writeStatus(name, Jstep, bimarg_target, bicount, bimarg_model, couplings,
 
     dispstr = printstats(name, Jstep, bicount, bimarg_target, bimarg_model,
                          couplings, energies, e_rho, ptinfo)
-    with open(os.path.join(outdir, name, 'info.txt'), 'wt') as f:
+    with open(outdir / name / 'info.txt', 'wt') as f:
         f.write(dispstr)
 
     #save current state to file
-    np.savetxt(os.path.join(outdir, name, 'bicounts'), bicount, fmt='%d')
-    np.save(os.path.join(outdir, name, 'bimarg'), bimarg_model)
-    np.save(os.path.join(outdir, name, 'energies'), energies)
-    writeSeqs(os.path.join(outdir, name, 'seqs'), seqs, alpha, zipf=True)
+    np.savetxt(outdir / name / 'bicounts', bicount, fmt='%d')
+    np.save(outdir / name / 'bimarg', bimarg_model)
+    np.save(outdir / name / 'energies', energies)
+    writeSeqs(outdir / name / 'seqs', seqs, alpha, zipf=True)
 
     if ptinfo != None:
         for n,B in enumerate(ptinfo[0]):
-            np.save(os.path.join(outdir, 'Bs-{}'.format(n)), B)
+            np.save(outdir / 'Bs-{}'.format(n), B)
 
     log(dispstr)
 
@@ -255,7 +256,7 @@ def preOpt(param, gpus, log):
     bicount, es, seqs = gpus.collect(['bicount', 'E main', 'seq main'])
     bimarg = bicount.astype(np.float32)/np.float32(np.sum(bicount[0,:]))
 
-    mkdir_p(os.path.join(param.outdir, 'preopt'))
+    (outdir / 'preopt').mkdir(parents=True, exist_ok=True)
     writeStatus('preopt', 0, bimarg_target, bicount, bimarg,
                 J, seqs, es, alpha, None, None, outdir, log)
 
@@ -341,15 +342,13 @@ def track_main_bufs(param, gpus, savedir=None, step=None):
 
     if savedir:
         if 'bim' in param.tracked:
-            fn = os.path.join(savedir, 'bimarg_{}'.format(step))
-            np.save(fn, bimarg_model)
+            np.save(savedir / 'bimarg_{}'.format(step), bimarg_model)
         if 'E' in param.tracked:
-            fn = os.path.join(savedir, 'energies_{}'.format(step))
-            np.save(fn, energies)
+            np.save(savedir / 'energies_{}'.format(step), energies)
         if 'seq' in param.tracked:
             seqs = gpus.collect('seq main')
-            fn = os.path.join(savedir, 'seqs_{}'.format(step))
-            writeSeqs(fn, seqs, param.alpha, zipf=True)
+            writeSeqs(savedir / 'seqs_{}'.format(step), seqs,
+                      param.alpha, zipf=True)
     return energies, bimarg_model
 
 def runMCMC(gpus, couplings, runName, param, log):
@@ -364,8 +363,8 @@ def runMCMC(gpus, couplings, runName, param, log):
     #equilibration MCMC
     if nloop == 'auto':
         if trackequil != 0:
-            equil_dir = os.path.join(outdir, runName, 'equilibration')
-            mkdir_p(equil_dir)
+            equil_dir = outdir / runName / 'equilibration'
+            equil_dir.mkdir(parents=True, exist_ok=True)
         else:
             equil_dir = None
 
@@ -411,8 +410,8 @@ def runMCMC(gpus, couplings, runName, param, log):
 
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
-        equil_dir = os.path.join(outdir, runName, 'equilibration')
-        mkdir_p(equil_dir)
+        equil_dir = outdir / runName / 'equilibration'
+        equil_dir.mkdir(parents=True, exist_ok=True)
         equil_e = []
         for j in range(nloop//trackequil):
             for i in range(trackequil):
@@ -449,8 +448,8 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
     #equilibration MCMC
     if nloop == 'auto':
         if trackequil != 0:
-            equil_dir = os.path.join(outdir, runName, 'equilibration')
-            mkdir_p(equil_dir)
+            equil_dir = outdir / runName / 'equilibration'
+            equil_dir.mkdir(parents=True, exist_ok=True)
         else:
             equil_dir = None
 
@@ -470,8 +469,8 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
             step += loops
             energies, _ = track_main_bufs(param, gpus, equil_dir, step)
             equil_e.append(energies)
-            np.save(os.path.join(outdir, runName,
-                    'equilibration', 'Bs_{}'.format(step)), np.concatenate(Bs))
+            np.save(outdir / runName / 'equilibration' / 'Bs_{}'.format(step),
+                    np.concatenate(Bs))
 
             if len(equil_e) >= 3:
                 r1, p1 = spearmanr(equil_e[-1], equil_e[-2])
@@ -504,7 +503,8 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
             Bs,r = swapTemps(gpus, param.tempering, param.nswaps)
     else:
         #note: sync necessary with trackequil (may slightly affect performance)
-        mkdir_p(os.path.join(outdir, runName, 'equilibration'))
+        equil_dir = outdir / runName / 'equilibration'
+        equil_dir.mkdir(parents=True, exist_ok=True)
         equil_e = []
         for j in range(nloop//trackequil):
             for i in range(trackequil):
@@ -513,8 +513,8 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
                 Bs,r = swapTemps(gpus, param.tempering, param.nswaps)
 
             energies, _ = track_main_bufs(param, gpus, equil_dir, step)
-            np.save(os.path.join(outdir, runName,
-                    'equilibration', 'Bs_{}'.format(j)), np.concatenate(Bs))
+            np.save(outdir / runName / 'equilibration' / 'Bs_{}'.format(j),
+                    np.concatenate(Bs))
 
             equil_e.append(energies)
 
@@ -547,8 +547,8 @@ def NewtonSteps(runName, param, bimarg_model, gpus, log):
     #compute new J using local newton updates (in-place on GPU)
     if param.newtonSteps != 1:
         Jsteps, newJ, bimarg_p = iterNewton(param, bimarg_model, gpus, log)
-        np.save(os.path.join(outdir, runName, 'predictedBimarg'), bimarg_p)
-        np.save(os.path.join(outdir, runName, 'perturbedJ'), newJ)
+        np.save(outdir / runName / 'predictedBimarg', bimarg_p)
+        np.save(outdir / runName / 'perturbedJ', newJ)
     else:
         log("Performing single newton update step")
         newJ = singleNewton(bimarg_model, param.gamma0, param, gpus)
@@ -572,8 +572,9 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
     log("(Re-zeroing gauge of couplings)")
     couplings = fieldlessGaugeEven(np.zeros((L,q)), couplings)[1]
 
-    mkdir_p(os.path.join(outdir, runName))
-    np.save(os.path.join(outdir, runName, 'J'), couplings)
+    rundir = outdir / runName
+    rundir.mkdir(parents=True, exist_ok=True)
+    np.save(rundir / 'J', couplings)
 
     MCMC_func = runMCMC
     if param.tempering is not None:
@@ -603,8 +604,8 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
 
     if param.tempering is not None:
         e, b = gpus.collect(['E main', 'Bs'])
-        np.save(os.path.join(outdir, runName, 'walker_Es'), e)
-        np.save(os.path.join(outdir, runName, 'walker_Bs'), b)
+        np.save(outdir / runName / 'walker_Es', e)
+        np.save(outdir / runName / 'walker_Bs', b)
 
     # tune the number of Newton steps based on whether SSR increased
     ns_delta = param.newton_delta
@@ -626,7 +627,7 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
     Jsteps, newJ = NewtonSteps(runName, param, bimarg_model, gpus, log)
     param.newtonSteps = min(2048, Jsteps + ns_delta)
     log("Increasing newtonsteps to {}".format(param.newtonSteps))
-    with open(os.path.join(outdir, runName, 'nsteps'), 'wt') as f:
+    with open(outdir / runName / 'nsteps', 'wt') as f:
         f.write(str(Jsteps))
 
     return Jstep + Jsteps, seqs, sampledenergies, newJ
@@ -684,8 +685,9 @@ def newtonMCMC(param, gpus, start_run, log):
             seed = seedseq
             seedseq = None  # only use provided seed in first round
         elif param.reseed == 'single_indep':
-            seed = generateSequences('independent', param.L, param.q, 1,
-                                     param.bimarg, log)[0]
+            seed = mi3gpu.Mi3.generateSequences('independent',
+                                                param.L, param.q, 1,
+                                                param.bimarg, log)[0]
         elif param.reseed == 'single_random':
             #choose random seed from the final sequences from last round
             nseq = np.sum(s.shape[0] for s in seqs)
@@ -694,14 +696,16 @@ def newtonMCMC(param, gpus, start_run, log):
             seed = seqs[np.argmin(es)]
 
         # fill sequence buffers (with seed or otherwise)
-        mkdir_p(os.path.join(param.outdir, runname))
+        rundir = param.outdir / runname
+        rundir.mkdir(parents=True, exist_ok=True)
         if seed is not None:
-            with open(os.path.join(param.outdir, runname, 'seedseq'),'wt') as f:
+            with open(rundir / 'seedseq','wt') as f:
                 f.write("".join(param.alpha[c] for c in seed))
             gpus.fillSeqs(seed)
         elif param.reseed == 'independent':
-            indep_seqs = generateSequences('independent', param.L, param.q,
-                                            gpus.nwalkers, param.bimarg, log)
+            indep_seqs = mi3gpu.Mi3.generateSequences('independent',
+                                               param.L, param.q,
+                                               gpus.nwalkers, param.bimarg, log)
             gpus.setSeqs('main', indep_seqs)
         elif param.reseed == 'msa':
             gpus.setSeqs('main', param.seedmsa)

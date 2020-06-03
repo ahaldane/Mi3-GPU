@@ -20,6 +20,7 @@
 import numpy as np
 import sys, os
 import json, bz2, io
+from pathlib import Path
 
 
 from mi3gpu.utils.potts_common import alpha21
@@ -57,7 +58,7 @@ class Opener:
         self.zipf = zipf
 
     def __enter__(self):
-        if isinstance(self.fileobj, str):
+        if isinstance(self.fileobj, (str, Path)):
             rw = self.rw.strip('b').rstrip('t')
             if rw in 'ra' and self.zipf is not False:
                 magic = b"\x42\x5a\x68"  # for bz2
