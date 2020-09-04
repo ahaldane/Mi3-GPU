@@ -43,11 +43,13 @@ def indepF(fab):
     return fafb
 
 def getM(x, diag_fill=0):
-    L = getL(len(x))
-    M = np.zeros((L,L))
-    M[np.triu_indices(L,k=1)] = x
-    M = M + M.T
-    M[np.diag_indices(L)] = diag_fill
+    L = getL(x.shape[0])
+    M = np.zeros((L,L) + x.shape[1:])
+    i,j = np.triu_indices(L,k=1)
+    M[i,j,...] = x
+    M = M + M.swapaxes(0,1)
+    i,j = np.diag_indices(L)
+    M[i,j,...] = diag_fill
     return M
 
 def getXij(J, fab):

@@ -697,7 +697,7 @@ void reg_l1z(__global float *bimarg,
 
     // to reduce numerical fluctuations, if the regularization step
     // would change the sign of J0, instead set J0 to 0.
-    if (sign(J0) != sign(J0 + R)){ 
+    if (sign(J0) != sign(J0 + R)){
         Jp = Jp - J0;
     }
     else {
@@ -723,16 +723,54 @@ void reg_l2z(__global float *bimarg,
     float Jp = dJ[n];
     float J0 = zeroGauge(J[n] + Jp, li, scratch, hi, hj);
     float R = -lJ*J0*gamma/(bimarg[n] + pc);
- 
+
     // to reduce numerical fluctuations, if the regularization step
     // would change the sign of J0, instead set J0 to 0.
-    if (sign(J0) != sign(J0 + R)){ 
+    if (sign(J0) != sign(J0 + R)){
         Jp = Jp - J0;
     }
     else {
         Jp = Jp + R;
     }
 
+    dJ[n] = Jp;
+}
+
+__kernel
+void reg_SCAD(__global float *bimarg,
+                       float gamma,
+                       float pc,
+                       float lJ,
+                       float a,
+              __global float *J,
+              __global float *dJ) {
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float hi[q], hj[q];
+    __local float scratch[q*q];
+
+    float Jp = dJ[n];
+    float J0 = zeroGauge(J[n] + Jp, li, scratch, hi, hj);
+    float R = 0;
+    if (fabs(J0) < lJ) {
+        R = lJ*sign(J0);
+    }
+    else if (fabs(J0) < a*lJ) {
+        R = (a*lJ*sign(J0) - J0)/(a-1);
+    }
+    // account for step size and pseudocount damping in derivatives
+    R *= -gamma/(bimarg[n] + pc);
+
+    // to reduce numerical fluctuations, if the regularization step
+    // would change the sign of J0, instead set J0 to 0.
+    if (sign(J0) != sign(J0 + R)){
+        Jp = Jp - J0;
+    }
+    else {
+        Jp = Jp + R;
+    }
     dJ[n] = Jp;
 }
 
@@ -811,7 +849,7 @@ void reg_X(__global float *bimarg,
     __local float C[q*q];
 
     float Jp = dJ[n];
-    
+
     // XXX this derivative is missing a second term, hard to compute
     float X = getXC(J[n] + Jp, bimarg[n], li, C, hi, hj);
     float R = -lambdas[gi]*C[li]*sign(X);
