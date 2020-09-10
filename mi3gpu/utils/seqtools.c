@@ -1029,6 +1029,121 @@ sumsim_weighted(PyObject *self, PyObject *args){
     return sumsim;
 }
 
+static PyObject *
+filtersim(PyObject *self, PyObject *args){
+    PyArrayObject *seqs;
+    int i, j, p, cutoff;
+    npy_intp nseq, L;
+
+    if(!PyArg_ParseTuple(args, "O!i", &PyArray_Type, &seqs, &cutoff)){
+        return NULL;
+    }
+
+    if( (PyArray_NDIM(seqs) != 2) || PyArray_TYPE(seqs) != NPY_UINT8 ){
+        PyErr_SetString( PyExc_ValueError, "seq must be 2d uint8 array");
+        return NULL;
+    }
+
+    if(!PyArray_ISCARRAY(seqs)){
+        PyErr_SetString( PyExc_ValueError, "seq must be C-contiguous");
+        return NULL;
+    }
+
+    nseq = PyArray_DIM(seqs, 0);
+    L = PyArray_DIM(seqs, 1);
+
+    if (nseq == 0) {
+        PyErr_SetString( PyExc_ValueError, "no seqs supplied");
+        return NULL;
+    }
+
+    // transpose for optimal memory order (see below)
+    seqs = (PyArrayObject*)PyArray_Transpose(seqs, NULL);
+    seqs = (PyArrayObject*)PyArray_Copy(seqs);
+    uint8 *seqdata = PyArray_DATA(seqs);
+
+    uint32 *hsim = malloc(sizeof(uint32)*nseq);
+    for(j = 0; j < nseq; j++){
+        hsim[j] = 0;
+    }
+
+    // loop over sequences, progressively cutting sequence
+    // which are too similar to a focus sequence
+    int N = nseq;
+    for (i = 0; i < N; i++) {
+
+        for(p = 0; p < L; p++){
+            uint8 newc = seqdata[nseq*p + i];
+            uint8 oldc = i == 0 ? 0xff : seqdata[nseq*p + i-1];
+            uint8 *row = &seqdata[nseq*p];
+
+            // skip rows which didn't change
+            if(newc == oldc){
+                continue;
+            }
+
+            // bottleneck of function, sequence transpose speeds this up
+            for(j = i+1; j < N; j++){
+                // using vectorizable arithmetic operations also speeds it up
+                hsim[j] += (row[j] == newc) - (row[j] == oldc);
+            }
+            // if this needs to be _really_ fast, could use pthreads
+            // (one thread per p)
+        }
+
+        // remove sequences under cutoff, moving in sequences from end
+        // also find most similar sequence
+        int biggestind = 0;
+        uint32 biggesthsim = 0;
+        for (j = i+1; j < N; j++) {
+            // remove sequences by overwriting with tail sequence
+            while (j < N && L-hsim[j] < cutoff) {
+                for(p = 0; p < L; p++) {
+                    seqdata[nseq*p + j] = seqdata[nseq*p + N-1];
+                }
+                hsim[j] = hsim[N-1];
+                N--;
+            }
+            if (j < N && hsim[j] > biggesthsim) {
+                biggestind = j;
+                biggesthsim = hsim[j];
+            }
+        }
+
+        if (i+1 >= N) {
+            break;
+        }
+
+        //swap best sequence with next sequence
+        for(p = 0; p < L; p++) {
+            uint8 tmp = seqdata[nseq*p + biggestind];
+            seqdata[nseq*p + biggestind] = seqdata[nseq*p + i+1];
+            seqdata[nseq*p + i+1] = tmp;
+        }
+        int tmph = hsim[biggestind];
+        hsim[biggestind] = hsim[i+1];
+        hsim[i+1] = tmph;
+    }
+
+    free(hsim);
+
+    npy_intp out_dims[2] = {N, L};
+    npy_intp out_strides[2] = {1, nseq};
+    PyObject *out = PyArray_NewFromDescr(&PyArray_Type,
+                                         PyArray_DescrFromType(NPY_UINT8),
+                                         2, out_dims, out_strides,
+                                         seqdata, 0, NULL);
+    if (out == NULL) {
+        Py_DECREF(seqs);
+        return NULL;
+    }
+    if (PyArray_SetBaseObject(out, seqs) < 0) {
+        Py_DECREF(out);
+        return NULL;
+    }
+
+    return (PyObject *)out;
+}
 
 /*
  * Helper function for sequence loading, which converts the sequences to
@@ -1114,6 +1229,8 @@ static PyMethodDef SeqtoolsMethods[] = {
             "compute sum of similarity with other all sequences"},
     {"sumsim_weighted", sumsim_weighted, METH_VARARGS,
            "compute sum of similarity with other all sequences, with weights"},
+    {"filtersim", filtersim, METH_VARARGS,
+            "remove sequences under a similarity cutoff to another sequence"},
     {"translateascii", translateascii, METH_VARARGS,
             "translate sequence buffer from scii to integers"},
     {NULL, NULL, 0, NULL}        /* Sentinel */
