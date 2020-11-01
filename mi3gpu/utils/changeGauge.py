@@ -248,6 +248,7 @@ def main():
     parser.add_argument('--weights', help='weights for weighted gauges')
     parser.add_argument('--txt', action='store_true',
                         help='save in text format')
+    parser.add_argument('--dtype', default='f4', help='output dtype')
     args = parser.parse_args()
 
 
@@ -263,8 +264,12 @@ def main():
               'zero':          zeroGauge,
               'zeroJ':         zeroJGauge}
     h1, J1 = gfuncs[args.gauge](hin, Jin, weights)
+    
+    if args.txt:
+        savefunc = np.savetxt
+    else:
+        savefunc = lambda name, data: np.save(name, data.astype(args.dtype))
 
-    savefunc = np.savetxt if args.txt else np.save
     if args.hout:
         savefunc(args.hout, h1)
     if args.Jout:

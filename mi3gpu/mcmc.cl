@@ -583,6 +583,7 @@ float sumqq(float v, uint li, __local float *scratch) {
     }
 
     return scratch[0];
+    // Note: caller's responsibility to barrier before touching scratch!
 }
 
 // expects to be called with work-group size of q*q
@@ -736,51 +737,12 @@ void reg_l2z(__global float *bimarg,
     dJ[n] = Jp;
 }
 
-__kernel
-void reg_SCAD(__global float *bimarg,
-                       float gamma,
-                       float pc,
-                       float lJ,
-                       float a,
-              __global float *J,
-              __global float *dJ) {
-    uint li = get_local_id(0);
-    uint gi = get_group_id(0);
-    uint n = gi*q*q + li;
-
-    __local float hi[q], hj[q];
-    __local float scratch[q*q];
-
-    float Jp = dJ[n];
-    float J0 = zeroGauge(J[n] + Jp, li, scratch, hi, hj);
-    float R = 0;
-    if (fabs(J0) < lJ) {
-        R = lJ*sign(J0);
-    }
-    else if (fabs(J0) < a*lJ) {
-        R = (a*lJ*sign(J0) - J0)/(a-1);
-    }
-    // account for step size and pseudocount damping in derivatives
-    R *= -gamma/(bimarg[n] + pc);
-
-    // to reduce numerical fluctuations, if the regularization step
-    // would change the sign of J0, instead set J0 to 0.
-    if (sign(J0) != sign(J0 + R)){
-        Jp = Jp - J0;
-    }
-    else {
-        Jp = Jp + R;
-    }
-    dJ[n] = Jp;
-}
-
-// expects to be called with work-group size of q*q
-float getXC(float J, float bimarg, uint li, __local float *scratch,
-            __local float *fi, __local float *fj) {
+void getUnimarg(float fij, __local float *fi, __local float *fj, uint li, 
+                __local float *scratch) {
     uint m;
 
     // add up bimarg rows
-    scratch[li] = bimarg;
+    scratch[li] = fij;
     barrier(CLK_LOCAL_MEM_FENCE);
     m = q;
     while (m > 1) {
@@ -792,12 +754,12 @@ float getXC(float J, float bimarg, uint li, __local float *scratch,
         barrier(CLK_LOCAL_MEM_FENCE);
     }
     if (li < q) {
-        fi[li] = scratch[q*li]/q;
+        fi[li] = scratch[q*li];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 
     //add up bimarg columns
-    scratch[q*(li%q) + li/q] = bimarg;
+    scratch[q*(li%q) + li/q] = fij;
     barrier(CLK_LOCAL_MEM_FENCE);
     m = q;
     while (m > 1) {
@@ -809,29 +771,9 @@ float getXC(float J, float bimarg, uint li, __local float *scratch,
         barrier(CLK_LOCAL_MEM_FENCE);
     }
     if (li < q) {
-        fj[li] = scratch[q*li]/q;
+        fj[li] = scratch[q*li];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
-
-    // each work unit computes one of the Xijab terms
-    scratch[li] = J*(bimarg - fi[li/q]*fj[li%q]);
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-    //sum up all terms over ab
-    m = q;
-    while (m > 1) {
-        uint odd = m%2;
-        m = (m+1)>>1; //div by 2 rounded up
-        if (li < m - odd) {
-            scratch[q*li] = scratch[q*li] + scratch[q*(li + m)];
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-
-    // write out C and return X
-    scratch[li] = bimarg - fi[li/q]*fj[li%q];
-    barrier(CLK_LOCAL_MEM_FENCE);
-    return scratch[0];
 }
 
 __kernel
@@ -845,15 +787,61 @@ void reg_X(__global float *bimarg,
     uint gi = get_group_id(0);
     uint n = gi*q*q + li;
 
-    __local float hi[q], hj[q];
-    __local float C[q*q];
+    __local float fi[q], fj[q];
+    __local float scratch[q*q];
 
     float Jp = dJ[n];
 
     // XXX this derivative is missing a second term, hard to compute
-    float X = getXC(J[n] + Jp, bimarg[n], li, C, hi, hj);
-    float R = -lambdas[gi]*C[li]*sign(X);
-    dJ[n] = Jp - gamma*R/(bimarg[n]+pc);
+    float fij = bimarg[n];
+    getUnimarg(fij, fi, fj, li, scratch);
+    float C = fij - fi[li/q]*fj[li%q];
+    float X = sumqq((J[n] + Jp)*C, li, scratch);
+
+    float R = -lambdas[gi]*C*sign(X);
+    dJ[n] = Jp - gamma*R/(fij+pc);
+}
+
+__kernel
+void reg_SCADX(__global float *bimarg,
+                       float gamma,
+                       float pc,
+                       float lX,
+                       float a,
+              __global float *J,
+              __global float *dJ) {
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float fi[q], fj[q];
+    __local float scratch[q*q];
+
+    float Jp = dJ[n];
+
+    float fij = bimarg[n];
+    getUnimarg(fij, fi, fj, li, scratch);
+    float C = fij - fi[li/q]*fj[li%q];
+    float X = sumqq((J[n] + Jp)*C, li, scratch);
+    barrier(CLK_LOCAL_MEM_FENCE); // barrier for scratch usage
+    float Xnorm = sumqq(C*C/(fij + pc), li, scratch);
+
+    float R = 0;
+    if (fabs(X) < lX) {
+        // to avoid gamma-dependent oscillations around 0, set X exactly
+        // to 0 if it would change sign, by appropriate clip on lX.
+        lX = min(lX, fabs(X)/(Xnorm*gamma));
+        R = lX*sign(X);
+    }
+    else if (fabs(X) < a*lX) {
+        // assume gamma is small enough X can't change sign if we are more 
+        // than lX away from 0
+        R = (a*lX*sign(X) - X)/(a-1);
+    }
+    R *= gamma*C/(fij + pc);
+
+    Jp = Jp - R;
+    dJ[n] = Jp;
 }
 
 __kernel

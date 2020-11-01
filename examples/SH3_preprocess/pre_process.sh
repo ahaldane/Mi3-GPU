@@ -84,7 +84,8 @@ Mi3.py infer --bimarg $bim \
           --reseed independent \
           --damping 0.01 \
           --reg l1z:0.0002 \
-          --outdir A1 >A1_log
+          --outdir A1 \
+          --log
 EOF
 #
 # A slightly more converged model can be produced by continuing the inference

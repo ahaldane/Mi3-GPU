@@ -625,17 +625,17 @@ class MCMCGPU:
                             self.bufs['J'], self.bufs['dJ'],
                             wait_for=self._waitevt(wait_for)))
 
-    def reg_SCAD(self, gamma, pc, lJ, a, wait_for=None):
+    def reg_SCADX(self, gamma, pc, lJ, a, wait_for=None):
         self.require('Jstep')
-        self.log("reg_SCAD")
+        self.log("reg_SCADX")
         q, nPairs = self.q, self.nPairs
 
         bibuf = self.bufs['bi']
         self.unpackedJ = None
-        return self.logevt('reg_SCAD',
-            self.prg.reg_SCAD(self.queue, (nPairs*q*q,), (q*q,),
+        return self.logevt('reg_SCADX',
+            self.prg.reg_SCADX(self.queue, (nPairs*q*q,), (q*q,),
                             bibuf, np.float32(gamma), np.float32(pc),
-                            np.float32(lJ), np.float32(a),
+                            np.float32(lJ), np.float32(a), 
                             self.bufs['J'], self.bufs['dJ'],
                             wait_for=self._waitevt(wait_for)))
 

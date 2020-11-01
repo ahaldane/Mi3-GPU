@@ -305,8 +305,8 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
         self.isend('reg_l2z')
         self.isend((gamma, pc, lJ))
 
-    def reg_SCAD(self, gamma, pc, lJ, a):
-        self.isend('reg_SCAD')
+    def reg_SCADX(self, gamma, pc, lJ, a):
+        self.isend('reg_SCADX')
         self.isend((gamma, pc, lJ, a))
 
     def reg_X(self, gamma, pc):
@@ -484,9 +484,9 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
         args = self.recv()
         super().reg_l2z(*args)
 
-    def reg_SCAD(self):
+    def reg_SCADX(self):
         args = self.recv()
-        super().reg_SCAD(*args)
+        super().reg_SCADX(*args)
 
     def reg_X(self):
         args = self.recv()

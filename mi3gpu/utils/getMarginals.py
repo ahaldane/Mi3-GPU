@@ -138,7 +138,8 @@ def main():
     if args.counts:
         np.save(args.outfile, counts)
     else:
-        ff = counts.astype(args.dtype)/np.sum(counts[0,:])
+        counts = counts.astype(args.dtype)
+        ff = counts/np.sum(counts[0,:])
         np.save(args.outfile, ff)
 
 if __name__ == '__main__':

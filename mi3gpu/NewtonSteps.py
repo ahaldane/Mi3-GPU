@@ -182,8 +182,8 @@ def iterNewton(param, bimarg_model, gpus, log):
         reg = lambda: gpus.reg_l1z(gamma, pc, *param.regarg)
     elif param.reg == 'l2z':
         reg = lambda: gpus.reg_l2z(gamma, pc, *param.regarg)
-    elif param.reg == 'SCAD':
-        reg = lambda: gpus.reg_SCAD(gamma, pc, *param.regarg)
+    elif param.reg == 'SCADX':
+        reg = lambda: gpus.reg_SCADX(gamma, pc, *param.regarg)
     elif param.reg == 'X':
         reg = lambda: gpus.reg_X(gamma, pc, *param.regarg)
     elif param.reg == 'ddE':

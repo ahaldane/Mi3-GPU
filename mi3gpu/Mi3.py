@@ -25,6 +25,7 @@ from numpy.random import randint, rand
 from scipy.special import logsumexp
 import pyopencl as cl
 import pyopencl.array as cl_array
+import json
 
 import mi3gpu
 import mi3gpu.NewtonSteps
@@ -99,11 +100,11 @@ def optionRegistry():
               "loads 'alpha', 'couplings', 'seedseq' and 'seqs', if not "
               "otherwise supplied.") )
     add('outdir', type=Path, default='output', help='Output Directory')
-    add('finish', help='Dir. of an unfinished run to finish')
-    #add('continue', help='Dir. of finished run, to start a new run from')
+    add('finish', type=Path, help='Dir. of an unfinished run to finish')
     add('config', #is_config_file_arg=True,
                   help='config file to load arguments from')
     add('rngseed', type=np.uint32, help='random seed')
+    add('log', action='store_true', help='log program output')
 
     # GPU options
     add('nwalkers', type=np.uint32,
@@ -226,11 +227,17 @@ def describe_tempering(args, p, log):
              "swapped {} times after every MCMC loop. The low-temperature "
              "B is {}").format(msg, p.nswaps, np.max(p.tempering)))
 
-def print_node_startup(log):
+def print_node_startup(log, orig_args=None):
     log("Hostname:   {}".format(socket.gethostname()))
     log("Start Time: {}".format(datetime.datetime.now()))
     if 'PBS_JOBID' in os.environ:
         log("Job name:   {}".format(os.environ['PBS_JOBID']))
+
+    if orig_args:
+        log("")
+        log("Command line arguments:")
+        log(" ".join(cmd_quote(a) for a in orig_args))
+        log("")
 
 def setup_exit_hook(log):
     def exiter():
@@ -348,18 +355,32 @@ def inverseIsing(orig_args, args, log):
                                           'trackequil tracked '
                                           'tempering nswaps_temp ')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'init_model outdir rngseed config '
-                                          'finish')
+    addopt(parser,  None,                 'init_model outdir log rngseed '
+                                          'config finish')
 
     args = parser.parse_args(args)
     args.measurefperror = False
 
-    print_node_startup(log)
+    # set up output directory and log file
+    if args.finish:
+        if not args.outdir.is_dir():
+            raise ValueError("{} is not a directory".format(args.outdir))
 
-    log("")
-    log("Command line arguments:")
-    log(" ".join(cmd_quote(a) for a in orig_args))
-    log("")
+        if args.log:
+            n = 1
+            while true:
+                p = args.outdir / 'log{}'.format(n)
+                if not p.exists():
+                    break
+            logfile = open(p, 'wt')
+            log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+    else:
+        args.outdir.mkdir(parents=True)
+        if args.log:
+            logfile = open(args.outdir / 'log', 'wt')
+            log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+
+    print_node_startup(log, orig_args)
 
     if MPI:
         log("MPI detected using {} processes".format(mpi_comm.Get_size()))
@@ -370,7 +391,7 @@ def inverseIsing(orig_args, args, log):
 
     if args.finish:
         # search for last completed run (contains a perturbedJ file)
-        rundirs = Path(args.finish).glob('run_*')
+        rundirs = args.finish.glob('run_*')
         rundirs.sort()
         rundir = None
         for fn in reversed(rundirs):
@@ -383,15 +404,17 @@ def inverseIsing(orig_args, args, log):
         log("Continuing from {}".format(rundir))
         args.init_model = rundir
         log("")
-        with open(Path(args.finish, 'config.json'), 'r') as f:
-            args.__dict__ = json.load(f)
+        with open(args.finish / 'config.json', 'r') as f:
+            args = argparse.NameSpace(**json.load(f))
+        log("loaded parameters:")
+        log(vars(args))
 
+        args.outdir = args.finish
         startrun = int(re.match('[0-9]*$', rundir).groups()) + 1
     else:
         startrun = 0
-        args.outdir.mkdir(parents=True, exist_ok=True)
-        with open(args.outdir / 'command.txt', 'w') as f:
-            f.write(" ".join(cmd_quote(a) for a in orig_args))
+        #with open(args.outdir / 'config.json', 'w') as f:
+        #    json.dump(vars(args), f)
 
     # collect all detected parameters in "p"
     p = attrdict({'outdir': args.outdir})
@@ -492,6 +515,9 @@ def inverseIsing(orig_args, args, log):
 
     mi3gpu.NewtonSteps.newtonMCMC(p, gpus, startrun, log)
 
+    if args.log:
+        logfile.close()
+
 def getEnergies(orig_args, args, log):
     descr = ('Compute Potts Energy of a set of sequences')
     parser = argparse.ArgumentParser(prog=progname + ' getEnergies',
@@ -501,7 +527,7 @@ def getEnergies(orig_args, args, log):
     addopt(parser, 'GPU Options',         'wgsize gpus profile')
     addopt(parser, 'Potts Model Options', 'alpha couplings')
     addopt(parser, 'Sequence Options',    'seqs')
-    addopt(parser,  None,                 'outdir')
+    addopt(parser,  None,                 'outdir log')
 
     #genenergies uses a subset of the full inverse ising parameters,
     #so use custom set of params here
@@ -511,12 +537,18 @@ def getEnergies(orig_args, args, log):
 
     requireargs(args, 'couplings alpha seqs')
 
+    args.outdir.mkdir(parents=True)
+    if args.log:
+        logfile = open(args.outdir / 'log', 'wt')
+        log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+
+    print_node_startup(log, orig_args)
+
     log("Initialization")
     log("===============")
     log("")
 
     p = attrdict({'outdir': args.outdir})
-    args.outdir.mkdir(parents=True, exist_ok=True)
     p.update(process_potts_args(args, None, None, None, log))
     L, q, alpha = p.L, p.q, p.alpha
     log("Sequence Setup")
@@ -546,6 +578,9 @@ def getEnergies(orig_args, args, log):
     log("Saving results to file '{}'".format(args.out))
     np.save(args.out, es)
 
+    if args.log:
+        logfile.close()
+
 def MCMCbenchmark(orig_args, args, log):
     descr = ('Benchmark MCMC generation on the GPU')
     parser = argparse.ArgumentParser(prog=progname + ' benchmark',
@@ -557,7 +592,7 @@ def MCMCbenchmark(orig_args, args, log):
                                           'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'init_model outdir rngseed')
+    addopt(parser,  None,                 'init_model outdir rngseed log')
 
     args = parser.parse_args(args)
     nloop = args.nloop
@@ -569,15 +604,18 @@ def MCMCbenchmark(orig_args, args, log):
     if args.nwalkers is None:
         raise ValueError("--nwalkers is required")
 
-    print_node_startup(log)
+    args.outdir.mkdir(parents=True)
+    if args.log:
+        logfile = open(args.outdir / 'log', 'wt')
+        log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+
+    print_node_startup(log, orig_args)
 
     log("Initialization")
     log("===============")
     log("")
 
-
     p = attrdict({'outdir': args.outdir})
-    args.outdir.mkdir(parents=True, exist_ok=True)
 
     setup_seed(args, p, log)
     p.update(process_potts_args(args, p.L, p.q, None, log))
@@ -656,6 +694,9 @@ def MCMCbenchmark(orig_args, args, log):
     #es = gpus.collect('E main')
     #log("\nConsistency check: <E> = ", np.mean(es), np.std(es))
 
+    if args.log:
+        logfile.close()
+
 def equilibrate(orig_args, args, log):
     descr = ('Run a round of MCMC generation on the GPU')
     parser = argparse.ArgumentParser(prog=progname + ' mcmc',
@@ -668,21 +709,22 @@ def equilibrate(orig_args, args, log):
                                           'trackequil tracked '
                                           'tempering nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'init_model outdir rngseed')
+    addopt(parser,  None,                 'init_model outdir log rngseed')
 
     args = parser.parse_args(args)
     args.measurefperror = False
 
-    log("")
-    log("Command line arguments:")
-    log(" ".join(cmd_quote(a) for a in orig_args))
-    log("")
+    args.outdir.mkdir(parents=True)
+    if args.log:
+        logfile = open(args.outdir / 'log', 'wt')
+        log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+
+    print_node_startup(log, orig_args)
 
     log("Initialization")
     log("===============")
 
     p = attrdict({'outdir': args.outdir})
-    args.outdir.mkdir(parents=True, exist_ok=True)
 
     setup_seed(args, p, log)
 
@@ -781,6 +823,9 @@ def equilibrate(orig_args, args, log):
 
     log("Done!")
 
+    if args.log:
+        logfile.close()
+
 def subseqFreq(orig_args, args, log):
     descr = ('Compute relative frequency of subsequences at fixed positions')
     parser = argparse.ArgumentParser(prog=progname + ' subseqFreq',
@@ -790,7 +835,7 @@ def subseqFreq(orig_args, args, log):
     add('out', default='output', help='Output File')
     addopt(parser, 'GPU options',         'wgsize gpus')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'outdir')
+    addopt(parser,  None,                 'outdir log')
     group = parser.add_argument_group('Sequence Options')
     add = group.add_argument
     add('backgroundseqs', help="large sample of equilibrated sequences")
@@ -799,13 +844,19 @@ def subseqFreq(orig_args, args, log):
     args = parser.parse_args(args)
     args.measurefperror = False
 
+    args.outdir.mkdir(parents=True)
+    if args.log:
+        logfile = open(args.outdir / 'log', 'wt')
+        log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+
+    print_node_startup(log, orig_args)
+
     log("Initialization")
     log("===============")
     log("")
 
     p = attrdict({'outdir': args.outdir})
     args.trackequil = 0
-    args.outdir.mkdir(parents=True, exist_ok=True)
     p.update(process_potts_args(args, p.L, p.q, None, log))
     L, q, alpha = p.L, p.q, p.alpha
 
@@ -858,6 +909,9 @@ def subseqFreq(orig_args, args, log):
     #save result
     log("Saving result (log frequency) to file {}".format(args.out))
     np.save(args.out, logf)
+
+    if args.log:
+        logfile.close()
 
 ################################################################################
 
@@ -920,7 +974,7 @@ def process_newton_args(args, log):
 
     if args.reg is not None:
         rtype, dummy, rarg = args.reg.partition(':')
-        rtypes = ['l2z', 'l1z', 'SCAD', 'X', 'ddE']
+        rtypes = ['l2z', 'l1z', 'SCADX', 'X', 'ddE']
         if rtype not in rtypes:
             raise Exception("reg must be one of {}".format(str(rtypes)))
         p['reg'] = rtype
@@ -942,7 +996,7 @@ def process_newton_args(args, log):
                 raise Exception("{r} specifier must be of form '{r}:lJ', eg "
                           "'{r}:0.01'. Got '{}'".format(args.reg, r=rtype))
             p['regarg'] = (lJ,)
-        elif rtype == 'SCAD':
+        elif rtype == 'SCADX':
             try:
                 lJ, dummy, a = rarg.partition(':')
                 lJ = float(rarg)
@@ -1147,7 +1201,7 @@ def loadSequenceFile(sfile, alpha, log):
 
 def loadSequenceDir(sdir, bufname, alpha, log):
     log("Loading {} sequences from dir {}".format(bufname, sdir))
-    sfile = sdir / 'seqs'
+    sfile = Path(sdir) / 'seqs'
     seqs = loadSeqs(sfile, alpha=alpha)[0].astype('<u1')
     log("Found {} sequences".format(seqs.shape[0]))
     return seqs
