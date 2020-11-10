@@ -132,9 +132,9 @@ void copySubseq(__global uint *smallbuf,
 //  (which is the transpose of seq array in CPU)
 __kernel
 void unpackseqs1(__global uint *buf4,
-                        uint  buf4len, //nseq uints rows
-               __global uint *buf1,
-                        uint  buf1len) //nseq/4 uints
+                          uint  buf4len, //nseq uints rows
+                 __global uint *buf1,
+                          uint  buf1len) //nseq/4 uints
 {
     uint i4 = get_group_id(0);
     uint li = get_local_id(0);
@@ -165,6 +165,82 @@ void unpackseqs1(__global uint *buf4,
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
+}
+
+__kernel
+void gen_indep(__global uint *buf4,
+                        uint  buf4len, //nseq uints rows
+ __global mwc64xvec2_state_t *rngstates,
+              __global float *pbuf)
+{
+    uint gi = get_global_id(0);
+    uint li = get_local_id(0);
+    __local float cprobs[q-1];
+    float prefetch_cprob;
+    if (li < q-1) {
+        prefetch_cprob = pbuf[li];
+    }
+
+    uint2 rng;
+    mwc64xvec2_state_t rstate = rngstates[gi];
+
+    // pbuf is a (q-1)*L buffer of cumulprobs, where each row of size q-1
+    // represents cumulative probabilities of amino acids (excluding the last
+    // element which must be 1)
+    // group size of WGSIZE assumed to be larger than q.
+
+    // loop over positions
+    uint sbn = 0;
+    int pos;
+    for(pos = 0; pos < L; pos++) {
+        // load next prob values
+        if (li < q-1) {
+            cprobs[li] = prefetch_cprob;
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (pos < L-1) {
+            if (li < q-1) {
+                prefetch_cprob = pbuf[(pos+1)*(q-1) + li];
+            }
+        }
+
+        // generate random number from our uint2 stream
+        float r;
+        if (pos%2 == 0) {
+            rng = MWC64XVEC2_NextUint2(&rstate);
+            r = uniformMap(rng.x);
+        }
+        else {
+            r = uniformMap(rng.y);
+        }
+
+        // binary search for mutres
+        uint bot = 0, mid;
+        #pragma unroll
+        for (uint span = q; span > 1; span -= mid) {
+            mid = span / 2;
+            if (r >= cprobs[bot + mid - 1]) {
+                bot += mid;
+            }
+        }
+
+        // bot specifies mutres now 
+        setbyte(&sbn, pos%4, bot);
+
+        if ((pos+1)%4 == 0) {
+            buf4[(pos/4)*buf4len + gi] = sbn;
+        }
+    }
+    // write out final uint if needed
+    if (pos%4 != 0) {
+        // zero out padding bytes (may be unnecessary..)
+        for (int l = pos%4; l < 4; l++) {
+            setbyte(&sbn, l, 0);
+        }
+        buf4[(pos/4)*buf4len + gi] = sbn;
+    }
+
+    rngstates[gi] = rstate;
 }
 
 // ****************************** Energy computation **************************
@@ -777,7 +853,7 @@ void getUnimarg(float fij, __local float *fi, __local float *fj, uint li,
 }
 
 __kernel
-void reg_X(__global float *bimarg,
+void reg_Xij(__global float *bimarg,
            __global float *lambdas,
                     float gamma,
                     float pc,
@@ -797,16 +873,56 @@ void reg_X(__global float *bimarg,
     getUnimarg(fij, fi, fj, li, scratch);
     float C = fij - fi[li/q]*fj[li%q];
     float X = sumqq((J[n] + Jp)*C, li, scratch);
+    barrier(CLK_LOCAL_MEM_FENCE); // barrier for scratch usage
+    float Xnorm = sumqq(C*C/(fij + pc), li, scratch);
+    float lX = lambdas[gi];
+    lX = min(lX, fabs(X)/(Xnorm*gamma));
 
-    float R = -lambdas[gi]*C*sign(X);
+    float R = lX*C*sign(X);
     dJ[n] = Jp - gamma*R/(fij+pc);
 }
 
 __kernel
+void reg_X(__global float *bimarg,
+                      float lX,
+                      float gamma,
+                      float pc,
+             __global float *J,
+             __global float *dJ) {
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float fi[q], fj[q];
+    __local float scratch[q*q];
+
+    float Jp = dJ[n];
+
+    float fij = bimarg[n];
+    getUnimarg(fij, fi, fj, li, scratch);
+    float C = fij - fi[li/q]*fj[li%q];
+    float X = sumqq((J[n] + Jp)*C, li, scratch);
+    barrier(CLK_LOCAL_MEM_FENCE); // barrier for scratch usage
+    float Xnorm = sumqq(C*C/(fij + pc), li, scratch);
+    lX = min(lX, fabs(X)/(Xnorm*gamma));
+
+    dJ[n] = Jp - gamma*lX*C*sign(X)/(fij+pc);
+}
+
+// SCAD is defined by a range r, and range multipler a:
+//                R                               R'
+//   |X| < r      r|X|                            r 
+//   |X| < a*r    (2ar|X| - |X|^2 - r^2)/2(a-1)   (ar*s[X]-X)/(a-1)
+//   |X| >= a*r   (1+a)r^2/2                      0
+//
+// below we also multiply by a scaling factor s such that D = s(1+a)r^2/2 so
+// that D is the regularization cost for large |X| specified by user.
+__kernel
 void reg_SCADX(__global float *bimarg,
                        float gamma,
                        float pc,
-                       float lX,
+                       float s,
+                       float r,
                        float a,
               __global float *J,
               __global float *dJ) {
@@ -827,21 +943,20 @@ void reg_SCADX(__global float *bimarg,
     float Xnorm = sumqq(C*C/(fij + pc), li, scratch);
 
     float R = 0;
-    if (fabs(X) < lX) {
+    if (fabs(X) < r) {
         // to avoid gamma-dependent oscillations around 0, set X exactly
-        // to 0 if it would change sign, by appropriate clip on lX.
-        lX = min(lX, fabs(X)/(Xnorm*gamma));
-        R = lX*sign(X);
+        // to 0 if it would change sign, by appropriate clip on r.
+        r = min(r, fabs(X)/(Xnorm*gamma*s));
+        R = r*sign(X);
     }
-    else if (fabs(X) < a*lX) {
+    else if (fabs(X) < a*r) {
         // assume gamma is small enough X can't change sign if we are more 
         // than lX away from 0
-        R = (a*lX*sign(X) - X)/(a-1);
+        R = (a*r*sign(X) - X)/(a-1);
     }
-    R *= gamma*C/(fij + pc);
+    R *= gamma*s*C/(fij + pc);
 
-    Jp = Jp - R;
-    dJ[n] = Jp;
+    dJ[n] = Jp - R;
 }
 
 __kernel

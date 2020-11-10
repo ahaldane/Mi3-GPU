@@ -100,6 +100,14 @@ class GPU_node:
         for gpu in self.gpus:
             gpu.logProfile()
 
+    def prepare_indep(self, unimarg):
+        for gpu in self.gpus:
+            gpu.prepare_indep(unimarg)
+
+    def gen_indep(self, bufname):
+        for gpu in self.gpus:
+            gpu.gen_indep(bufname)
+
     def runMCMC(self):
         for gpu in self.gpus:
             gpu.runMCMC()
@@ -128,11 +136,15 @@ class GPU_node:
         for gpu in self.gpus:
             gpu.reg_l2z(gamma, pc, lJ)
 
-    def reg_SCADX(self, gamma, pc, lJ, a):
+    def reg_SCADX(self, gamma, pc, s, r, a):
         for gpu in self.gpus:
-            gpu.reg_SCADX(gamma, pc, lJ, a)
+            gpu.reg_SCADX(gamma, pc, s, r, a)
 
-    def reg_X(self, gamma, pc):
+    def reg_X(self, gamma, pc, lX):
+        for gpu in self.gpus:
+            gpu.reg_X(gamma, pc, lX)
+
+    def reg_Xij(self, gamma, pc):
         for gpu in self.gpus:
             gpu.reg_X(gamma, pc)
 

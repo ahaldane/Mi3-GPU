@@ -12,7 +12,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="mi3gpu",
-    version="1.0.0",
+    version_config=True,
     author="Allan Haldane",
     author_email="allan.haldane@temple.edu",
     description="Monte Carlo Inverse Ising Inference on GPUs",
@@ -43,5 +43,6 @@ setuptools.setup(
        'numpy>=1.14',
        'scipy>=1.0.0',
        'pyopencl'
-    ]
+    ],
+    setup_requires=['setuptools-git-ver'],
 )

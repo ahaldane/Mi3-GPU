@@ -26,6 +26,8 @@ from scipy.special import logsumexp
 import pyopencl as cl
 import pyopencl.array as cl_array
 import json
+import pkg_resources  # part of setuptools
+version = pkg_resources.require("mi3gpu")[0].version
 
 import mi3gpu
 import mi3gpu.NewtonSteps
@@ -40,7 +42,6 @@ try:
     from shlex import quote as cmd_quote
 except ImportError:
     from pipes import quote as cmd_quote
-
 
 MPI = None
 def setup_MPI():
@@ -162,8 +163,9 @@ def optionRegistry():
     add('seedseq', help="Starting sequence. May be 'rand'")
     add('seqs', help="File containing sequences to pre-load to GPU")
     add('seqs_large', help="File containing sequences to pre-load to GPU")
-    add('seqbimarg',
-        help="bimarg used to generate independent model sequences")
+    add('indep_marg',
+        help="marg (uni or bi to convert to uni) used to generate "
+             "site-independent sequences")
 
     # Sampling Param
     add('equiltime', default='auto',
@@ -227,17 +229,18 @@ def describe_tempering(args, p, log):
              "swapped {} times after every MCMC loop. The low-temperature "
              "B is {}").format(msg, p.nswaps, np.max(p.tempering)))
 
-def print_node_startup(log, orig_args=None):
+def print_node_startup(log, orig_args):
     log("Hostname:   {}".format(socket.gethostname()))
     log("Start Time: {}".format(datetime.datetime.now()))
     if 'PBS_JOBID' in os.environ:
         log("Job name:   {}".format(os.environ['PBS_JOBID']))
 
-    if orig_args:
-        log("")
-        log("Command line arguments:")
-        log(" ".join(cmd_quote(a) for a in orig_args))
-        log("")
+    log("")
+    log("Command line arguments:")
+    log(" ".join(cmd_quote(a) for a in orig_args))
+    log("")
+    log("Mi3-GPU Version:", version)
+    log("")
 
 def setup_exit_hook(log):
     def exiter():
@@ -422,10 +425,12 @@ def inverseIsing(orig_args, args, log):
     setup_seed(args, p, log)
 
     p.update(process_newton_args(args, log))
+    unimarg = None
     if p.bimarg is not None:
         p['L'], p['q'] = getLq(p.bimarg)
+        unimarg = getUnimarg(p.bimarg)
 
-    p.update(process_potts_args(args, p.L, p.q, p.bimarg, log))
+    p.update(process_potts_args(args, p.L, p.q, unimarg, log))
     L, q, alpha = p.L, p.q, p.alpha
 
     p.update(process_sample_args(args, log))
@@ -448,13 +453,19 @@ def inverseIsing(orig_args, args, log):
         pass
 
     log("")
+    
+    unimarg = getUnimarg(p.bimarg)
+    gen_indep = args.seqs == 'independent' or args.init_model == 'independent'
+    if gen_indep or args.reseed == 'independent':
+        gpus.prepare_indep(unimarg)
 
     # figure out how many sequences we need to initialize
     needed_seqs = None
     use_seed = p.reseed in ['single_best', 'single_random']
-    if p.preopt or (p.reseed == 'none'):
+    # we only need seqs for preopt, (and for indep use GPU later)
+    if (p.preopt or (p.reseed == 'none')) and not gen_indep:
         needed_seqs = gpus.nseq['main']
-    p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
+    p.update(process_sequence_args(args, L, alpha, log, unimarg,
                                    nseqs=needed_seqs, needseed=use_seed))
     if p.reseed == 'msa':
         seedseqs = loadSequenceFile(args.seedmsa, alpha, log)
@@ -462,12 +473,20 @@ def inverseIsing(orig_args, args, log):
         p['seedmsa'] = np.split(seedseqs, gpus.ngpus)
 
     # initialize main buffers with any given sequences
-    if p.preopt or p.reseed == 'none':
-        if p.seqs is None:
-            raise Exception("Need to provide seqs if not using seedseq")
-        log("")
-        log("Initializing main seq buf with loaded seqs.")
-        gpus.setSeqs('main', p.seqs, log)
+    if p.preopt:
+        if p.reseed == 'none':
+            if p.seqs is None:
+                raise Exception("Need to provide seqs if not using seedseq")
+            log("")
+            log("Initializing main seq buf with loaded seqs.")
+            gpus.setSeqs('main', p.seqs, log)
+        elif gen_indep:
+            log("Generating Indep seqs on GPUs")
+            gpus.gen_indep('main')
+            seqs = gpus.collect(['seq main'])[0]
+            writeSeqs('test_seq', seqs)
+        else:
+            raise Exception("Need to specify initial seqs for preopt")
     elif use_seed and p.seedseq is None:
         raise Exception("Must provide seedseq if using reseed=single_*")
 
@@ -639,7 +658,8 @@ def MCMCbenchmark(orig_args, args, log):
         use_seed = True
     else:
         raise Exception("'seqs' or 'seedseq' option required")
-    p.update(process_sequence_args(args, L, alpha, p.bimarg, log,
+    unimarg = getUnimarg(p.bimarg)
+    p.update(process_sequence_args(args, L, alpha, log, unimarg,
                                    nseqs=needed_seqs, needseed=use_seed))
     if p.reseed == 'msa':
         seedseqs = loadSequenceFile(args.seedmsa, alpha, log)
@@ -704,7 +724,7 @@ def equilibrate(orig_args, args, log):
     add = parser.add_argument
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gpus profile')
-    addopt(parser, 'Sequence Options',    'seedseq seqs seqbimarg')
+    addopt(parser, 'Sequence Options',    'seedseq seqs indep_marg ')
     addopt(parser, 'Sampling Options',    'equiltime min_equil '
                                           'trackequil tracked '
                                           'tempering nswaps_temp')
@@ -742,15 +762,37 @@ def equilibrate(orig_args, args, log):
     gpus = setup_GPUs(p, log)
     gpus.initMCMC(p.nsteps)
 
+    gen_indep = args.seqs == 'independent' or args.init_model == 'independent'
+    if gen_indep:
+        imarg = None
+        if args.indep_marg is not None:
+            imarg = np.load(args.indep_marg)
+        elif args.init_model:
+            fn = Path(args.init_model, 'bimarg.npy')
+            if fn.is_file():
+                imarg = np.load(fn)
+        if imarg is None:
+            raise ValueError("indep_marg must be supplied if generating "
+                             "independent-model sequences")
+        if imarg.shape == (L, q):
+            log("loading unimarg from {} for independent model sequence "
+                "generation".format(args.indep_marg))
+            unimarg = imarg
+        else:
+            log("loading bimarg from {} and converted to unimarg for "
+                "independent model sequence generation".format(args.indep_marg))
+            unimarg = getUnimarg(imarg)
+        gpus.prepare_indep(unimarg)
+
     nseqs = None
     needseed = False
     if args.seqs is not None:
         nseqs = gpus.nseq['main']
     if args.seedseq is not None:
         needseed = True
-    else:
+    elif args.seqs != 'independent':
         nseqs = p.nwalkers
-    p.update(process_sequence_args(args, L, alpha, None, log, nseqs=nseqs,
+    p.update(process_sequence_args(args, L, alpha, log, nseqs=nseqs,
                                    needseed=needseed))
     log("")
 
@@ -772,6 +814,8 @@ def equilibrate(orig_args, args, log):
     # set up gpu buffers
     if needseed:
         gpus.fillSeqs(p.seedseq)
+    elif args.seqs == 'independent':
+        gpus.gen_indep('main')
     else:
         gpus.setSeqs('main', p.seqs, log)
 
@@ -974,16 +1018,11 @@ def process_newton_args(args, log):
 
     if args.reg is not None:
         rtype, dummy, rarg = args.reg.partition(':')
-        rtypes = ['l2z', 'l1z', 'SCADX', 'X', 'ddE']
+        rtypes = ['l2z', 'l1z', 'SCADX', 'X', 'Xij', 'ddE']
         if rtype not in rtypes:
             raise Exception("reg must be one of {}".format(str(rtypes)))
         p['reg'] = rtype
-        if rtype == 'X':
-            log("Regularizing with X from file {}".format(rarg))
-            p['regarg'] = np.load(rarg)
-            if p['regarg'].shape != bimarg.shape:
-                raise Exception("X in wrong format")
-        elif rtype == 'ddE':
+        if rtype == 'ddE':
             lam = float(rarg)
             log("Regularizing using ddE with lambda = {}".format(lam))
             p['regarg'] = (lam,)
@@ -996,20 +1035,36 @@ def process_newton_args(args, log):
                 raise Exception("{r} specifier must be of form '{r}:lJ', eg "
                           "'{r}:0.01'. Got '{}'".format(args.reg, r=rtype))
             p['regarg'] = (lJ,)
+        elif rtype == 'X':
+            try:
+                lX = float(rarg)
+                log(("Regularizing X with lambda_X = {}").format(lX))
+            except:
+                raise Exception("{r} specifier must be of form 'X:lX', eg "
+                          "'X:0.01'. Got '{}'".format(args.reg, r=rtype))
+            p['regarg'] = (lX,)
+        elif rtype == 'Xij':
+            log("Regularizing with Xij from file {}".format(rarg))
+            p['regarg'] = np.load(rarg)
+            if p['regarg'].shape != bimarg.shape:
+                raise Exception("Xij in wrong format")
         elif rtype == 'SCADX':
             try:
-                lJ, dummy, a = rarg.partition(':')
-                lJ = float(rarg)
-                if a == '':
-                    a = 4.0
-                regarg = (lJ, float(a))
-                log(("Regularizing using {} norm with lambda_J = {}, a = {}"
-                    ).format(rtype, lJ, a))
+                d, dummy, r = rarg.partition(':')
+                r, dummy, a = r.partition(':')
+                d = float(d)
+                r = float(r)
+                a = float(a) if a != '' else 4.0
+                if a < 2.0:
+                    raise Exception("SCADX a parameter must be >= 2.0")
+                s = 2*d/((1+a)*r*r) # see comment in mcmc.cl
+                log(("Regularizing using SCADX with d={} r={} a={}"
+                    ).format(d, r, a))
             except:
-                raise Exception("{r} specifier must be of form '{r}:lJ' or "
-                                "'{r}:lJ:a', eg '{r}:0.01'. Got '{arg}'".format(
-                                arg=args.reg, r=rtype))
-            p['regarg'] = regarg
+                raise Exception("{r} specifier must be of form '{r}:d:r:a' or "
+                              "'{r}:d:r', eg '{r}:10:0.1'. Got '{arg}'".format(
+                                arg=args.reg))
+            p['regarg'] = (s, r, a)
 
     log("")
     return p
@@ -1029,7 +1084,7 @@ def updateLq(L, q, newL, newq, name):
         q = newq
     return L, q
 
-def process_potts_args(args, L, q, bimarg, log):
+def process_potts_args(args, L, q, unimarg, log):
     log("Potts Model Setup")
     log("-----------------")
 
@@ -1043,7 +1098,7 @@ def process_potts_args(args, L, q, bimarg, log):
     L, q = updateLq(argL, len(alpha), L, q, 'bimarg')
 
     # next try to get couplings (may determine L, q)
-    couplings, L, q = getCouplings(args, L, q, bimarg, log)
+    couplings, L, q = getCouplings(args, L, q, unimarg, log)
     # we should have L and q by this point
 
     log("alphabet: {}".format(alpha))
@@ -1054,7 +1109,7 @@ def process_potts_args(args, L, q, bimarg, log):
     return attrdict({'L': L, 'q': q, 'alpha': alpha,
                      'couplings': couplings})
 
-def getCouplings(args, L, q, bimarg, log):
+def getCouplings(args, L, q, unimarg, log):
     couplings = None
 
     if args.couplings is None and args.init_model in ['uniform', 'independent']:
@@ -1072,10 +1127,10 @@ def getCouplings(args, L, q, bimarg, log):
             couplings = fieldlessGaugeEven(h, J)[1]
         elif args.couplings == 'independent':
             log("Setting Initial couplings to independent model")
-            if bimarg is None:
-                raise Exception("Need bivariate marginals to generate "
+            if unimarg is None:
+                raise Exception("Need univariate marginals to generate "
                                 "independent model couplings")
-            h = -np.log(getUnimarg(bimarg))
+            h = -np.log(unimarg)
             J = np.zeros((L*(L-1)//2,q*q), dtype='<f4')
             couplings = fieldlessGaugeEven(h, J)[1]
         else: #otherwise load them from file
@@ -1107,16 +1162,13 @@ def getCouplings(args, L, q, bimarg, log):
 def repeatseqs(seqs, n):
     return np.repeat(seqs, (n-1)//seqs.shape[0] + 1, axis=0)[:n,:]
 
-def process_sequence_args(args, L, alpha, bimarg, log,
+def process_sequence_args(args, L, alpha, log, unimarg=None,
                           nseqs=None, needseed=False):
+    if (not nseqs) and (not needseed):
+        return {}
+
     log("Sequence Setup")
     log("--------------")
-
-    if bimarg is None and (hasattr(args, 'seqbimarg') and
-                           args.seqbimarg is not None):
-        log("loading bimarg from {} for independent model sequence "
-            "generation".format(args.seqbimarg))
-        bimarg = np.load(args.seqbimarg)
 
     q = len(alpha)
     seedseq, seqs = None, None
@@ -1124,12 +1176,11 @@ def process_sequence_args(args, L, alpha, bimarg, log,
     # try to load sequence files
     if nseqs is not None:
         if args.seqs in ['uniform', 'independent']:
-            seqs = generateSequences(args.seqs, L, q, nseqs, bimarg, log)
-            writeSeqs(args.outdir / 'initial_seqs', seqs, alpha)
+            seqs = generateSequences(args.seqs, L, q, nseqs, log, unimarg)
+        elif args.init_model in ['uniform', 'independent']:
+            seqs = generateSequences(args.init_model, L, q, nseqs, log, unimarg)
         elif args.seqs is not None:
             seqs = loadSequenceFile(args.seqs, alpha, log)
-        elif args.init_model in ['uniform', 'independent']:
-            seqs = generateSequences(args.init_model, L, q, nseqs, bimarg, log)
         elif args.init_model is not None:
             seqs = loadSequenceDir(args.init_model, '', alpha, log)
 
@@ -1147,7 +1198,7 @@ def process_sequence_args(args, L, alpha, bimarg, log,
     # try to get seed seq
     if needseed:
         if args.seedseq in ['uniform', 'independent']:
-            seedseq = generateSequences(args.seedseq, L, q, 1, bimarg, log)[0]
+            seedseq = generateSequences(args.seedseq, L, q, 1, log, unimarg)[0]
             seedseq_origin = args.seedseq
         elif args.seedseq is not None: # given string
             try:
@@ -1158,7 +1209,8 @@ def process_sequence_args(args, L, alpha, bimarg, log,
                 seedseq = loadseedseq(args.seedseq, args.alpha.strip(), log)
                 seedseq_origin = 'from file'
         elif args.init_model in ['uniform', 'independent']:
-            seedseq = generateSequences(args.init_model, L, q, 1, bimarg,log)[0]
+            seedseq = generateSequences(args.init_model, L, q, 1, unimarg, 
+                                        log)[0]
             seedseq_origin = args.init_model
         elif args.init_model is not None:
             seedseq = loadseedseq(Path(args.init_model, 'seedseq'),
@@ -1172,15 +1224,15 @@ def process_sequence_args(args, L, alpha, bimarg, log,
     return attrdict({'seedseq': seedseq,
                      'seqs': seqs})
 
-def generateSequences(gentype, L, q, nseqs, bimarg, log):
+def generateSequences(gentype, L, q, nseqs, log, unimarg=None):
     if gentype == 'zero' or gentype == 'uniform':
         log("Generating {} random sequences...".format(nseqs))
         return randint(0, q, size=(nseqs, L)).astype('<u1')
     elif gentype == 'independent':
         log("Generating {} independent-model sequences...".format(nseqs))
-        if bimarg is None:
-            raise Exception("Bimarg must be provided to generate sequences")
-        cumprob = np.cumsum(getUnimarg(bimarg), axis=1)
+        if unimarg is None:
+            raise Exception("marg must be provided to generate sequences")
+        cumprob = np.cumsum(unimarg, axis=1)
         cumprob = cumprob/(cumprob[:,-1][:,None]) #correct fp errors?
         return np.array([np.searchsorted(cp, rand(nseqs)) for cp in cumprob],
                      dtype='<u1').T

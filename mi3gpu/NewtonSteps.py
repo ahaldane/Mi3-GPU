@@ -148,7 +148,7 @@ def iterNewton(param, bimarg_model, gpus, log):
     log("")
     log("Perturbation optimization for up to {} steps:".format(newtonSteps))
     if param.reg:
-        log("Using regularization {}".format(param.reg))
+        log("Using regularization {} ({})".format(param.reg, param.regarg))
 
     s = time.time()
 
@@ -178,16 +178,8 @@ def iterNewton(param, bimarg_model, gpus, log):
     gpus.merge_bimarg()
 
     reg = None
-    if param.reg == 'l1z':
-        reg = lambda: gpus.reg_l1z(gamma, pc, *param.regarg)
-    elif param.reg == 'l2z':
-        reg = lambda: gpus.reg_l2z(gamma, pc, *param.regarg)
-    elif param.reg == 'SCADX':
-        reg = lambda: gpus.reg_SCADX(gamma, pc, *param.regarg)
-    elif param.reg == 'X':
-        reg = lambda: gpus.reg_X(gamma, pc, *param.regarg)
-    elif param.reg == 'ddE':
-        reg = lambda: gpus.reg_ddE(gamma, pc, *param.regarg)
+    if param.reg:
+        reg = getattr(gpus, 'reg_{}'.format(param.reg))
 
     gpus.fillBuf('dJ', 0)
 
@@ -196,7 +188,7 @@ def iterNewton(param, bimarg_model, gpus, log):
     for i in range(newtonSteps):
         gpus.updateJ(gamma, pc)
         if reg is not None:
-            reg()
+            reg(gamma, pc, *param.regarg)
         gpus.calcEnergies(seqbuf, 'dJ')
 
         # compute weights on CPU (since we want to subtract max for precision)
@@ -376,6 +368,7 @@ def runMCMC(gpus, couplings, runName, param, log):
         step = loops
 
         equil_e = []
+        last_p1 = 0
         while True:
             for i in range(loops):
                 gpus.runMCMC()
@@ -396,6 +389,11 @@ def runMCMC(gpus, couplings, runName, param, log):
                 if p1 > 0.02 and p2 > 0.02 and step >= param.min_equil:
                     log(rstr + "Equilibrated.")
                     break
+                #if last_p1 > 1e-6 and p1/last_p1 < 1e-3:
+                #    log(rstr + "Detected Miscovergence, trying to continue.")
+                #    break
+
+                last_p1 = p1
 
             log(rstr + "Continuing.")
             loops = loops*2
@@ -653,10 +651,8 @@ def newtonMCMC(param, gpus, start_run, log):
             gpu.markSeqs(B == B0)
 
     # setup up regularization if needed
-    if param.reg == 'X':
+    if param.reg == 'Xij':
         gpus.setBuf('Creg', param.regarg)
-    if param.reg == 'Xself':
-        gpus.setBuf('Xlambdas', param.regarg)
 
     # pre-optimization
     Jsteps = 0
@@ -689,7 +685,7 @@ def newtonMCMC(param, gpus, start_run, log):
         elif param.reseed == 'single_indep':
             seed = mi3gpu.Mi3.generateSequences('independent',
                                                 param.L, param.q, 1,
-                                                param.bimarg, log)[0]
+                                                log, param.unimarg)[0]
         elif param.reseed == 'single_random':
             #choose random seed from the final sequences from last round
             nseq = np.sum(s.shape[0] for s in seqs)
@@ -705,10 +701,11 @@ def newtonMCMC(param, gpus, start_run, log):
                 f.write("".join(param.alpha[c] for c in seed))
             gpus.fillSeqs(seed)
         elif param.reseed == 'independent':
-            indep_seqs = mi3gpu.Mi3.generateSequences('independent',
-                                               param.L, param.q,
-                                               gpus.nwalkers, param.bimarg, log)
-            gpus.setSeqs('main', indep_seqs)
+            gpus.gen_indep('main')
+            #indep_seqs = mi3gpu.Mi3.generateSequences('independent',
+            #                                 param.L, param.q,
+            #                                 gpus.nwalkers, log, param.unimarg)
+            #gpus.setSeqs('main', indep_seqs)
         elif param.reseed == 'msa':
             gpus.setSeqs('main', param.seedmsa)
 

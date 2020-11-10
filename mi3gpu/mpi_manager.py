@@ -277,6 +277,14 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
     def initJstep(self):
         self.isend('initJstep')
 
+    def prepare_indep(self, unimarg):
+        self.isend('prepare_indep')
+        self.isend(unimarg)
+
+    def gen_indep(self, bufname):
+        self.isend('gen_indep')
+        self.isend(bufname)
+
     def runMCMC(self):
         self.isend('runMCMC')
 
@@ -305,11 +313,15 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
         self.isend('reg_l2z')
         self.isend((gamma, pc, lJ))
 
-    def reg_SCADX(self, gamma, pc, lJ, a):
+    def reg_SCADX(self, gamma, pc, s, r, a):
         self.isend('reg_SCADX')
-        self.isend((gamma, pc, lJ, a))
+        self.isend((gamma, pc, s, r, a))
 
-    def reg_X(self, gamma, pc):
+    def reg_X(self, gamma, pc, lX):
+        self.isend('reg_X')
+        self.isend((gamma, pc, lX))
+
+    def reg_Xij(self, gamma, pc):
         self.isend('reg_X')
         self.isend((gamma, pc))
 
@@ -459,6 +471,14 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
         nseq = self.recv()
         super().initLargeBufs(nseq)
 
+    def prepare_indep(self):
+        unimarg = self.recv()
+        super().prepare_indep(unimarg)
+
+    def gen_indep(self, bufname):
+        bufname = self.recv()
+        super().gen_indep(bufname)
+
     def calcEnergies(self):
         seqbufname = self.recv()
         Jbufname = self.recv()
@@ -489,6 +509,10 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
         super().reg_SCADX(*args)
 
     def reg_X(self):
+        args = self.recv()
+        super().reg_X(*args)
+
+    def reg_Xij(self):
         args = self.recv()
         super().reg_X(*args)
 

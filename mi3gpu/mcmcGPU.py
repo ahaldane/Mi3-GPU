@@ -179,6 +179,7 @@ class MCMCGPU:
         self._setupBuffer(  'bicount', '<u4', (nPairs, q*q)),
         self._setupBuffer( 'seq main', '<u4', (SWORDS, self.nseq['main'])),
         self._setupBuffer('seqL main', '<u4', (L, self.nseq['main']//4)),
+        self._setupBuffer(    'cprob', '<f4', (L, (q-1))),
         self._setupBuffer(   'E main', '<f4', (self.nseq['main'],)),
         self.unpackedJ = False #use to keep track of whether J is unpacked
         self.repackedSeqT = {'main': False}
@@ -367,6 +368,24 @@ class MCMCGPU:
                             inseq_dev, np.uint32(nseq),
                             outseq_dev, np.uint32(nseq//4),
                             wait_for=self._waitevt(wait_for)))
+
+    def prepare_indep(self, unimarg, wait_for=None):
+        cprob = np.cumsum(unimarg, axis=1)
+        cprob = (cprob[:,:-1]/cprob[:,-1,None]).copy()
+        return self.setBuf('cprob', cprob, wait_for=self._waitevt(wait_for))
+
+    def gen_indep(self, bufname, wait_for=None):
+        self.log("gen_indep")
+
+        nseq = self.nseq[bufname]
+        seq_dev = self.bufs['seq ' + bufname]
+
+        return self.logevt('gen_indep',
+            self.prg.gen_indep(self.queue, (nseq,), (self.wgsize,),
+                              seq_dev, np.uint32(nseq),
+                              self.bufs['rngstates'], self.bufs['cprob'],
+                              wait_for=self._waitevt(wait_for)))
+        
 
     def unpackJ(self, wait_for=None):
         """convert J from format where every row is a unique ij pair (L choose 2
@@ -625,7 +644,7 @@ class MCMCGPU:
                             self.bufs['J'], self.bufs['dJ'],
                             wait_for=self._waitevt(wait_for)))
 
-    def reg_SCADX(self, gamma, pc, lJ, a, wait_for=None):
+    def reg_SCADX(self, gamma, pc, s, r, a, wait_for=None):
         self.require('Jstep')
         self.log("reg_SCADX")
         q, nPairs = self.q, self.nPairs
@@ -635,11 +654,25 @@ class MCMCGPU:
         return self.logevt('reg_SCADX',
             self.prg.reg_SCADX(self.queue, (nPairs*q*q,), (q*q,),
                             bibuf, np.float32(gamma), np.float32(pc),
-                            np.float32(lJ), np.float32(a), 
+                            np.float32(s), np.float32(r), np.float32(a), 
                             self.bufs['J'], self.bufs['dJ'],
                             wait_for=self._waitevt(wait_for)))
 
-    def reg_X(self, gamma, pc, wait_for=None):
+    def reg_Xij(self, gamma, pc, wait_for=None):
+        self.require('Jstep')
+        self.log("reg Xij")
+        q, nPairs = self.q, self.nPairs
+
+        bibuf = self.bufs['bi']
+        self.unpackedJ = None
+        return self.logevt('reg_Xij',
+            self.prg.reg_X(self.queue, (nPairs*q*q,), (q*q,),
+                                bibuf, self.bufs['Creg'],
+                                np.float32(gamma), np.float32(pc),
+                                self.bufs['J'], self.bufs['dJ'],
+                                wait_for=self._waitevt(wait_for)))
+
+    def reg_X(self, gamma, pc, lX, wait_for=None):
         self.require('Jstep')
         self.log("reg X")
         q, nPairs = self.q, self.nPairs
@@ -647,8 +680,8 @@ class MCMCGPU:
         bibuf = self.bufs['bi']
         self.unpackedJ = None
         return self.logevt('reg_X',
-            self.prg.reg_X(self.queue, (nPairs*q*q,), (q*q,),
-                                bibuf, self.bufs['Creg'],
+            self.prg.reg_Xij(self.queue, (nPairs*q*q,), (q*q,),
+                                bibuf, np.float32(lX),
                                 np.float32(gamma), np.float32(pc),
                                 self.bufs['J'], self.bufs['dJ'],
                                 wait_for=self._waitevt(wait_for)))
