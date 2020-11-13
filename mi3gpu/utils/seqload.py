@@ -88,7 +88,7 @@ class Opener:
             self.f.close()
         return False
 
-def loadSeqs(fn, alpha=prot_alpha, zipf=None):
+def loadSeqs(fn, alpha=prot_alpha, zipf=None, count=None):
     """
     Load sequence from a file.
 
@@ -123,7 +123,7 @@ def loadSeqs(fn, alpha=prot_alpha, zipf=None):
 
     """
     with Opener(fn, zipf=zipf) as f:
-        gen = loadSeqsChunked(f, alpha)
+        gen = loadSeqsChunked(f, alpha, count=count)
         headers, alpha = next(gen)
         seqs, ids = zip(*gen)
 
@@ -245,7 +245,7 @@ try:
 except:
     translateascii = translateascii_python
 
-def loadSeqsChunked(f, alpha=None, chunksize=None):
+def loadSeqsChunked(f, alpha=None, chunksize=None, count=None):
     #read header
     pos = f.tell()
     header = []
@@ -300,6 +300,11 @@ def loadSeqsChunked(f, alpha=None, chunksize=None):
         seqmat, ids = chunk_firstpass(dat, idL, lineL, pos)
         seqs = translateascii(seqmat.copy(), alpha, pos)
         pos += seqmat.shape[0]
+
+        if count is not None and pos > count:
+            n = count - (pos - seqmat.shape[0])
+            yield seqs[:n], (ids[:n] if ids is not None else None)
+            return
         yield seqs, ids
 
     if dat.size == 0:
@@ -328,10 +333,14 @@ def loadSeqsChunked(f, alpha=None, chunksize=None):
             raise Exception("Unexpected characters at eof: {}".format(
                                                                 repr(bad_tail)))
 
-
     seqmat, ids = chunk_firstpass(dat, idL, lineL, pos)
     seqs = translateascii(seqmat, alpha, pos)
-    yield seqs, ids
+
+    if count is not None and pos + seqmat.shape[0] > count:
+        n = count - pos
+        yield seqs[:n], (ids[:n] if ids is not None else None)
+    else:
+        yield seqs, ids
 
 def writeSeqs(fn, seqs, alpha=prot_alpha, ids=None,
               headers=None, write_param=False, zipf=None):
