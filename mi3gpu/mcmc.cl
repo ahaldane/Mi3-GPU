@@ -813,6 +813,38 @@ void reg_l2z(__global float *bimarg,
     dJ[n] = Jp;
 }
 
+__kernel
+void reg_SCADJ(__global float *bimarg,
+                       float gamma,
+                       float pc,
+                       float lJ,
+                       float a,
+              __global float *J,
+              __global float *dJ) {
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float hi[q], hj[q];
+    __local float scratch[q*q];
+
+    float Jp = dJ[n];
+    float J0 = zeroGauge(J[n] + Jp, li, scratch, hi, hj);
+    float R = 0;
+    if (fabs(J0) < lJ) {
+        // to avoid gamma-dependent oscillations around 0, set J0 exactly
+        // to 0 if it would change sign, by appropriate clip on lJ.
+        R = min(lJ, fabs(J0)/gamma);
+    }
+    else if (fabs(J0) < a*lJ) {
+        R = (a*lJ - fabs(J0))/(a-1);
+    }
+    // account for step size and pseudocount damping in derivatives
+    R *= gamma*sign(J0)/(bimarg[n] + pc);
+
+    dJ[n] = Jp - R;
+}
+
 void getUnimarg(float fij, __local float *fi, __local float *fj, uint li, 
                 __local float *scratch) {
     uint m;

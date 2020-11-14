@@ -1018,7 +1018,7 @@ def process_newton_args(args, log):
 
     if args.reg is not None:
         rtype, dummy, rarg = args.reg.partition(':')
-        rtypes = ['l2z', 'l1z', 'SCADX', 'X', 'Xij', 'ddE']
+        rtypes = ['l2z', 'l1z', 'SCADJ', 'X', 'Xij', 'SCADX', 'ddE']
         if rtype not in rtypes:
             raise Exception("reg must be one of {}".format(str(rtypes)))
         p['reg'] = rtype
@@ -1035,6 +1035,20 @@ def process_newton_args(args, log):
                 raise Exception("{r} specifier must be of form '{r}:lJ', eg "
                           "'{r}:0.01'. Got '{}'".format(args.reg, r=rtype))
             p['regarg'] = (lJ,)
+        elif rtype == 'SCADJ':
+            try:
+                r, dummy, a = rarg.partition(':')
+                r = float(r)
+                a = float(a) if a != '' else 4.0
+                if a < 2.0:
+                    raise Exception("SCADJ a parameter must be >= 2.0")
+                log(("Regularizing using SCADJ with r={} a={}"
+                    ).format(r, a))
+            except:
+                raise Exception("{r} specifier must be of form '{r}:r:a'"
+                              ", eg '{r}:10:0.1'. Got '{arg}'".format(
+                                arg=args.reg))
+            p['regarg'] = (r, a)
         elif rtype == 'X':
             try:
                 lX = float(rarg)
