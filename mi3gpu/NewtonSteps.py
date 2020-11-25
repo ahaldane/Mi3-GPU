@@ -177,18 +177,19 @@ def iterNewton(param, bimarg_model, gpus, log):
     gpus.bicounts_to_bimarg(seqbuf)
     gpus.merge_bimarg()
 
-    reg = None
-    if param.reg:
-        reg = getattr(gpus, 'reg_{}'.format(param.reg))
-
     gpus.fillBuf('dJ', 0)
 
     # do coupling updates
     lastNeff = 2*N
     for i in range(newtonSteps):
         gpus.updateJ(gamma, pc)
-        if reg is not None:
-            reg(gamma, pc, *param.regarg)
+        if param.reg is not None:
+            gpus.reg(param.reg, (gamma, pc,) + param.regarg)
+        #bi, J, dJ = gpus.head_gpu.readBufs(['bi', 'J', 'dJ'])
+        #np.save("test_J", J)
+        #np.save("test_bi", bi)
+        #np.save("test_xijab", dJ)
+        #sys.exit(0)
         gpus.calcEnergies(seqbuf, 'dJ')
 
         # compute weights on CPU (since we want to subtract max for precision)

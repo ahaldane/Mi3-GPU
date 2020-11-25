@@ -700,6 +700,20 @@ class MCMCGPU:
                             self.bufs['J'], self.bufs['dJ'],
                             wait_for=self._waitevt(wait_for)))
 
+    def reg_expX(self, gamma, pc, lam, wait_for=None):
+        self.require('Jstep')
+        self.log("reg_SCADX")
+        q, nPairs = self.q, self.nPairs
+
+        bibuf = self.bufs['bi']
+        self.unpackedJ = None
+        return self.logevt('reg_SCADX',
+            self.prg.reg_expX(self.queue, (nPairs*q*q,), (q*q,),
+                            bibuf, np.float32(gamma), np.float32(pc),
+                            np.float32(lam),
+                            self.bufs['J'], self.bufs['dJ'],
+                            wait_for=self._waitevt(wait_for)))
+
     def reg_ddE(self, gamma, pc, lam, wait_for=None):
         self.require('Jstep')
         self.log("reg ddE")
@@ -709,6 +723,20 @@ class MCMCGPU:
         self.unpackedJ = None
         return self.logevt('reg_ddE',
             self.prg.reg_ddE(self.queue, (nPairs*q*q,), (q*q,),
+                                bibuf, np.float32(gamma), np.float32(pc),
+                                np.float32(lam),
+                                self.bufs['J'], self.bufs['dJ'],
+                                wait_for=self._waitevt(wait_for)))
+
+    def reg_SCADddE(self, gamma, pc, lam, wait_for=None):
+        self.require('Jstep')
+        self.log("reg SCADddE")
+        q, nPairs = self.q, self.nPairs
+
+        bibuf = self.bufs['bi']
+        self.unpackedJ = None
+        return self.logevt('reg_SCADddE',
+            self.prg.reg_SCADddE(self.queue, (nPairs*q*q,), (q*q,),
                                 bibuf, np.float32(gamma), np.float32(pc),
                                 np.float32(lam),
                                 self.bufs['J'], self.bufs['dJ'],

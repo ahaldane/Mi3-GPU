@@ -941,6 +941,44 @@ void reg_X(__global float *bimarg,
     dJ[n] = Jp - gamma*lX*C*sign(X)/(fij+pc);
 }
 
+float Xijab(float J, float fij, __local float *fi, __local float *fj, uint li, 
+            __local float *scratch) {
+    uchar a, b, c, d;
+    c = li%q;
+    d = li/q;
+
+    scratch[li] = J;
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float Xijab;
+
+    for (a = 0; a < q; a++) {
+        for (b = 0; b < q; b++) {
+            Xijab += scratch[a*q + b]*(fi[a] - (a == c))*(fj[b] - (b == d));
+        }
+    }
+    return Xijab;
+}
+
+float getXijab(float J, __local float *fi, __local float *fj,
+                uint li, __local float *scratch) {
+    uchar a, b, c, d;
+    c = li/q;
+    d = li%q;
+
+    scratch[li] = J;
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float Xijab = 0;
+    for (a = 0; a < q; a++) {
+        for (b = 0; b < q; b++) {
+            Xijab += scratch[a*q + b]*(fi[a] - (a == c))*(fj[b] - (b == d));
+        }
+    }
+    return Xijab;
+}
+
+
 // SCAD is defined by a range r, and range multipler a:
 //                R                               R'
 //   |X| < r      r|X|                            r 
@@ -966,13 +1004,16 @@ void reg_SCADX(__global float *bimarg,
     __local float scratch[q*q];
 
     float Jp = dJ[n];
+    float Jt = J[n] + Jp;
 
     float fij = bimarg[n];
     getUnimarg(fij, fi, fj, li, scratch);
     float C = fij - fi[li/q]*fj[li%q];
-    float X = sumqq((J[n] + Jp)*C, li, scratch);
+    float X = sumqq((Jt)*C, li, scratch);
     barrier(CLK_LOCAL_MEM_FENCE); // barrier for scratch usage
     float Xnorm = sumqq(C*C/(fij + pc), li, scratch);
+    barrier(CLK_LOCAL_MEM_FENCE); // barrier for scratch usage
+    float Xijab = getXijab(Jt, fi, fj, li, scratch);
 
     float R = 0;
     if (fabs(X) < r) {
@@ -986,9 +1027,38 @@ void reg_SCADX(__global float *bimarg,
         // than lX away from 0
         R = (a*r*sign(X) - X)/(a-1);
     }
-    R *= gamma*s*C/(fij + pc);
+    R *= gamma*s*(C + fij*(X - Xijab))/(fij + pc);
 
     dJ[n] = Jp - R;
+}
+
+__kernel
+void reg_expX(__global float *bimarg,
+                       float gamma,
+                       float pc,
+                       float lam,
+              __global float *J,
+              __global float *dJ) {
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float fi[q], fj[q];
+    __local float scratch[q*q];
+
+    float Jp = dJ[n];
+    float Jt = J[n] + Jp;
+
+    float fij = bimarg[n];
+    getUnimarg(fij, fi, fj, li, scratch);
+    float C = fij - fi[li/q]*fj[li%q];
+    float X = sumqq((Jt)*C, li, scratch);
+    barrier(CLK_LOCAL_MEM_FENCE); // barrier for scratch usage
+    float Xijab = getXijab(Jt, fi, fj, li, scratch);
+
+    float R = sign(X)*exp(-fabs(X)/lam)*(C + fij*(X - Xijab));
+
+    dJ[n] = Jp - gamma*R/(fij + pc);
 }
 
 __kernel
@@ -1015,11 +1085,13 @@ void reg_ddE(__global float *bimarg,
         float jr = JJ(a, b) - JJ((a+g)%q, b);
         for (int d = 1; d < q; d++) {
             float jc = -JJ(a, (b+d)%q) + JJ((a+g)%q, (b+d)%q);
-            dR += sign(jr + jc);
+            float ddE = jr + jc;
+            dR += sign(ddE);
+            // set to 0 if abs(ddE) < gamma*lambda/f?
         }
     }
+    dR = dR/((q-1)*(q-1)); // scale so irrelevant chars have no effect
 
-    dR = dR/((q-1)*(q-1));
     dJ[n] = dJ[n] - lambda*dR*gamma/(bimarg[n]+pc);
 
     #undef a
@@ -1029,3 +1101,54 @@ void reg_ddE(__global float *bimarg,
 
 
 
+__kernel
+void reg_SCADddE(__global float *bimarg,
+                      float  gamma,
+                      float  pc,
+                      float  lambda,
+             __global float *J,
+             __global float *dJ) {
+    uint li = get_local_id(0);
+    uint gi = get_group_id(0);
+    uint n = gi*q*q + li;
+
+    __local float lJ[q*q];
+    lJ[li] = J[n] + dJ[n];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    #define a (li/q)
+    #define b (li%q)
+    #define JJ(a,b) lJ[q*(a) + (b)]
+    #define scale 4
+
+    float dR = 0;
+    for (int g = 1; g < q; g++) {
+        float jr = JJ(a, b) - JJ((a+g)%q, b);
+        for (int d = 1; d < q; d++) {
+            float jc = -JJ(a, (b+d)%q) + JJ((a+g)%q, (b+d)%q);
+            float ddE = jr + jc;
+
+            float AddE = fabs(ddE);
+            float R = 0;
+            if (AddE < lambda) {
+                R = lambda;
+            }
+            else if (AddE < scale*lambda) {
+                R = (scale*lambda - AddE)/(scale - 1);
+            }
+            dR += sign(ddE)*R;
+            // set to 0 if abs(ddE) < gamma*lambda/f?
+        }
+    }
+    //dR = dR/((q-1)*(q-1)); // scale so irrelevant chars have no effect
+    // (since adding an extra q adds and extra row/col to double-sum above)
+    // is this term properly incorporated into SCAD? I think so because
+    // the dR ends up eqalling lambda for small AddE adter we do the sum
+    // and division, in case of a single coupling.
+
+    dJ[n] = dJ[n] - dR*gamma/(bimarg[n]+pc);
+
+    #undef a
+    #undef b
+    #undef JJ
+}

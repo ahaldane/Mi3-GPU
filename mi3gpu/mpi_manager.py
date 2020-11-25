@@ -305,29 +305,9 @@ class MPI_GPU_node(GPU_node, MPI_comm_Mixin):
         self.isend('updateJ')
         self.isend((gamma, pc, Jbuf))
 
-    def reg_l1z(self, gamma, pc, lJ):
-        self.isend('reg_l1z')
-        self.isend((gamma, pc, lJ))
-
-    def reg_l2z(self, gamma, pc, lJ):
-        self.isend('reg_l2z')
-        self.isend((gamma, pc, lJ))
-
-    def reg_SCADJ(self, gamma, pc, r, a):
-        self.isend('reg_SCADJ')
-        self.isend((gamma, pc, r, a))
-
-    def reg_SCADX(self, gamma, pc, s, r, a):
-        self.isend('reg_SCADX')
-        self.isend((gamma, pc, s, r, a))
-
-    def reg_X(self, gamma, pc, lX):
-        self.isend('reg_X')
-        self.isend((gamma, pc, lX))
-
-    def reg_Xij(self, gamma, pc):
-        self.isend('reg_X')
-        self.isend((gamma, pc))
+    def reg(self, name, param):
+        self.isend('reg')
+        self.isend((name, param))
 
     def calcWeights(self, seqbufname):
         self.isend('calcWeights')
@@ -500,29 +480,9 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
         args = self.recv()
         super().updateJ(*args)
 
-    def reg_l1z(self):
+    def reg(self):
         args = self.recv()
-        super().reg_l1z(*args)
-
-    def reg_l2z(self):
-        args = self.recv()
-        super().reg_l2z(*args)
-
-    def reg_SCADJ(self):
-        args = self.recv()
-        super().reg_SCADJ(*args)
-
-    def reg_SCADX(self):
-        args = self.recv()
-        super().reg_SCADX(*args)
-
-    def reg_X(self):
-        args = self.recv()
-        super().reg_X(*args)
-
-    def reg_Xij(self):
-        args = self.recv()
-        super().reg_X(*args)
+        super().reg(*args)
 
     def calcWeights(self):
         seqbufname = self.recv()

@@ -105,7 +105,6 @@ def optionRegistry():
     add('config', #is_config_file_arg=True,
                   help='config file to load arguments from')
     add('rngseed', type=np.uint32, help='random seed')
-    add('log', action='store_true', help='log program output')
 
     # GPU options
     add('nwalkers', type=np.uint32,
@@ -358,7 +357,7 @@ def inverseIsing(orig_args, args, log):
                                           'trackequil tracked '
                                           'tempering nswaps_temp ')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'init_model outdir log rngseed '
+    addopt(parser,  None,                 'init_model outdir rngseed '
                                           'config finish')
 
     args = parser.parse_args(args)
@@ -369,19 +368,17 @@ def inverseIsing(orig_args, args, log):
         if not args.outdir.is_dir():
             raise ValueError("{} is not a directory".format(args.outdir))
 
-        if args.log:
-            n = 1
-            while true:
-                p = args.outdir / 'log{}'.format(n)
-                if not p.exists():
-                    break
-            logfile = open(p, 'wt')
-            log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+        n = 1
+        while true:
+            p = args.outdir / 'log{}'.format(n)
+            if not p.exists():
+                break
+        logfile = open(p, 'wt')
+        log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
     else:
         args.outdir.mkdir(parents=True)
-        if args.log:
-            logfile = open(args.outdir / 'log', 'wt')
-            log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+        logfile = open(args.outdir / 'log', 'wt')
+        log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
 
     print_node_startup(log, orig_args)
 
@@ -474,19 +471,24 @@ def inverseIsing(orig_args, args, log):
 
     # initialize main buffers with any given sequences
     if p.preopt:
-        if p.reseed == 'none':
-            if p.seqs is None:
-                raise Exception("Need to provide seqs if not using seedseq")
+        if gen_indep:
             log("")
-            log("Initializing main seq buf with loaded seqs.")
-            gpus.setSeqs('main', p.seqs, log)
-        elif gen_indep:
             log("Generating Indep seqs on GPUs")
             gpus.gen_indep('main')
             seqs = gpus.collect(['seq main'])[0]
             writeSeqs('test_seq', seqs)
+        elif p.seqs is not None:
+            log("")
+            log("Initializing main seq buf with loaded seqs.")
+            gpus.setSeqs('main', p.seqs, log)
         else:
             raise Exception("Need to specify initial seqs for preopt")
+    elif p.reseed == 'none':
+        if p.seqs is None:
+            raise Exception("Need to provide seqs if not using seedseq")
+        log("")
+        log("Initializing main seq buf with loaded seqs.")
+        gpus.setSeqs('main', p.seqs, log)
     elif use_seed and p.seedseq is None:
         raise Exception("Must provide seedseq if using reseed=single_*")
 
@@ -534,8 +536,7 @@ def inverseIsing(orig_args, args, log):
 
     mi3gpu.NewtonSteps.newtonMCMC(p, gpus, startrun, log)
 
-    if args.log:
-        logfile.close()
+    logfile.close()
 
 def getEnergies(orig_args, args, log):
     descr = ('Compute Potts Energy of a set of sequences')
@@ -546,7 +547,7 @@ def getEnergies(orig_args, args, log):
     addopt(parser, 'GPU Options',         'wgsize gpus profile')
     addopt(parser, 'Potts Model Options', 'alpha couplings')
     addopt(parser, 'Sequence Options',    'seqs')
-    addopt(parser,  None,                 'outdir log')
+    addopt(parser,  None,                 'outdir')
 
     #genenergies uses a subset of the full inverse ising parameters,
     #so use custom set of params here
@@ -557,9 +558,8 @@ def getEnergies(orig_args, args, log):
     requireargs(args, 'couplings alpha seqs')
 
     args.outdir.mkdir(parents=True)
-    if args.log:
-        logfile = open(args.outdir / 'log', 'wt')
-        log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+    logfile = open(args.outdir / 'log', 'wt')
+    log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
 
     print_node_startup(log, orig_args)
 
@@ -597,8 +597,7 @@ def getEnergies(orig_args, args, log):
     log("Saving results to file '{}'".format(args.out))
     np.save(args.out, es)
 
-    if args.log:
-        logfile.close()
+    logfile.close()
 
 def MCMCbenchmark(orig_args, args, log):
     descr = ('Benchmark MCMC generation on the GPU')
@@ -611,7 +610,7 @@ def MCMCbenchmark(orig_args, args, log):
                                           'gpus profile')
     addopt(parser, 'Sequence Options',    'seedseq seqs')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'init_model outdir rngseed log')
+    addopt(parser,  None,                 'init_model outdir rngseed')
 
     args = parser.parse_args(args)
     nloop = args.nloop
@@ -624,9 +623,8 @@ def MCMCbenchmark(orig_args, args, log):
         raise ValueError("--nwalkers is required")
 
     args.outdir.mkdir(parents=True)
-    if args.log:
-        logfile = open(args.outdir / 'log', 'wt')
-        log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+    logfile = open(args.outdir / 'log', 'wt')
+    log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
 
     print_node_startup(log, orig_args)
 
@@ -714,8 +712,7 @@ def MCMCbenchmark(orig_args, args, log):
     #es = gpus.collect('E main')
     #log("\nConsistency check: <E> = ", np.mean(es), np.std(es))
 
-    if args.log:
-        logfile.close()
+    logfile.close()
 
 def equilibrate(orig_args, args, log):
     descr = ('Run a round of MCMC generation on the GPU')
@@ -729,15 +726,14 @@ def equilibrate(orig_args, args, log):
                                           'trackequil tracked '
                                           'tempering nswaps_temp')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'init_model outdir log rngseed')
+    addopt(parser,  None,                 'init_model outdir rngseed')
 
     args = parser.parse_args(args)
     args.measurefperror = False
 
     args.outdir.mkdir(parents=True)
-    if args.log:
-        logfile = open(args.outdir / 'log', 'wt')
-        log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+    logfile = open(args.outdir / 'log', 'wt')
+    log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
 
     print_node_startup(log, orig_args)
 
@@ -786,11 +782,9 @@ def equilibrate(orig_args, args, log):
 
     nseqs = None
     needseed = False
-    if args.seqs is not None:
-        nseqs = gpus.nseq['main']
     if args.seedseq is not None:
         needseed = True
-    elif args.seqs != 'independent':
+    elif not gen_indep:
         nseqs = p.nwalkers
     p.update(process_sequence_args(args, L, alpha, log, nseqs=nseqs,
                                    needseed=needseed))
@@ -867,8 +861,7 @@ def equilibrate(orig_args, args, log):
 
     log("Done!")
 
-    if args.log:
-        logfile.close()
+    logfile.close()
 
 def subseqFreq(orig_args, args, log):
     descr = ('Compute relative frequency of subsequences at fixed positions')
@@ -879,7 +872,7 @@ def subseqFreq(orig_args, args, log):
     add('out', default='output', help='Output File')
     addopt(parser, 'GPU options',         'wgsize gpus')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
-    addopt(parser,  None,                 'outdir log')
+    addopt(parser,  None,                 'outdir')
     group = parser.add_argument_group('Sequence Options')
     add = group.add_argument
     add('backgroundseqs', help="large sample of equilibrated sequences")
@@ -889,9 +882,8 @@ def subseqFreq(orig_args, args, log):
     args.measurefperror = False
 
     args.outdir.mkdir(parents=True)
-    if args.log:
-        logfile = open(args.outdir / 'log', 'wt')
-        log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+    logfile = open(args.outdir / 'log', 'wt')
+    log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
 
     print_node_startup(log, orig_args)
 
@@ -954,8 +946,7 @@ def subseqFreq(orig_args, args, log):
     log("Saving result (log frequency) to file {}".format(args.out))
     np.save(args.out, logf)
 
-    if args.log:
-        logfile.close()
+    logfile.close()
 
 ################################################################################
 
@@ -1018,13 +1009,15 @@ def process_newton_args(args, log):
 
     if args.reg is not None:
         rtype, dummy, rarg = args.reg.partition(':')
-        rtypes = ['l2z', 'l1z', 'SCADJ', 'X', 'Xij', 'SCADX', 'ddE']
+        rtypes = ['l2z', 'l1z', 'SCADJ', 
+                  'X', 'Xij', 'SCADX', 'expX', 
+                  'ddE', 'SCADddE']
         if rtype not in rtypes:
             raise Exception("reg must be one of {}".format(str(rtypes)))
         p['reg'] = rtype
-        if rtype == 'ddE':
+        if rtype == 'ddE' or rtype == 'SCADddE':
             lam = float(rarg)
-            log("Regularizing using ddE with lambda = {}".format(lam))
+            log("Regularizing using {} with lambda = {}".format(rtype, lam))
             p['regarg'] = (lam,)
         elif rtype == 'l2z' or rtype == 'l1z':
             try:
@@ -1079,6 +1072,14 @@ def process_newton_args(args, log):
                               "'{r}:d:r', eg '{r}:10:0.1'. Got '{arg}'".format(
                                 arg=args.reg))
             p['regarg'] = (s, r, a)
+        elif rtype == 'expX':
+            try:
+                lam = float(rarg)
+                log(("Regularizing using expX with  lam = {}").format(lam))
+            except:
+                raise Exception("{r} specifier must be of form 'expX:l', eg "
+                          "'expX:0.001'. Got '{}'".format(args.reg, r=rtype))
+            p['regarg'] = (lam,)
 
     log("")
     return p

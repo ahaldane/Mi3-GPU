@@ -128,33 +128,10 @@ class GPU_node:
         for gpu in self.gpus:
             gpu.updateJ(gamma, pc, Jbuf)
 
-    def reg_l1z(self, gamma, pc, lJ):
+    def reg(self, name, param):
+        meth = 'reg_{}'.format(name)
         for gpu in self.gpus:
-            gpu.reg_l1z(gamma, pc, lJ)
-
-    def reg_l2z(self, gamma, pc, lJ):
-        for gpu in self.gpus:
-            gpu.reg_l2z(gamma, pc, lJ)
-
-    def reg_SCADX(self, gamma, pc, s, r, a):
-        for gpu in self.gpus:
-            gpu.reg_SCADX(gamma, pc, s, r, a)
-
-    def reg_SCADJ(self, gamma, pc, r, a):
-        for gpu in self.gpus:
-            gpu.reg_SCADJ(gamma, pc, r, a)
-
-    def reg_X(self, gamma, pc, lX):
-        for gpu in self.gpus:
-            gpu.reg_X(gamma, pc, lX)
-
-    def reg_Xij(self, gamma, pc):
-        for gpu in self.gpus:
-            gpu.reg_X(gamma, pc)
-
-    def reg_ddE(self, gamma, pc, lam):
-        for gpu in self.gpus:
-            gpu.reg_ddE(gamma, pc, lam)
+            getattr(gpu, meth)(*param)
 
     def calcWeights(self, seqbufname):
         for gpu in self.gpus:
