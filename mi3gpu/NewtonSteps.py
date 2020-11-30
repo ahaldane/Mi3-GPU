@@ -576,6 +576,10 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
     rundir = outdir / runName
     rundir.mkdir(parents=True, exist_ok=True)
     np.save(rundir / 'J', couplings)
+    with open(rundir / 'newtonsteps', 'wt') as f:
+        f.write(str(param.newtonSteps))
+    with open(rundir / 'jstep', 'wt') as f:
+        f.write(str(Jstep))
 
     MCMC_func = runMCMC
     if param.tempering is not None:
@@ -592,16 +596,15 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
      equilsteps) = MCMC_func(gpus, couplings, runName, param, log)
 
     end_time = time.time()
+    dt = end_time - start_time
+    log("Total MCMC running time: {:.1f} s    ({:.3g} MC/s)".format(
+        dt, equilsteps*param.nsteps*np.float64(gpus.nwalkers)/dt))
 
     #get summary statistics and output them
     seqs = gpus.collect('seq main')
     writeStatus(runName, Jstep, bimarg_target, bicount, bimarg_model,
                 couplings, seqs, sampledenergies,
                 alpha, e_rho, ptinfo, outdir, log)
-
-    dt = end_time - start_time
-    log("Total MCMC running time: {:.1f} s    ({:.3g} MC/s)".format(
-        dt, equilsteps*param.nsteps*np.float64(gpus.nwalkers)/dt))
 
     if param.tempering is not None:
         e, b = gpus.collect(['E main', 'Bs'])
@@ -633,7 +636,7 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
 
     return Jstep + Jsteps, seqs, sampledenergies, newJ
 
-def newtonMCMC(param, gpus, start_run, log):
+def newtonMCMC(param, gpus, start_run, Jstep, log):
     J = param.couplings
 
     # copy target bimarg to gpus
@@ -673,7 +676,7 @@ def newtonMCMC(param, gpus, start_run, log):
     param.min_ssr = np.inf
 
     # solve using newton-MCMC
-    Jstep = Jsteps
+    Jstep += Jsteps
     name_fmt = 'run_{{:0{}d}}'.format(int(np.ceil(np.log10(param.mcmcsteps))))
     for i in range(start_run, param.mcmcsteps):
         runname = name_fmt.format(i)

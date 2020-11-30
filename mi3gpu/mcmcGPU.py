@@ -364,7 +364,7 @@ class MCMCGPU:
 
         self.repackedSeqT[bufname] = True
         return self.logevt('repackseqs_T',
-            self.prg.unpackseqs1(self.queue, (self.SWORDS*256,), (256,),
+            self.prg.unpackseqs1T(self.queue, (self.SWORDS*256,), (256,),
                             inseq_dev, np.uint32(nseq),
                             outseq_dev, np.uint32(nseq//4),
                             wait_for=self._waitevt(wait_for)))

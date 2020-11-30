@@ -18,7 +18,8 @@
 #
 #Contact: allan.haldane _AT_ gmail.com
 
-import sys, os, errno, time, datetime, socket, signal, atexit, glob, argparse
+import sys, os, errno, time, datetime, socket, signal, atexit
+import configargparse
 from pathlib import Path
 import numpy as np
 from numpy.random import randint, rand
@@ -102,7 +103,7 @@ def optionRegistry():
               "otherwise supplied.") )
     add('outdir', type=Path, default='output', help='Output Directory')
     add('finish', type=Path, help='Dir. of an unfinished run to finish')
-    add('config', #is_config_file_arg=True,
+    add('config', is_config_file=True,
                   help='config file to load arguments from')
     add('rngseed', type=np.uint32, help='random seed')
 
@@ -122,7 +123,7 @@ def optionRegistry():
         help="enable fp error calculation")
 
     # Newton options
-    add('bimarg', required=True,
+    add('bimarg',
         help="Target bivariate marginals (npy file)")
     add('mcsteps', type=np.uint32, default=64,
         help="Number of rounds of MCMC generation")
@@ -134,7 +135,7 @@ def optionRegistry():
         help="stop coupling updates after Neff/N = fracNeff")
     add('gamma', type=np.float32, default=0.0004,
         help="Initial step size")
-    add('damping', default=0.001, type=np.float32,
+    add('damping', default=0.001, type=float,
         help="Damping parameter")
     add('reg', default=None,
         help="regularization format")
@@ -152,7 +153,7 @@ def optionRegistry():
         help="how to split newton step computation across GPUs")
 
     # Potts options
-    add('alpha', required=True,
+    add('alpha',
         help="Alphabet, a sequence of letters")
     add('couplings',
         help="One of 'zero', 'independent', or a filename")
@@ -341,10 +342,10 @@ def setup_GPUs(p, log):
 
 ################################################################################
 
-def inverseIsing(orig_args, args, log):
+def inverseIsing(orig_args, infer_args, log):
     descr = ('Inverse Ising inference using a quasi-Newton MCMC algorithm '
              'on the GPU')
-    parser = argparse.ArgumentParser(prog=progname + ' inverseIsing',
+    parser = configargparse.ArgumentParser(prog=progname + ' inverseIsing',
                                      description=descr)
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
                                           'gpus profile')
@@ -360,25 +361,50 @@ def inverseIsing(orig_args, args, log):
     addopt(parser,  None,                 'init_model outdir rngseed '
                                           'config finish')
 
-    args = parser.parse_args(args)
-    args.measurefperror = False
+    args = parser.parse_args(infer_args)
 
     # set up output directory and log file
     if args.finish:
-        if not args.outdir.is_dir():
-            raise ValueError("{} is not a directory".format(args.outdir))
+        outdir = args.finish
+        if not outdir.is_dir():
+            raise ValueError("{} is not a directory".format(outdir))
 
-        n = 1
-        while true:
-            p = args.outdir / 'log{}'.format(n)
-            if not p.exists():
-                break
-        logfile = open(p, 'wt')
+        # search for last run dir:
+        runs = [di for di in outdir.glob('run_*')]
+        if runs == []:
+            raise Exception("Did not find any runs in {}".format(outdir))
+        runs.sort()
+        rundir = runs[-1]
+        startrun = int(str(rundir).rpartition('_')[2])
+
+        with open(rundir / 'newtonsteps', 'rt') as f:
+            newtonsteps = int(f.read())
+        with open(rundir / 'jstep', 'rt') as f:
+            jstep = int(f.read())
+
+        # figure out log file name to use
+        logfile = open(outdir / 'log_finish_{}'.format(startrun), 'wt')
         log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+
+        finish_args = infer_args[:]
+        finish_args.extend(['--config', str(outdir / 'config.cfg')])
+        finish_args.extend(['--couplings', str(rundir / 'J.npy')])
+        finish_args.extend(['--seqs', str(rundir / 'seqs')])
+        finish_args.extend(['--outdir', str(outdir)])
+        finish_args.extend(['--newtonsteps', str(newtonsteps)])
+
+        args = parser.parse_args(finish_args)
     else:
         args.outdir.mkdir(parents=True)
         logfile = open(args.outdir / 'log', 'wt')
         log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
+
+        startrun = 0
+        jstep = 0
+        parser.write_config_file(args, [str(args.outdir / 'config.cfg')])
+
+    requireargs(args, 'bimarg alpha')
+    args.measurefperror = False
 
     print_node_startup(log, orig_args)
 
@@ -386,35 +412,12 @@ def inverseIsing(orig_args, args, log):
         log("MPI detected using {} processes".format(mpi_comm.Get_size()))
         log("")
 
+    if args.finish:
+        log("Continuing from {}".format(rundir))
+        log("")
+
     log("Initialization")
     log("===============")
-
-    if args.finish:
-        # search for last completed run (contains a perturbedJ file)
-        rundirs = args.finish.glob('run_*')
-        rundirs.sort()
-        rundir = None
-        for fn in reversed(rundirs):
-            if (fn / 'perturbedJ.npy').is_file():
-                rundir = fn
-                break
-        if rundir is None:
-            raise Exception("Did not find any runs in {}".format(args.finish))
-
-        log("Continuing from {}".format(rundir))
-        args.init_model = rundir
-        log("")
-        with open(args.finish / 'config.json', 'r') as f:
-            args = argparse.NameSpace(**json.load(f))
-        log("loaded parameters:")
-        log(vars(args))
-
-        args.outdir = args.finish
-        startrun = int(re.match('[0-9]*$', rundir).groups()) + 1
-    else:
-        startrun = 0
-        #with open(args.outdir / 'config.json', 'w') as f:
-        #    json.dump(vars(args), f)
 
     # collect all detected parameters in "p"
     p = attrdict({'outdir': args.outdir})
@@ -534,13 +537,13 @@ def inverseIsing(orig_args, args, log):
     p['peak_ns'] = 256
     p['cur_ns'] = 256
 
-    mi3gpu.NewtonSteps.newtonMCMC(p, gpus, startrun, log)
+    mi3gpu.NewtonSteps.newtonMCMC(p, gpus, startrun, jstep, log)
 
     logfile.close()
 
 def getEnergies(orig_args, args, log):
     descr = ('Compute Potts Energy of a set of sequences')
-    parser = argparse.ArgumentParser(prog=progname + ' getEnergies',
+    parser = configargparse.ArgumentParser(prog=progname + ' getEnergies',
                                      description=descr)
     add = parser.add_argument
     add('out', default='output', help='Output File')
@@ -601,7 +604,7 @@ def getEnergies(orig_args, args, log):
 
 def MCMCbenchmark(orig_args, args, log):
     descr = ('Benchmark MCMC generation on the GPU')
-    parser = argparse.ArgumentParser(prog=progname + ' benchmark',
+    parser = configargparse.ArgumentParser(prog=progname + ' benchmark',
                                      description=descr)
     add = parser.add_argument
     add('--nloop', type=np.uint32, required=True,
@@ -716,7 +719,7 @@ def MCMCbenchmark(orig_args, args, log):
 
 def equilibrate(orig_args, args, log):
     descr = ('Run a round of MCMC generation on the GPU')
-    parser = argparse.ArgumentParser(prog=progname + ' mcmc',
+    parser = configargparse.ArgumentParser(prog=progname + ' mcmc',
                                      description=descr)
     add = parser.add_argument
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
@@ -865,7 +868,7 @@ def equilibrate(orig_args, args, log):
 
 def subseqFreq(orig_args, args, log):
     descr = ('Compute relative frequency of subsequences at fixed positions')
-    parser = argparse.ArgumentParser(prog=progname + ' subseqFreq',
+    parser = configargparse.ArgumentParser(prog=progname + ' subseqFreq',
                                      description=descr)
     add = parser.add_argument
     add('fixpos', help="comma separated list of fixed positions")
@@ -1317,9 +1320,9 @@ def process_sample_args(args, log):
 
 ################################################################################
 
-class CLInfoAction(argparse.Action):
-    def __init__(self, option_strings, dest=argparse.SUPPRESS,
-                 default=argparse.SUPPRESS, help=None):
+class CLInfoAction(configargparse.Action):
+    def __init__(self, option_strings, dest=configargparse.SUPPRESS,
+                 default=configargparse.SUPPRESS, help=None):
         super(CLInfoAction, self).__init__(option_strings=option_strings,
             dest=dest, default=default, nargs=0, help=help)
     def __call__(self, parser, namespace, values, option_string=None):
@@ -1336,7 +1339,7 @@ def main(args):
      }
 
     descr = 'Perform biophysical Potts Model calculations on the GPU'
-    parser = argparse.ArgumentParser(description=descr, add_help=False)
+    parser = configargparse.ArgumentParser(description=descr, add_help=False)
     add = parser.add_argument
     add('action', choices=actions.keys(), nargs='?', default=None,
         help="Computation to run")

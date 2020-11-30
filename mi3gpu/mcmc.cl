@@ -131,10 +131,10 @@ void copySubseq(__global uint *smallbuf,
 //         row2:   a2 b2 c2 d2 e2 f2 ...
 //  (which is the transpose of seq array in CPU)
 __kernel
-void unpackseqs1(__global uint *buf4,
-                          uint  buf4len, //nseq uints rows
-                 __global uint *buf1,
-                          uint  buf1len) //nseq/4 uints
+void unpackseqs1T(__global uint *buf4,
+                           uint  buf4len, //nseq uints rows
+                  __global uint *buf1,
+                           uint  buf1len) //nseq/4 uints
 {
     uint i4 = get_group_id(0);
     uint li = get_local_id(0);
@@ -1128,25 +1128,25 @@ void reg_SCADddE(__global float *bimarg,
             float jc = -JJ(a, (b+d)%q) + JJ((a+g)%q, (b+d)%q);
             float ddE = jr + jc;
 
-            float AddE = fabs(ddE);
             float R = 0;
-            if (AddE < lambda) {
+            float absD = fabs(ddE);
+            if (absD < lambda) {
                 R = lambda;
             }
-            else if (AddE < scale*lambda) {
-                R = (scale*lambda - AddE)/(scale - 1);
+            else if (absD < scale*lambda) {
+                R = (scale*lambda - absD)/(scale - 1);
             }
             dR += sign(ddE)*R;
             // set to 0 if abs(ddE) < gamma*lambda/f?
         }
     }
-    //dR = dR/((q-1)*(q-1)); // scale so irrelevant chars have no effect
+    dR = dR/((q-1)*(q-1)); // scale so irrelevant chars have no effect
     // (since adding an extra q adds and extra row/col to double-sum above)
     // is this term properly incorporated into SCAD? I think so because
     // the dR ends up eqalling lambda for small AddE adter we do the sum
     // and division, in case of a single coupling.
 
-    dJ[n] = dJ[n] - dR*gamma/(bimarg[n]+pc);
+    dJ[n] = dJ[n] - gamma*dR/(bimarg[n]+pc);
 
     #undef a
     #undef b

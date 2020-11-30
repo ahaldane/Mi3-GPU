@@ -76,5 +76,29 @@ def getXij(J, fab):
     #print(np.sum(Xijab*fab, axis=1))
     #print(np.sum(Xij), np.sum(Xijab*fab))  # should be equal
 
+def get_ddE(Jrow):
+    # we only have enough memory for a few rows of a J matrix ddE
+    if len(Jrow.shape) == 1:
+        q = int(np.sqrt(Jrow.shape[0] + 0.5))
+        assert(Jrow.shape[0] == q*q)
+    elif len(Jrow.shape == 2):
+        q = Jrow.shape[0]
+        assert(q == Jrow.shape[1])
+    else:
+        raise ValueError('Jrow must be 1d or 2d')
+
+    J = Jrow.reshape((q,q))
+    ddE = np.zeros((q, q, q, q))
+
+    b, a = np.meshgrid(np.arange(q), np.arange(q))
+    gi = [(a+g)%q for g in range(1,q)]
+    di = [(b+d)%q for d in range(1,q)]
+
+    for g in gi:
+        for d in di:
+            ddE[a,b,g,d] = -J[a,b] + J[a,d] + J[g,b] - J[g,d]
+
+    return out
+
 def printsome(a, prec=4):
     return np.array2string(a.flatten()[:5], precision=prec, sign=' ')[1:-1]
