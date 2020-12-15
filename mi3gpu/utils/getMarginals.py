@@ -38,8 +38,12 @@ def getMarginals(seqs, q, weights=None, nrmlz=True):
     def counts(s, bins):
         return np.bincount(s, minlength=bins, weights=weights)
 
+    # optimize memory access (may make a copy)
+    seqs = np.asfortranarray(seqs)
+    qseqs = q*seqs
+
     f = nrmlz(np.array([counts(seqs[:,i], q) for i in range(L)]))
-    ff = nrmlz(np.array([counts(seqs[:,j] + q*seqs[:,i], q*q)
+    ff = nrmlz(np.array([counts(qseqs[:,i] + seqs[:,j], q*q)
                          for i in range(L-1) for j in range(i+1, L)]))
     return f, ff
 

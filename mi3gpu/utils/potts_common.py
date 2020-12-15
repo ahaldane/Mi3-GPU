@@ -28,12 +28,13 @@ def getL(size):
 def getLq(J):
     return getL(J.shape[0]), int(np.sqrt(J.shape[1]) + 0.5)
 
-def getUnimarg(ff):
+def bimarg_to_unimarg(ff):
     L, q = getLq(ff)
     ff = ff.reshape((L*(L-1)//2, q, q))
     marg = np.array([np.sum(ff[0], axis=1)] + 
                     [np.sum(ff[n], axis=0) for n in range(L-1)])
     return marg/(np.sum(marg, axis=1)[:,None]) # correct any fp errors
+getUnimarg = bimarg_to_unimarg
 
 def indepF(fab):
     L, q = getLq(fab)
@@ -41,6 +42,20 @@ def indepF(fab):
     fa1, fb2 = np.sum(fabx,axis=2), np.sum(fabx,axis=1)
     fafb = np.array([np.outer(fa, fb).ravel() for fa,fb in zip(fa1, fb2)])
     return fafb
+
+def getC(fab):
+    L, q = getLq(fab)
+    fabx = fab.reshape((fab.shape[0], q, q))
+    fa1, fb2 = np.sum(fabx,axis=2), np.sum(fabx,axis=1)
+    fafb = np.array([np.outer(fa, fb).ravel() for fa,fb in zip(fa1, fb2)])
+
+    C = fab - fafb
+
+    ss = np.array([np.outer(fa*(1-fa), fb*(1-fb)).ravel()
+                   for fa,fb in zip(fa1, fb2)])
+    rho = C/np.sqrt(ss)
+
+    return C, rho
 
 def getM(x, diag_fill=0):
     L = getL(x.shape[0])
@@ -98,7 +113,27 @@ def get_ddE(Jrow):
         for d in di:
             ddE[a,b,g,d] = -J[a,b] + J[a,d] + J[g,b] - J[g,d]
 
-    return out
+    return ddE
+
+def getRddE(J):
+    L, q = getLq(J)
+    J = J.reshape((L*(L-1)//2, q, q))
+
+    R = np.zeros(J.shape[0])
+    dR = np.zeros(J.shape)
+
+    b,a = np.meshgrid(np.arange(q), np.arange(q))
+
+    for g in range(1,q):
+        jr = J[...,a,b] - J[...,(a+g)%q,b]
+        for d in range(1,q):
+            jc = -J[...,a,(b+d)%q] + J[...,(a+g)%q,(b+d)%q]
+            ddE = jr + jc
+            R += np.sum(np.abs(ddE), axis=(1,2))
+            dR += np.sign(ddE)
+    dR = dR.reshape((L*(L-1)//2, q*q))/((q-1)**2)
+    R = R/(4*(q-1)**2)
+    return R, dR
 
 def printsome(a, prec=4):
     return np.array2string(a.flatten()[:5], precision=prec, sign=' ')[1:-1]
