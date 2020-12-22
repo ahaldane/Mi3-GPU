@@ -28,20 +28,52 @@ def getL(size):
 def getLq(J):
     return getL(J.shape[0]), int(np.sqrt(J.shape[1]) + 0.5)
 
+def pairs(L):
+    return ((i,j) for i in range(L-1) for j in range(i+1,L))
+
 def bimarg_to_unimarg(ff):
     L, q = getLq(ff)
     ff = ff.reshape((L*(L-1)//2, q, q))
-    marg = np.array([np.sum(ff[0], axis=1)] + 
+    marg = np.array([np.sum(ff[0], axis=1)] +
                     [np.sum(ff[n], axis=0) for n in range(L-1)])
     return marg/(np.sum(marg, axis=1)[:,None]) # correct any fp errors
 getUnimarg = bimarg_to_unimarg
 
-def indepF(fab):
+def indep_bimarg(fab):
     L, q = getLq(fab)
     fabx = fab.reshape((fab.shape[0], q, q))
     fa1, fb2 = np.sum(fabx,axis=2), np.sum(fabx,axis=1)
     fafb = np.array([np.outer(fa, fb).ravel() for fa,fb in zip(fa1, fb2)])
     return fafb
+indepF = indep_bimarg
+
+def validate_bimarg(ff, eps=1e-5):
+    """
+    Check that unimarg computed from different bimarg rows are consistent
+    with each other and sum to 1.
+    """
+    L, q = getLq(ff)
+    ff = ff.reshape((L*(L-1)//2, q, q))
+    uni = np.array([np.sum(ff[0], axis=1)] +
+                   [np.sum(ff[n], axis=0) for n in range(L-1)])
+    delta = np.abs(np.sum(uni, axis=1) - 1)
+    if np.max(delta) > eps:
+        raise ValueError(("unimarg for pos {} does not sum to 1: delta {}"
+                         ).format(np.argmax(delta), np.max(delta)))
+
+    for n,(i,j) in enumerate(pairs(L)):
+        fab = ff[n]
+        fi, fj = np.sum(fab, axis=1), np.sum(fab, axis=0)
+        deltai = np.abs(uni[i] - fi)
+        m = np.argmax(deltai)
+        if deltai[m] > eps:
+            raise ValueError(("inconsitent i unimarg {:.5f} with delta {:.5f} "
+                "for bimarg {} ({},{})").format(uni[i][m], deltai[m], n, i, j))
+        deltaj = np.abs(uni[j] - fj)
+        m = np.argmax(deltaj)
+        if deltaj[m] > eps:
+            raise ValueError(("inconsitent j unimarg {:.5f} with delta {:.5f} "
+                "for bimarg {} ({},{})").format(uni[j][m], deltaj[m], n, i, j))
 
 def getC(fab):
     L, q = getLq(fab)

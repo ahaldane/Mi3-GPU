@@ -37,6 +37,7 @@ def printstats(name, jstep, bicount, bimarg_target, bimarg_model, couplings,
         rel_err = (np.abs(bimarg_target - bimarg_model)/bimarg_target)
         ferr = np.mean(rel_err[topbi])
     ssr = np.sum((bimarg_target - bimarg_model)**2)
+    maxd = np.max(np.abs(bimarg_target - bimarg_model))
 
     C = bimarg_model - indepF(bimarg_model)
     X = np.sum(couplings*C, axis=1)
@@ -52,13 +53,13 @@ def printstats(name, jstep, bicount, bimarg_target, bimarg_model, couplings,
 
     #print some details
     disp = """\
-{name} J-Step {jstep: 6d}  Error: SSR: {ssr: 7.3f}  Ferr: {ferr: 7.5f}  X: {X}
+{name} {jstep: 6d} Error: SSR:{ssr:6.3f}   rel%:{ferr:5.2f}   max%:{maxd:5.2f}   X:{X}
 {name} bimarg: {bimarg} ...
 {name}      J: {couplings} ...
 {name} min(E) = {lowE:.4f}     mean(E) = {meanE:.4f}     std(E) = {stdE:.4f}
 {name} E Autocorr vs time: {rhos}""".format(
-        name=name, jstep=jstep, ferr=ferr, ssr=ssr,
-        X="{: 7.3f} ({: 7.3f})".format(np.sum(X), np.sum(Xo)),
+        name=name, jstep=jstep, ferr=ferr*100, ssr=ssr, maxd=maxd*100,
+        X="{: 6.1f} ({: 6.1f})".format(np.sum(X), np.sum(Xo)),
         bimarg=printsome(bimarg_model),
         couplings=printsome(couplings), lowE=min(energies),
         meanE=np.mean(energies), stdE=np.std(energies), rhos=rhostr)
@@ -185,17 +186,12 @@ def iterNewton(param, bimarg_model, gpus, log):
         gpus.updateJ(gamma, pc)
         if param.reg is not None:
             gpus.reg(param.reg, (gamma, pc,) + param.regarg)
-        #bi, J, dJ = gpus.head_gpu.readBufs(['bi', 'J', 'dJ'])
-        #np.save("test_J", J)
-        #np.save("test_bi", bi)
-        #np.save("test_xijab", dJ)
-        #sys.exit(0)
         gpus.calcEnergies(seqbuf, 'dJ')
 
         # compute weights on CPU (since we want to subtract max for precision)
-        dJ = gpus.readBufs(ebufname)
-        mindJ = np.min([np.min(x) for x in dJ])
-        weights = [np.exp(mindJ - x) for x in dJ]
+        dE = gpus.readBufs(ebufname)
+        mindE = np.min([np.min(x) for x in dE])
+        weights = [np.exp(mindE - x) for x in dE]
         gpus.setBuf(wbufname, weights)
 
         gpus.weightedMarg(seqbuf)

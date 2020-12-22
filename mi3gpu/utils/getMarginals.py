@@ -27,9 +27,6 @@ import mi3gpu.utils.seqload as seqload
 def getMarginals(seqs, q, weights=None, nrmlz=True):
     nSeq, L = seqs.shape
 
-    if q > 16: # the x + q*y operation below may overflow for u1
-        seqs = seqs.astype('i4')
-
     if nrmlz:
         nrmlz = lambda x: x/np.sum(x, axis=-1, keepdims=True)
     else:
@@ -38,8 +35,12 @@ def getMarginals(seqs, q, weights=None, nrmlz=True):
     def counts(s, bins):
         return np.bincount(s, minlength=bins, weights=weights)
 
-    # optimize memory access (may make a copy)
-    seqs = np.asfortranarray(seqs)
+    # optimize memory access and upcast if needed (may make a copy)
+    dt = None
+    if q > 16: # the x + q*y operation below may overflow for u1
+        dt = 'i4'
+    seqs = np.require(seqs, dtype=dt, requirements='F')
+
     qseqs = q*seqs
 
     f = nrmlz(np.array([counts(seqs[:,i], q) for i in range(L)]))
@@ -57,8 +58,10 @@ class BiCounter:
         q = len(alpha)
         nbins = q*q
 
+        dt = None
         if q > 16: # the x + q*y operation below may overflow for u1
-            seqs = seqs.astype('i4')
+            dt = 'i4'
+        seqs = np.require(seqs, dtype=dt, requirements='F')
 
         if self.weights is not None:
             if not isinstance(counts, np.ndarray) and counts == 0:

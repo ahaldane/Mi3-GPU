@@ -784,7 +784,7 @@ class MCMCGPU:
         bufspec = self.buf_spec[bufname]
         buftype, bufshape = bufspec[0], bufspec[1]
         if not isinstance(buf, np.ndarray):
-            buf = array(buf, dtype=buftype)
+            buf = np.array(buf, dtype=buftype)
 
         if np.dtype(buftype) != buf.dtype:
             raise ValueError("Buffer dtype mismatch.Expected {}, got {}".format(

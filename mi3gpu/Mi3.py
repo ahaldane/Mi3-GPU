@@ -34,8 +34,8 @@ import mi3gpu
 import mi3gpu.NewtonSteps
 from mi3gpu.utils.seqload import loadSeqs, writeSeqs
 from mi3gpu.utils.changeGauge import fieldlessGaugeEven
-from mi3gpu.utils.potts_common import printsome, getLq, getUnimarg
-from mi3gpu.mcmcGPU import (setup_GPU_context, initGPU, wgsize_heuristic, 
+from mi3gpu.utils import printsome, getLq, getUnimarg, validate_bimarg
+from mi3gpu.mcmcGPU import (setup_GPU_context, initGPU, wgsize_heuristic,
                             printGPUs)
 from mi3gpu.node_manager import GPU_node
 
@@ -453,7 +453,7 @@ def inverseIsing(orig_args, infer_args, log):
         pass
 
     log("")
-    
+
     unimarg = getUnimarg(p.bimarg)
     gen_indep = args.seqs == 'independent' or args.init_model == 'independent'
     if gen_indep or args.reseed == 'independent':
@@ -1007,13 +1007,14 @@ def process_newton_args(args, log):
         #could convert, but this helps warn that something may be wrong
     if np.any((bimarg <= 0) | (bimarg > 1)):
         raise Exception("All bimarg must be 0 < f < 1")
+    validate_bimarg(bimarg)
     log("Target Marginals: " + printsome(bimarg) + "...")
     p['bimarg'] = bimarg
 
     if args.reg is not None:
         rtype, dummy, rarg = args.reg.partition(':')
-        rtypes = ['l2z', 'l1z', 'SCADJ', 
-                  'X', 'Xij', 'SCADX', 'expX', 
+        rtypes = ['l2z', 'l1z', 'SCADJ',
+                  'X', 'Xij', 'SCADX', 'expX',
                   'ddE', 'SCADddE']
         if rtype not in rtypes:
             raise Exception("reg must be one of {}".format(str(rtypes)))
@@ -1140,9 +1141,7 @@ def getCouplings(args, L, q, unimarg, log):
                 raise Exception("Need L to generate couplings")
         if args.couplings == 'uniform':
             log("Setting Initial couplings to uniform frequencies")
-            h = -np.log(1.0/q)
-            J = np.zeros((L*(L-1)//2,q*q), dtype='<f4')
-            couplings = fieldlessGaugeEven(h, J)[1]
+            couplings = np.zeros((L*(L-1)//2,q*q), dtype='<f4')
         elif args.couplings == 'independent':
             log("Setting Initial couplings to independent model")
             if unimarg is None:
@@ -1227,7 +1226,7 @@ def process_sequence_args(args, L, alpha, log, unimarg=None,
                 seedseq = loadseedseq(args.seedseq, args.alpha.strip(), log)
                 seedseq_origin = 'from file'
         elif args.init_model in ['uniform', 'independent']:
-            seedseq = generateSequences(args.init_model, L, q, 1, unimarg, 
+            seedseq = generateSequences(args.init_model, L, q, 1, unimarg,
                                         log)[0]
             seedseq_origin = args.init_model
         elif args.init_model is not None:
@@ -1281,7 +1280,7 @@ def process_sample_args(args, log):
                   'min_equil': args.min_equil,
                   'trackequil': args.trackequil,
                   'tracked': args.tracked.split(',')})
-    
+
     bad_track = [x for x in p.tracked if x not in ['bim', 'E', 'seq']]
     if len(bad_track) != 0:
         raise ValueError('Invalid "--tracked" values: {}'.format(bad_track))
