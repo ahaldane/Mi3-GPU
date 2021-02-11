@@ -91,7 +91,7 @@ def getC(fab):
 
 def getM(x, diag_fill=0):
     L = getL(x.shape[0])
-    M = np.zeros((L,L) + x.shape[1:])
+    M = np.zeros((L,L) + x.shape[1:], dtype=x.dtype)
     i,j = np.triu_indices(L,k=1)
     M[i,j,...] = x
     M = M + M.swapaxes(0,1)
