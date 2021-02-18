@@ -1019,10 +1019,17 @@ def process_newton_args(args, log):
         if rtype not in rtypes:
             raise Exception("reg must be one of {}".format(str(rtypes)))
         p['reg'] = rtype
-        if rtype == 'ddE' or rtype == 'SCADddE':
+        if rtype == 'ddE':
             lam = float(rarg)
             log("Regularizing using {} with lambda = {}".format(rtype, lam))
             p['regarg'] = (lam,)
+        elif rtype == 'SCADddE':
+            lam, dummy, r = rarg.partition(':')
+            lam = float(lam)
+            r = lam if r == '' else float(r)
+            log("Regularizing using {} with lambda = {}, r = {}".format(rtype,
+                                                                        lam, r))
+            p['regarg'] = (lam, r)
         elif rtype == 'l2z' or rtype == 'l1z':
             try:
                 lJ = float(rarg)

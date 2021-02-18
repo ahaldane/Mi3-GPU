@@ -1106,6 +1106,7 @@ void reg_SCADddE(__global float *bimarg,
                       float  gamma,
                       float  pc,
                       float  lambda,
+                      float  r,
              __global float *J,
              __global float *dJ) {
     uint li = get_local_id(0);
@@ -1130,13 +1131,13 @@ void reg_SCADddE(__global float *bimarg,
 
             float R = 0;
             float absD = fabs(ddE);
-            if (absD < lambda) {
-                R = lambda;
+            if (absD < r) {
+                R = 1;
             }
-            else if (absD < scale*lambda) {
-                R = (scale*lambda - absD)/(scale - 1);
+            else if (absD < scale*r) {
+                R = (scale*r - absD)/(scale*r - r);
             }
-            dR += sign(ddE)*R;
+            dR += lambda*sign(ddE)*R;
             // set to 0 if abs(ddE) < gamma*lambda/f?
         }
     }

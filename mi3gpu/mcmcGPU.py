@@ -728,7 +728,7 @@ class MCMCGPU:
                                 self.bufs['J'], self.bufs['dJ'],
                                 wait_for=self._waitevt(wait_for)))
 
-    def reg_SCADddE(self, gamma, pc, lam, wait_for=None):
+    def reg_SCADddE(self, gamma, pc, lam, r, wait_for=None):
         self.require('Jstep')
         self.log("reg SCADddE")
         q, nPairs = self.q, self.nPairs
@@ -738,7 +738,7 @@ class MCMCGPU:
         return self.logevt('reg_SCADddE',
             self.prg.reg_SCADddE(self.queue, (nPairs*q*q,), (q*q,),
                                 bibuf, np.float32(gamma), np.float32(pc),
-                                np.float32(lam),
+                                np.float32(lam), np.float32(r),
                                 self.bufs['J'], self.bufs['dJ'],
                                 wait_for=self._waitevt(wait_for)))
 
