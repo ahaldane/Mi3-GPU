@@ -24,7 +24,7 @@ import argparse
 from mi3gpu.utils.potts_common import alpha20
 import mi3gpu.utils.seqload as seqload
 
-def getMarginals(seqs, q, weights=None, nrmlz=True):
+def getMarginals(seqs, q, weights=None, nrmlz=True, uni=True, bi=True):
     nSeq, L = seqs.shape
 
     if nrmlz:
@@ -41,12 +41,16 @@ def getMarginals(seqs, q, weights=None, nrmlz=True):
         dt = 'i4'
     seqs = np.require(seqs, dtype=dt, requirements='F')
 
-    qseqs = q*seqs
-
-    f = nrmlz(np.array([counts(seqs[:,i], q) for i in range(L)]))
-    ff = nrmlz(np.array([counts(qseqs[:,i] + seqs[:,j], q*q)
-                         for i in range(L-1) for j in range(i+1, L)]))
-    return f, ff
+    ret = ()
+    if uni:
+        f = nrmlz(np.array([counts(seqs[:,i], q) for i in range(L)]))
+        ret += (f,)
+    if bi:
+        qseqs = q*seqs
+        ff = nrmlz(np.array([counts(qseqs[:,i] + seqs[:,j], q*q)
+                             for i in range(L-1) for j in range(i+1, L)]))
+        ret += (ff,)
+    return ret
 
 class BiCounter:
     def __init__(self, weights):

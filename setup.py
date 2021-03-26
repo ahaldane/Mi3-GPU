@@ -27,6 +27,7 @@ setuptools.setup(
              'mi3gpu/utils/getSeqEnergies.py',
              'mi3gpu/utils/changeGauge.py',
              'mi3gpu/utils/getXij.py',
+             'mi3gpu/utils/ijscores.py',
              'mi3gpu/utils/exploreParam.py',
              'mi3gpu/utils/alphabet_reduction.py',
              'mi3gpu/utils/apply_alphamap.py',
