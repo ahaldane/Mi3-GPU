@@ -27,7 +27,7 @@ def DI(fi, fj, J):
 
     return np.sum(rel_entr(pij, np.outer(fi, fj)))
 
-def score(score, ff, J=None)
+def ijscore(score, ff, J=None):
     if J is None and score not in ['MI', 'maxX', 'TVDC']:
         raise ValueError("J must be supplied to compute {}".format(score))
 
@@ -81,11 +81,11 @@ def score(score, ff, J=None)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('bimarg')
-    parser.add_argument('J', nargs='?', default=None)
     parser.add_argument('score', choices=['fb', 'fbw', 'fbwsqrt', 'fbwsi', 
         'Xij', 'absXij', 'absfXij', 'MI', 'DI', 'maxC', 'TVDC', 'RddE', 
         'fbwexp'])
+    parser.add_argument('bimarg')
+    parser.add_argument('J', nargs='?', default=None)
     parser.add_argument('-o', '--out', default='score.npy')
     parser.add_argument('--binary', action='store_true')
     parser.add_argument('--pcN', type=float, default=0.0)
@@ -101,7 +101,7 @@ def main():
     elif args.score not in ['MI', 'maxX', 'TVDC']:
         raise ValueError("J must be supplied to compute {}".format(args.score))
     
-    pottsScore = score(args.score, ff, J)
+    pottsScore = ijscore(args.score, ff, J)
 
     pottsScore = pottsScore.astype('f4')
     if args.binary:
