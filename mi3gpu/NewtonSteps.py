@@ -392,6 +392,10 @@ def runMCMC(gpus, couplings, runName, param, log):
 
                 last_p1 = p1
 
+            if step >= param.max_equil:
+                log(rstr + "Reached Max Steps. Stopping")
+                break
+
             log(rstr + "Continuing.")
             loops = loops*2
 
