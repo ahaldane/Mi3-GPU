@@ -1,48 +1,13 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 import numpy as np
-from numpy.random import randint
-import sys, os, argparse
+import sys
+from mi3gpu.utils.seqload import loadSeqs, writeSeqs
+from mi3gpu.utils.seqtools import filtersim
 
-import mi3gpu.utils.seqload as seqload
-import mi3gpu.utils.seqtools as seqtools
+rng = np.random.default_rng()
 
-parser = argparse.ArgumentParser(
-    description='remove sequences too similar to another sequence')
-parser.add_argument('seqs')
-parser.add_argument('cutoff', type=float)
-parser.add_argument('--ind', help='save indices')
-args = parser.parse_args()
-
-s, ids, _ = seqload.loadSeqs(args.seqs)
-cutoff = 1-float(args.cutoff)
-N, L = s.shape
-
-inds = None
-remaining_inds = None
-if args.ind is not None:
-    inds = []
-    remaining_inds = np.arange(N)
-
-out_seq = []
-out_ids = []
-while s.shape[0] != 0:
-    ind = randint(s.shape[0])
-    keep = np.sum(s == s[ind,:], axis=1)/float(L) < cutoff
-
-    out_seq.append(s[ind].copy()) # no ref to s
-    s = s[keep,:]
-
-    if ids is not None:
-        out_ids.append(ids[ind])
-        ids = ids[keep]
-
-    if inds is not None:
-        inds.append(remaining_inds[ind])
-        remaining_inds = remaining_inds[keep]
-    print(s.shape, file=sys.stderr)
-
-with os.fdopen(sys.stdout.fileno(), 'wb', closefd=False) as fp:
-    seqload.writeSeqs(fp, np.array(out_seq), ids=out_ids or None)
-
-if inds is not None:
-    np.save(args.ind, inds)
+s = loadSeqs(sys.argv[1])[0]
+s = s[rng.permutation(s.shape[0])]
+fs = filtersim(s, int(float(sys.argv[2])*s.shape[1]))
+fs = fs[rng.permutation(fs.shape[0])]
+writeSeqs(sys.stdout, fs)
