@@ -1030,12 +1030,15 @@ sumsim_weighted(PyObject *self, PyObject *args){
 }
 
 static PyObject *
-filtersim(PyObject *self, PyObject *args){
+filtersim(PyObject *self, PyObject *args, PyObject *kwds){
     PyArrayObject *seqs;
     int i, j, p, cutoff;
     npy_intp nseq, L;
+    int return_inds = 0;
+    static char *kwlist[] = {"seqs", "cutoff", "return_inds", NULL};
 
-    if(!PyArg_ParseTuple(args, "O!i", &PyArray_Type, &seqs, &cutoff)){
+    if(!PyArg_ParseTupleAndKeywords(args, kwds, "O!i|p", kwlist,
+            &PyArray_Type, &seqs, &cutoff, &return_inds)){
         return NULL;
     }
 
@@ -1057,10 +1060,30 @@ filtersim(PyObject *self, PyObject *args){
         return NULL;
     }
 
+    // (TODO: check for MemoryErrors and other errors)
+
     // transpose for optimal memory order (see below)
-    seqs = (PyArrayObject*)PyArray_Transpose(seqs, NULL);
-    seqs = (PyArrayObject*)PyArray_Copy(seqs);
+    PyObject *seqsT = (PyArrayObject*)PyArray_Transpose(seqs, NULL);
+    seqs = (PyArrayObject*)PyArray_Copy(seqsT);
+    Py_DECREF(seqsT);
     uint8 *seqdata = PyArray_DATA(seqs);
+
+    PyObject *inds = NULL;
+    npy_uint *inds_data = NULL;
+    if (return_inds) {
+        npy_intp out_dims[1] = {nseq};
+        inds = PyArray_NewFromDescr(&PyArray_Type,
+                                    PyArray_DescrFromType(NPY_UINT),
+                                    1, out_dims, NULL, NULL, 0, NULL);
+        if (inds == NULL) {
+            Py_DECREF(seqs);
+            return NULL;
+        }
+        inds_data = PyArray_DATA(inds);
+        for(j = 0; j < nseq; j++){
+            inds_data[j] = j;
+        }
+    }
 
     uint32 *hsim = malloc(sizeof(uint32)*nseq);
     for(j = 0; j < nseq; j++){
@@ -1102,6 +1125,9 @@ filtersim(PyObject *self, PyObject *args){
                     seqdata[nseq*p + j] = seqdata[nseq*p + N-1];
                 }
                 hsim[j] = hsim[N-1];
+                if (return_inds) {
+                    inds_data[j] = inds_data[N-1];
+                }
                 N--;
             }
             if (j < N && hsim[j] > biggesthsim) {
@@ -1115,33 +1141,48 @@ filtersim(PyObject *self, PyObject *args){
         }
 
         //swap best sequence with next sequence
+        #define SWAP(x, y, T) do { T SWAP = x; x = y; y = SWAP; } while (0)
         for(p = 0; p < L; p++) {
-            uint8 tmp = seqdata[nseq*p + biggestind];
-            seqdata[nseq*p + biggestind] = seqdata[nseq*p + i+1];
-            seqdata[nseq*p + i+1] = tmp;
+            SWAP(seqdata[nseq*p + biggestind], seqdata[nseq*p + i+1], uint8);
         }
-        int tmph = hsim[biggestind];
-        hsim[biggestind] = hsim[i+1];
-        hsim[i+1] = tmph;
+        SWAP(hsim[biggestind], hsim[i+1], uint32);
+        if (return_inds) {
+            SWAP(inds_data[biggestind], inds_data[i+1], npy_uint);
+        }
+        #undef SWAP
     }
 
     free(hsim);
 
-    npy_intp out_dims[2] = {N, L};
-    npy_intp out_strides[2] = {1, nseq};
-    PyObject *out = PyArray_NewFromDescr(&PyArray_Type,
-                                         PyArray_DescrFromType(NPY_UINT8),
-                                         2, out_dims, out_strides,
-                                         seqdata, 0, NULL);
+    // todo: add error checks
+    PyObject *end = PyLong_FromLong(N);
+    PyObject *slice = PySlice_New(NULL, end, NULL);
+    Py_DECREF(end);
+
+    seqsT = (PyArrayObject*)PyArray_Transpose(seqs, NULL);
+    PyObject *out = PyObject_GetItem(seqsT, slice);
+    Py_DECREF(seqsT);
+    Py_DECREF(seqs);
     if (out == NULL) {
-        Py_DECREF(seqs);
-        return NULL;
-    }
-    if (PyArray_SetBaseObject(out, seqs) < 0) {
-        Py_DECREF(out);
+        Py_DECREF(slice);
+        if (return_inds) {
+            Py_DECREF(inds);
+        }
         return NULL;
     }
 
+    if (return_inds) {
+        PyObject *outinds = PyObject_GetItem(inds, slice);
+        Py_DECREF(inds);
+        Py_DECREF(slice);
+        if (outinds == NULL) {
+            Py_DECREF(out);
+            return NULL;
+        }
+        return PyTuple_Pack(2, out, outinds);
+    }
+
+    Py_DECREF(slice);
     return (PyObject *)out;
 }
 
@@ -1229,7 +1270,7 @@ static PyMethodDef SeqtoolsMethods[] = {
             "compute sum of similarity with other all sequences"},
     {"sumsim_weighted", sumsim_weighted, METH_VARARGS,
            "compute sum of similarity with other all sequences, with weights"},
-    {"filtersim", filtersim, METH_VARARGS,
+    {"filtersim", filtersim, METH_VARARGS | METH_KEYWORDS,
             "remove sequences under a similarity cutoff to another sequence"},
     {"translateascii", translateascii, METH_VARARGS,
             "translate sequence buffer from scii to integers"},

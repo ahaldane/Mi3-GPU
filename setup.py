@@ -24,6 +24,7 @@ setuptools.setup(
              'mi3gpu/utils/getMarginals.py',
              'mi3gpu/utils/pseudocount.py',
              'mi3gpu/utils/phyloWeights.py',
+             'mi3gpu/utils/subsample_MSA.py',
              'mi3gpu/utils/getSeqEnergies.py',
              'mi3gpu/utils/changeGauge.py',
              'mi3gpu/utils/getXij.py',
