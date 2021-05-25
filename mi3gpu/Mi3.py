@@ -784,7 +784,7 @@ def equilibrate(orig_args, args, log):
             log("loading bimarg from {} and converted to unimarg for "
                 "independent model sequence generation".format(args.indep_marg))
             unimarg = getUnimarg(imarg)
-        gpus.prepare_indep(unimarg)
+        gpus.prepare_indep(unimarg.astype('f4'))
 
     nseqs = None
     needseed = False
