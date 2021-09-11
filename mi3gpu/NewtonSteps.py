@@ -587,7 +587,7 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
 
     start_time = time.time()
 
-    log("Equilibrating MCMC chains...")
+    log("Running MCMC chains...")
     (bimarg_model,
      bicount,
      sampledenergies,
