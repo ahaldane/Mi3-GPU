@@ -459,7 +459,7 @@ class MPI_worker(GPU_node, MPI_comm_Mixin):
         unimarg = self.recv()
         super().prepare_indep(unimarg)
 
-    def gen_indep(self, bufname):
+    def gen_indep(self):
         bufname = self.recv()
         super().gen_indep(bufname)
 

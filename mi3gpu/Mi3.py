@@ -56,8 +56,8 @@ def setup_MPI():
         MPI = None
     else:
         mpi_rank = mpi_comm.Get_rank()
-        from mpi_manager import (MPI_multinode_controller,
-                                 MPI_GPU_node, MPI_worker)
+        from mi3gpu.mpi_manager import (MPI_multinode_controller,
+                                        MPI_GPU_node, MPI_worker)
 
 ################################################################################
 # Set up enviroment and some helper functions

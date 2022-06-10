@@ -78,9 +78,9 @@ def writeStatus(name, Jstep, bimarg_target, bicount, bimarg_model, couplings,
         f.write(dispstr)
 
     #save current state to file
-    np.savetxt(outdir / name / 'bicounts', bicount, fmt='%d')
-    np.save(outdir / name / 'bimarg', bimarg_model)
-    np.save(outdir / name / 'energies', energies)
+    #np.savetxt(outdir / name / 'bicounts', bicount, fmt='%d')
+    #np.save(outdir / name / 'bimarg', bimarg_model)
+    #np.save(outdir / name / 'energies', energies)
     writeSeqs(outdir / name / 'seqs', seqs, alpha, zipf=True)
 
     if ptinfo != None:
