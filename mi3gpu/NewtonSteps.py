@@ -428,7 +428,7 @@ def runMCMC(gpus, couplings, runName, param, log):
     gpus.calcBicounts('main')
     gpus.calcEnergies('main')
     bicount, es = gpus.collect(['bicount', 'E main'])
-    bimarg_model = bicount/np.sum(bicount[0,:])
+    bimarg_model = (bicount/np.sum(bicount[0,:])).astype('f4')
 
     gpus.logProfile()
 
@@ -534,7 +534,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
     res = readGPUbufs(['bicount', 'E large'], gpus)
     bicount = sumarr(res[0])
     # assert sum(bicount, axis=1) are all equal here
-    bimarg_model = bicount.astype(np.float32)/np.float32(np.sum(bicount[0,:]))
+    bimarg_model = (bicount/np.sum(bicount[0,:])).astype(np.float32)
     sampledenergies = np.concatenate(res[1])
 
     for gpu in gpus:
