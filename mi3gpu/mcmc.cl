@@ -431,7 +431,7 @@ void metropolis(__global float *J,
 #ifdef TEMPERING
     float B = betas[get_global_id(0)];
 #else
-    const float B = 1;
+    const float B = BETA;
 #endif
 
     uint i;
@@ -520,7 +520,7 @@ void bicounts_to_bimarg(__global uint *bicount,
                         __global float *bimarg,
                                  uint  nseq) {
     uint n = get_global_id(0);
-    if (n > NCOUPLE) {
+    if (n >= NCOUPLE) {
         return;
     }
 
@@ -553,6 +553,14 @@ void sumFloats(__global float *data,
     if (li == 0) {
         *output = sums[0];
     }
+}
+
+__kernel
+void fixed_beta_weights(         float ref_E,
+                                  uint buflen,
+                        __global float *energies,
+                        __global float *weights) {
+    weights[get_global_id(0)] = exp((BETA-1)*(energies[get_global_id(0)]-ref_E));
 }
 
 // Idea: Have that NHIST, and HISTWS (work-size) are powers of 2, with
@@ -632,7 +640,7 @@ void weightedMarg(__global float *bimarg_new,
 __kernel
 void addBiBufs(__global float *dst, __global float *src) {
     uint n = get_global_id(0);
-    if (n > NCOUPLE) {
+    if (n >= NCOUPLE) {
         return;
     }
     dst[n] += src[n];
@@ -747,7 +755,7 @@ void updatedJ(__global float *bimarg_target,
               __global float *Jo) {
     uint n = get_global_id(0);
 
-    if (n > NCOUPLE) {
+    if (n >= NCOUPLE) {
         return;
     }
 

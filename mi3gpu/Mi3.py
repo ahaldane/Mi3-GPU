@@ -121,6 +121,8 @@ def optionRegistry():
         help='size of large seq buffer, in multiples of nwalkers')
     add('measurefperror', action='store_true',
         help="enable fp error calculation")
+    add('beta', type=np.float32,
+        help="beta at which to generate sequences")
 
     # Newton options
     add('bimarg',
@@ -350,7 +352,7 @@ def inverseIsing(orig_args, infer_args, log):
     parser = configargparse.ArgumentParser(prog=progname + ' inverseIsing',
                                      description=descr)
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
-                                          'gpus profile')
+                                          'gpus profile beta')
     addopt(parser, 'Sequence Options',    'seedseq seqs seqs_large')
     addopt(parser, 'Newton Step Options', 'bimarg mcsteps newtonsteps '
                                           'newton_delta fracNeff '
@@ -964,6 +966,7 @@ def process_GPU_args(args, L, q, outdir, log):
     param = attrdict({'nsteps': args.nsteps,
                       'wgsize': args.wgsize,
                       'nwalkers': args.nwalkers,
+                      'beta': args.beta,
                       'gpuspec': args.gpus,
                       'profile': args.profile,
                       'fperror': args.measurefperror})

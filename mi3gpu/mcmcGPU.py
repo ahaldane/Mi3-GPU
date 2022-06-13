@@ -549,6 +549,27 @@ class MCMCGPU:
                              self.bufs[Jbufname], seq_dev, np.uint32(buflen),
                              energies_dev, wait_for=self._waitevt(wait_for)))
 
+    def fixed_beta_weights(self, ref_E, seqbufname='main', wait_for=None):
+        self.require('Jstep')
+        self.log("FixedBetaWeights")
+
+        energies_dev = self.Ebufs[seqbufname]
+        buflen = self.nseq[seqbufname]
+
+        if seqbufname == 'main':
+            nseq = self.nseq[seqbufname]
+            weights_dev = self.bufs['weights']
+        else:
+            nseq = self.nstoredseqs
+            nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
+            weights_dev = self.bufs['weights large']
+
+        return self.logevt('fixed_beta_weights',
+            self.prg.fixed_beta_weights(self.queue, (nseq,), (self.wgsize,),
+                        np.float32(ref_E),
+                        np.uint32(buflen), energies_dev, weights_dev,
+                        wait_for=self._waitevt(wait_for)))
+
     def weightedMarg(self, seqbufname='main', wait_for=None):
         self.require('Jstep')
         self.log("weightedMarg")
@@ -982,6 +1003,7 @@ def setup_GPU_context(scriptpath, scriptfile, param, log):
                ('WGSIZE', param.wgsize)]
     if measureFPerror:
         options.append(('MEASURE_FP_ERROR', 1))
+    options.append(('BETA', param.beta if param.beta is not None else 1))
     optstr = " ".join(["-D {}={}".format(opt,val) for opt,val in options])
     log("Compilation Options: ", optstr)
     extraopt = " -cl-nv-verbose -Werror -I {}".format(scriptpath)

@@ -180,8 +180,16 @@ def iterNewton(param, bimarg_model, gpus, log):
 
     gpus.fillBuf('dJ', 0)
 
+    N0 = N
+    if param.beta is not None:
+        E = gpus.readBufs(ebufname)
+        weight_mod = [(param.beta-1)*x for x in E]
+        w = np.concatenate(weight_mod)
+        N0 = getNeff(np.exp(w - np.max(w)))
+        log(f"Temperature reweight decreases Neff from {N} to {N0}")
+
     # do coupling updates
-    lastNeff = 2*N
+    lastNeff = 2*N0
     for i in range(newtonSteps):
         gpus.updateJ(gamma, pc)
         if param.reg is not None:
@@ -190,6 +198,9 @@ def iterNewton(param, bimarg_model, gpus, log):
 
         # compute weights on CPU (since we want to subtract max for precision)
         dE = gpus.readBufs(ebufname)
+        if param.beta is not None:
+            for dEi, wi in zip(dE, weight_mod):
+                dEi -= wi
         mindE = np.min([np.min(x) for x in dE])
         weights = [np.exp(mindE - x) for x in dE]
         gpus.setBuf(wbufname, weights)
@@ -199,11 +210,11 @@ def iterNewton(param, bimarg_model, gpus, log):
 
         weights = np.concatenate(weights)
         Neff = getNeff(weights)
-        if i%64 == 0 or abs(lastNeff - Neff)/N > 0.05 or Neff < Nfrac*N:
+        if i%64 == 0 or abs(lastNeff - Neff)/N0 > 0.05 or Neff < Nfrac*N0:
             log("J-step {: 5d}   Neff: {:.1f}   ({:.1f}% of {})".format(
-                 i, Neff, Neff/N*100, N))
+                 i, Neff, Neff/N0*100, N0))
             lastNeff = Neff
-        if Neff < Nfrac*N:
+        if Neff < Nfrac*N0:
             log("Ending coupling updates because Neff/N < {:.2f}".format(Nfrac))
             break
     log("Performed {} coupling update steps".format(i))
@@ -425,10 +436,21 @@ def runMCMC(gpus, couplings, runName, param, log):
         e_rho = [spearmanr(ei, equil_e[-1]) for ei in equil_e]
 
     #process results
-    gpus.calcBicounts('main')
-    gpus.calcEnergies('main')
-    bicount, es = gpus.collect(['bicount', 'E main'])
-    bimarg_model = (bicount/np.sum(bicount[0,:])).astype('f4')
+    if param.beta is None:
+        gpus.calcBicounts('main')
+        gpus.calcEnergies('main')
+        bicount, es = gpus.collect(['bicount', 'E main'])
+        bimarg_model = (bicount/np.sum(bicount[0,:])).astype('f4')
+    else:
+        # reweight our sequences
+        log("Reweighting to account for modified temperature.")
+        gpus.calcEnergies('main')
+        es = gpus.collect('E main')
+        gpus.fixed_beta_weights(np.min(es), 'main')
+        gpus.weightedMarg('main')
+        bimarg_model = gpus.collect('bi')
+        bimarg_model /= np.sum(bimarg_model, axis=1, keepdims=True)
+        bicount = None
 
     gpus.logProfile()
 
