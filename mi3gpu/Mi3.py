@@ -205,7 +205,7 @@ def requireargs(args, required):
     args = vars(args)
     for r in required:
         if args[r] is None:
-            raise Exception("error: argument --{} is required".format(r))
+            raise Exception(r"error: argument --{r} is required")
 
 def setup_seed(args, p, log):
     if args.rngseed is not None:
@@ -217,27 +217,27 @@ def setup_seed(args, p, log):
     np.random.seed(seed)
     # set rngseed param, used in mcmcGPU for randomized mutation pos
     p['rngseed'] = seed + 1  # +1 just so rng for seq gen is diff from mcmc
-    log("Using random seed {}".format(p.rngseed))
+    log(f"Using random seed {p.rngseed}")
     log("")
 
 def describe_tempering(args, p, log):
     if p.tempering is not None:
         if len(p.tempering) == p.nwalkers:
-            msg = ("The walkers are assigned temperatures from file {}"
-                  ).format(args.tempering)
+            msg = (f"The walkers are assigned temperatures from "
+                   f"file {args.tempering}")
         else:
-            msg = ("The walkers are divided into {} temperature groups ({})"
-                  ).format(len(p.tempering), args.tempering)
+            msg = (f"The walkers are divided into {p.tempering} temperature "
+                   f"groups ({args.tempering})")
 
-        log(("Parallel tempering: {}, and neighbor temperatures are "
-             "swapped {} times after every MCMC loop. The low-temperature "
-             "B is {}").format(msg, p.nswaps, np.max(p.tempering)))
+        log(f"Parallel tempering: {msg}, and neighbor temperatures are "
+            f"swapped {p.nswaps} times after every MCMC loop. The "
+            f"low-temperature B is {p.tempering}")
 
 def print_node_startup(log, orig_args):
-    log("Hostname:   {}".format(socket.gethostname()))
-    log("Start Time: {}".format(datetime.datetime.now()))
+    log(f"Hostname:   {socket.gethostname()}")
+    log(f"Start Time: {datetime.datetime.now()}")
     if 'PBS_JOBID' in os.environ:
-        log("Job name:   {}".format(os.environ['PBS_JOBID']))
+        log(f"Job name:   {os.environ['PBS_JOBID']}")
 
     log("")
     log("Command line arguments:")
@@ -250,7 +250,7 @@ def setup_exit_hook(log):
     def exiter():
         if MPI:
             mpi_comm.Abort()
-        log("Exited at {}".format(datetime.datetime.now()))
+        log(f"Exited at {datetime.datetime.now()}")
 
     atexit.register(exiter)
 
@@ -305,7 +305,7 @@ def setup_GPUs_MPI(p, log):
 
     gpu_param = mpi_comm.scatter(gpu_param, root=0)
 
-    log("Found {} GPUs over {} nodes".format(ngpus, len(node_ngpus)))
+    log(f"Found {ngpus} GPUs over {node_ngpus} nodes")
     log("Starting GPUs...")
     # initialize head node gpus
     headgpus = [initGPU(id, clinfo, dev, nwalk, p, log)
@@ -315,7 +315,7 @@ def setup_GPUs_MPI(p, log):
                [MPI_GPU_node(r+1, n) for r, n in enumerate(node_ngpus[1:])])
     gpus = MPI_multinode_controller(workers)
     log('Running on GPUs:\n' +
-        "\n".join('    {}   ({} walkers)'.format(n, nwalk)
+        "\n".join(f'    {n}   ({nwalk} walkers)'
                   for n, nwalk in zip(gpus.gpu_list, gpuwalkers)))
     return gpus
 
@@ -333,14 +333,14 @@ def setup_GPUs(p, log):
     gpuwalkers = divideWalkers(p.nwalkers, ngpus, log, p.wgsize)
     gpu_param = enumerate(gpuwalkers)
 
-    log("Found {} GPUs".format(ngpus))
+    log(f"Found {ngpus} GPUs")
     log("GPU Initialization:")
     headgpus = [initGPU(id, clinfo, dev, nwalk, p, log)
                 for dev,(id, nwalk) in zip(gpudevs, gpu_param)]
 
     gpus = GPU_node(headgpus)
     log('Running on GPUs:\n' +
-        "\n".join('    {}   ({} walkers)'.format(n, nwalk)
+        "\n".join(f'    {n}   ({nwalk} walkers)'
                   for n, nwalk in zip(gpus.gpu_list, gpuwalkers)))
     return gpus
 
@@ -371,12 +371,12 @@ def inverseIsing(orig_args, infer_args, log):
     if args.finish:
         outdir = args.finish
         if not outdir.is_dir():
-            raise ValueError("{} is not a directory".format(outdir))
+            raise ValueError(f"{outdir} is not a directory")
 
         # search for last run dir:
         runs = [di for di in outdir.glob('run_*')]
         if runs == []:
-            raise Exception("Did not find any runs in {}".format(outdir))
+            raise Exception(f"Did not find any runs in {outdir}")
         runs.sort()
         rundir = runs[-1]
         startrun = int(str(rundir).rpartition('_')[2])
@@ -387,7 +387,7 @@ def inverseIsing(orig_args, infer_args, log):
             jstep = int(f.read())
 
         # figure out log file name to use
-        logfile = open(outdir / 'log_finish_{}'.format(startrun), 'wt')
+        logfile = open(outdir / f'log_finish_{startrun}', 'wt')
         log = lambda *s, **kwds: print(*s, file=logfile, flush=True, **kwds)
 
         finish_args = infer_args[:]
@@ -413,11 +413,11 @@ def inverseIsing(orig_args, infer_args, log):
     print_node_startup(log, orig_args)
 
     if MPI:
-        log("MPI detected using {} processes".format(mpi_comm.Get_size()))
+        log(f"MPI detected using {mpi_comm.Get_size()} processes")
         log("")
 
     if args.finish:
-        log("Continuing from {}".format(rundir))
+        log(f"Continuing from {rundir}")
         log("")
 
     log("Initialization")
@@ -501,20 +501,18 @@ def inverseIsing(orig_args, infer_args, log):
 
     log("")
 
-    log("Computation Overview")
-    log("====================")
-    log("Running {} Newton-MCMC rounds".format(p.mcmcsteps))
+    log( "Computation Overview")
+    log( "====================")
+    log(f"Running {p.mcmcsteps} Newton-MCMC rounds")
     if p.equiltime == 'auto':
-        log(("In each round, running {} MC walkers until equilibrated, with a "
-             "minimum of {} equilibration loops{}").format(
-              p.nwalkers, p.min_equil, " and maximum {}".format(p.max_equil)
-                                       if p.max_equil is not None else ''))
+        maxstr = f" and maximum {p.max_equil}" if p.max_equil is not None else ''
+        log(f"In each round, running {p.nwalkers} MC walkers until equilibrated,"
+            f" with a minimum of {p.min_equil} equilibration loops{maxstr}")
     else:
-        log(("In each round, running {} MC walkers for {} equilibration loops "
-             "with {} MC steps per loop (Each walker equilibrated a total of "
-             "{} MC steps, or {:.1f} steps per position)."
-             ).format(p.nwalkers, p.equiltime, p.nsteps, p.nsteps*p.equiltime,
-                    p.nsteps*p.equiltime/p.L))
+        log(f"In each round, running {p.nwalkers} MC walkers for {p.equiltime} "
+            f"equilibration loops with {p.nsteps} MC steps per loop (Each "
+            f"walker equilibrated a total of {p.nsteps*p.equiltime} MC steps, "
+            f"or {p.nsteps*p.equiltime/p.L:.1f} steps per position).")
 
     describe_tempering(args, p, log)
 
@@ -524,12 +522,11 @@ def inverseIsing(orig_args, infer_args, log):
         N = np.sum(p.tempering == B0)
 
     f = p.bimarg
-    expected_SSR = np.sum(f*(1-f))/N
+    expect_SSR = np.sum(f*(1-f))/N
     absexp = np.sqrt(2/np.pi)*np.sqrt(f*(1-f)/N)/f
-    expected_Ferr = np.mean(absexp[f>0.01])
+    expect_Ferr = np.mean(absexp[f>0.01])
     log("\nEstimated lowest achievable statistical error for this nwalkers and "
-        "bimarg is:\nMIN:    SSR = {:.4f}   Ferr = {:.3f}".format(expected_SSR,
-                                                                 expected_Ferr))
+        f"bimarg is:\nMIN:    SSR = {expect_SSR:.4f}   Ferr = {expect_Ferr:.3f}")
     log("(Statistical error only. Modeling biases and perturbation procedure "
         "may cause additional error)")
 
@@ -602,7 +599,7 @@ def getEnergies(orig_args, args, log):
     gpus.calcEnergies('main')
     es = gpus.collect('E main')
 
-    log("Saving results to file '{}'".format(args.out))
+    log(f"Saving results to file '{args.out}'")
     np.save(args.out, es)
 
     logfile.close()
@@ -687,8 +684,7 @@ def MCMCbenchmark(orig_args, args, log):
     log("Benchmark")
     log("=========")
     log("")
-    log("Benchmarking MCMC for {} loops, {} MC steps per loop".format(
-                                                 nloop, p.nsteps))
+    log(f"Benchmarking MCMC for {nloop} loops, {p.nsteps} MC steps per loop")
     import time
 
     def runMCMC():
@@ -712,8 +708,8 @@ def MCMCbenchmark(orig_args, args, log):
     log("Elapsed time: ", end - start)
     totsteps = p.nwalkers*nloop*np.float64(p.nsteps)
     steps_per_second = totsteps/(end-start)
-    log("MC steps computed: {}".format(totsteps))
-    log("MC steps per second: {:g}".format(steps_per_second))
+    log(f"MC steps computed: {totsteps}")
+    log(f"MC steps per second: {steps_per_second:g}")
 
     ## quick sanity check as a bonus
     #gpus.calcEnergies('main')
@@ -779,12 +775,12 @@ def equilibrate(orig_args, args, log):
             raise ValueError("indep_marg must be supplied if generating "
                              "independent-model sequences")
         if imarg.shape == (L, q):
-            log("loading unimarg from {} for independent model sequence "
-                "generation".format(args.indep_marg))
+            log(f"loading unimarg from {args.indep_marg} for independent model "
+                 "sequence generation")
             unimarg = imarg
         else:
-            log("loading bimarg from {} and converted to unimarg for "
-                "independent model sequence generation".format(args.indep_marg))
+            log(f"loading bimarg from {args.indep_marg} and converted to unimarg"
+                 " for independent model sequence generation")
             unimarg = getUnimarg(imarg)
         gpus.prepare_indep(unimarg.astype('f4'))
 
@@ -801,16 +797,14 @@ def equilibrate(orig_args, args, log):
     log("Computation Overview")
     log("====================")
     if p.equiltime == 'auto':
-        log(("In each round, running {} MC walkers until equilibrated, with a "
-             "minimum of {} equilibration loops{}").format(
-              p.nwalkers, p.min_equil, " and maximum {}".format(p.max_equil)
-                                       if p.max_equil is not None else ''))
+        maxstr = f" and maximum {p.max_equil}" if p.max_equil is not None else ''
+        log(f"In each round, running {p.nwalkers} MC walkers until equilibrated,"
+            f" with a minimum of {p.min_equil} equilibration loops{maxstr}")
     else:
-        log(("Running {} MC walkers for {} equilibration loops "
-             "with {} MC steps per loop (Each walker equilibrated a total of "
-             "{} MC steps, or {:.1f} steps per position)."
-             ).format(p.nwalkers, p.equiltime, p.nsteps, p.nsteps*p.equiltime,
-                      p.nsteps*p.equiltime/p.L))
+        log(f"Running {p.nwalkers} MC walkers for {p.equiltime} equilibration "
+            f"loops with {p.nsteps} MC steps per loop (Each walker equilibrated "
+            f"a total of {p.nsteps*p.equiltime} MC steps, or "
+            f"{p.nsteps*p.equiltime/p.L:.1f} steps per position).")
 
     describe_tempering(args, p, log)
 
@@ -864,7 +858,7 @@ def equilibrate(orig_args, args, log):
         e, b = readGPUbufs(['E main', 'Bs'], gpus)
         np.save(outdir / 'walker_Bs', np.concatenate(b))
         np.save(outdir / 'walker_Es', np.concatenate(e))
-        log("Final PT swap rate: {}".format(ptinfo[1]))
+        log(f"Final PT swap rate: {ptinfo[1]}")
 
     log("Mean energy:", np.mean(sampledenergies))
 
@@ -952,7 +946,7 @@ def subseqFreq(orig_args, args, log):
         logf[n] = logsumexp(origEs - energies)
 
     #save result
-    log("Saving result (log frequency) to file {}".format(args.out))
+    log(f"Saving result (log frequency) to file {args.out}")
     np.save(args.out, logf)
 
     logfile.close()
@@ -976,9 +970,9 @@ def process_GPU_args(args, L, q, outdir, log):
 
     p['wgsize'] = wgsize_heuristic(p.q, p.wgsize)
 
-    log("Total GPU walkers: {}".format(p.nwalkers))
-    log("Work Group Size: {}".format(p.wgsize))
-    log("{} MC steps per MCMC kernel call".format(p.nsteps))
+    log(f"Total GPU walkers: {p.nwalkers}")
+    log(f"Work Group Size: {p.wgsize}")
+    log(f"{p.nsteps} MC steps per MCMC kernel call")
     if p.profile:
         log("Profiling Enabled")
     return p
@@ -987,7 +981,7 @@ def process_newton_args(args, log):
     log("Newton Solver Setup")
     log("-------------------")
     mcmcsteps = args.mcsteps
-    log("Running {} Newton-MCMC rounds".format(mcmcsteps))
+    log(f"Running {mcmcsteps} Newton-MCMC rounds")
 
     param = {'mcmcsteps': args.mcsteps,
              'newtonSteps': args.newtonsteps,
@@ -1001,13 +995,12 @@ def process_newton_args(args, log):
 
     p = attrdict(param)
 
-    log("Updating J locally with gamma={}, and pc-damping {}".format(
-        str(p.gamma0), str(p.pcdamping)))
-    log("Running {} Newton update steps per round.".format(p.newtonSteps))
-    log("Using {}-GPU mode for Newton-step calculations.".format(
-        p.distribute_jstep))
+    log(f"Updating J locally with gamma={p.gamma0}, "
+        f"and pc-damping {p.pcdamping}")
+    log(f"Running {p.newtonSteps} Newton update steps per round.")
+    log(f"Using {p.distribute_jstep}-GPU mode for Newton-step calculations.")
 
-    log("Reading target marginals from file {}".format(args.bimarg))
+    log(f"Reading target marginals from file {args.bimarg}")
     bimarg = np.load(args.bimarg)
     if bimarg.dtype != np.dtype('<f4'):
         raise Exception("Bimarg must be in 'f4' format")
@@ -1024,27 +1017,25 @@ def process_newton_args(args, log):
                   'X', 'Xij', 'SCADX', 'expX',
                   'ddE', 'SCADddE']
         if rtype not in rtypes:
-            raise Exception("reg must be one of {}".format(str(rtypes)))
+            raise Exception(f"reg must be one of {str(rtypes)}")
         p['reg'] = rtype
         if rtype == 'ddE':
             lam = float(rarg)
-            log("Regularizing using {} with lambda = {}".format(rtype, lam))
+            log(f"Regularizing using {rtype} with lambda = {lam}")
             p['regarg'] = (lam,)
         elif rtype == 'SCADddE':
             lam, dummy, r = rarg.partition(':')
             lam = float(lam)
             r = lam if r == '' else float(r)
-            log("Regularizing using {} with lambda = {}, r = {}".format(rtype,
-                                                                        lam, r))
+            log(f"Regularizing using {rtype} with lambda = {lam}, r = {r}")
             p['regarg'] = (lam, r)
         elif rtype == 'l2z' or rtype == 'l1z':
             try:
                 lJ = float(rarg)
-                log(("Regularizing using {} norm with lambda_J = {}").format(
-                                                                     rtype, lJ))
+                log(f"Regularizing using {rtype} norm with lambda_J = {lJ}")
             except:
-                raise Exception("{r} specifier must be of form '{r}:lJ', eg "
-                          "'{r}:0.01'. Got '{}'".format(args.reg, r=rtype))
+                raise Exception(f"{rtype} specifier must be of form '{rtype}:lJ'"
+                                f", eg '{rtype}:0.01'. Got '{args.reg}'")
             p['regarg'] = (lJ,)
         elif rtype == 'SCADJ':
             try:
@@ -1053,23 +1044,22 @@ def process_newton_args(args, log):
                 a = float(a) if a != '' else 4.0
                 if a < 2.0:
                     raise Exception("SCADJ a parameter must be >= 2.0")
-                log(("Regularizing using SCADJ with r={} a={}"
-                    ).format(r, a))
+                log(f"Regularizing using SCADJ with r={r} a={a}")
             except:
-                raise Exception("{r} specifier must be of form '{r}:r:a'"
-                              ", eg '{r}:10:0.1'. Got '{arg}'".format(
-                                arg=args.reg))
+                raise Exception(f"{rtype} specifier must be of form "
+                                f"'{rtype}:r:a', eg '{rtype}:10:0.1'. "
+                                f"Got '{args.reg}'")
             p['regarg'] = (r, a)
         elif rtype == 'X':
             try:
                 lX = float(rarg)
-                log(("Regularizing X with lambda_X = {}").format(lX))
+                log(f"Regularizing X with lambda_X = {}lX")
             except:
-                raise Exception("{r} specifier must be of form 'X:lX', eg "
-                          "'X:0.01'. Got '{}'".format(args.reg, r=rtype))
+                raise Exception(f"{rtype} specifier must be of form 'X:lX', eg "
+                                f"'X:0.01'. Got '{args.reg}'")
             p['regarg'] = (lX,)
         elif rtype == 'Xij':
-            log("Regularizing with Xij from file {}".format(rarg))
+            log(f"Regularizing with Xij from file {rarg}")
             p['regarg'] = np.load(rarg)
             if p['regarg'].shape != bimarg.shape:
                 raise Exception("Xij in wrong format")
@@ -1083,20 +1073,19 @@ def process_newton_args(args, log):
                 if a < 2.0:
                     raise Exception("SCADX a parameter must be >= 2.0")
                 s = 2*d/((1+a)*r*r) # see comment in mcmc.cl
-                log(("Regularizing using SCADX with d={} r={} a={}"
-                    ).format(d, r, a))
+                log(f"Regularizing using SCADX with d={d} r={r} a={a}")
             except:
-                raise Exception("{r} specifier must be of form '{r}:d:r:a' or "
-                              "'{r}:d:r', eg '{r}:10:0.1'. Got '{arg}'".format(
-                                arg=args.reg))
+                raise Exception(f"{rtype} specifier must be of form "
+                                f"'{rtype}:d:r:a' or {rtype}:d:r', eg "
+                                f"'{rtype}:10:0.1'. Got '{args.reg}'")
             p['regarg'] = (s, r, a)
         elif rtype == 'expX':
             try:
                 lam = float(rarg)
-                log(("Regularizing using expX with  lam = {}").format(lam))
+                log(f"Regularizing using expX with  lam = {lam}")
             except:
-                raise Exception("{r} specifier must be of form 'expX:l', eg "
-                          "'expX:0.001'. Got '{}'".format(args.reg, r=rtype))
+                raise Exception(f"{rtype} specifier must be of form 'expX:l', "
+                                f"eg 'expX:0.001'. Got '{args.reg}'")
             p['regarg'] = (lam,)
 
     log("")
@@ -1107,13 +1096,13 @@ def updateLq(L, q, newL, newq, name):
     # are the same as the old values if not None
     if newL is not None:
         if L is not None and L != newL:
-            raise Exception("L from {} ({}) inconsitent with previous "
-                            "value ({})".format(name, newL, L))
+            raise Exception(f"L from {name} ({newL}) inconsitent with previous "
+                            f"value ({L})")
         L = newL
     if newq is not None:
         if q is not None and q != newq:
-            raise Exception("q from {} ({}) inconsitent with previous "
-                            "value ({})".format(name, newq, q))
+            raise Exception(f"q from {name} ({newq}) inconsitent with previous "
+                            f"value ({q})")
         q = newq
     return L, q
 
@@ -1134,8 +1123,8 @@ def process_potts_args(args, L, q, unimarg, log):
     couplings, L, q = getCouplings(args, L, q, unimarg, log)
     # we should have L and q by this point
 
-    log("alphabet: {}".format(alpha))
-    log("q {}  L {}".format(q, L))
+    log(f"alphabet: {alpha}")
+    log(f"q {q}  L {L}")
     log("Couplings: " + printsome(couplings) + "...")
 
     log("")
@@ -1165,7 +1154,7 @@ def getCouplings(args, L, q, unimarg, log):
             J = np.zeros((L*(L-1)//2,q*q), dtype='<f4')
             couplings = fieldlessGaugeEven(h, J)[1]
         else: #otherwise load them from file
-            log("Reading couplings from file {}".format(args.couplings))
+            log(f"Reading couplings from file {args.couplings}")
             couplings = np.load(args.couplings)
             if couplings.dtype != np.dtype('<f4'):
                 raise Exception("Couplings must be in 'f4' format")
@@ -1173,12 +1162,12 @@ def getCouplings(args, L, q, unimarg, log):
         # and otherwise try to load them from model directory
         fn = Path(args.init_model, 'J.npy')
         if fn.is_file():
-            log("Reading couplings from file {}".format(fn))
+            log(f"Reading couplings from file {fn}")
             couplings = np.load(fn)
             if couplings.dtype != np.dtype('<f4'):
                 raise Exception("Couplings must be in 'f4' format")
         else:
-            raise Exception("could not find file {}".format(fn))
+            raise Exception(f"could not find file {fn}")
     else:
         raise Exception("didn't get couplings or init_model")
     L2, q2 = getLq(couplings)
@@ -1216,14 +1205,14 @@ def process_sequence_args(args, L, alpha, log, unimarg=None,
             seqs = loadSequenceDir(args.init_model, '', alpha, log)
 
         if nseqs is not None and seqs is None:
-            raise Exception("Did not find requested {} sequences".format(nseqs))
+            raise Exception(f"Did not find requested {nseqs} sequences")
 
         n_loaded = seqs.shape[0]
         if nseqs > n_loaded:
-            log("Repeating {} sequences to make {}".format(n_loaded, nseqs))
+            log(f"Repeating {n_loaded} sequences to make {nseqs}")
             seqs = repeatseqs(seqs, nseqs)
         elif nseqs < n_loaded:
-            log("Truncating {} sequences to make {}".format( n_loaded, nseqs))
+            log(f"Truncating {n_loaded} sequences to make {nseqs}")
             seqs = seqs[:nseqs]
 
     # try to get seed seq
@@ -1248,8 +1237,8 @@ def process_sequence_args(args, L, alpha, log, unimarg=None,
                                   args.alpha.strip(), log)
             seedseq_origin = 'from file'
 
-        log("Seed seq ({}): {}".format(seedseq_origin,
-                                       "".join(alpha[x] for x in seedseq)))
+        seedstr = "".join(alpha[x] for x in seedseq)
+        log(f"Seed seq ({seedseq_origin}): {seedstr}")
 
     log("")
     return attrdict({'seedseq': seedseq,
@@ -1257,36 +1246,36 @@ def process_sequence_args(args, L, alpha, log, unimarg=None,
 
 def generateSequences(gentype, L, q, nseqs, log, unimarg=None):
     if gentype == 'zero' or gentype == 'uniform':
-        log("Generating {} random sequences...".format(nseqs))
+        log(f"Generating {nseqs} random sequences...")
         return randint(0, q, size=(nseqs, L)).astype('<u1')
     elif gentype == 'independent':
-        log("Generating {} independent-model sequences...".format(nseqs))
+        log(f"Generating {nseqs} independent-model sequences...")
         if unimarg is None:
             raise Exception("marg must be provided to generate sequences")
         cumprob = np.cumsum(unimarg, axis=1)
         cumprob = cumprob/(cumprob[:,-1][:,None]) #correct fp errors?
         return np.array([np.searchsorted(cp, rand(nseqs)) for cp in cumprob],
                      dtype='<u1').T
-    raise Exception("Unknown sequence generation mode '{}'".format(gentype))
+    raise Exception(f"Unknown sequence generation mode '{gentype}'")
 
 def loadseedseq(fn, alpha, log):
-    log("Reading seedseq from file {}".format(fn))
+    log(f"Reading seedseq from file {fn}")
     with open(fn) as f:
         seedseq = f.readline().strip()
         seedseq = np.array([alpha.index(c) for c in seedseq], dtype='<u1')
     return seedseq
 
 def loadSequenceFile(sfile, alpha, log):
-    log("Loading sequences from file {}".format(sfile))
+    log(f"Loading sequences from file {sfile}")
     seqs = loadSeqs(sfile, alpha=alpha)[0].astype('<u1')
-    log("Found {} sequences".format(seqs.shape[0]))
+    log(f"Found {seqs.shape[0]} sequences")
     return seqs
 
 def loadSequenceDir(sdir, bufname, alpha, log):
-    log("Loading {} sequences from dir {}".format(bufname, sdir))
+    log(f"Loading {bufname} sequences from dir {sdir}")
     sfile = Path(sdir) / 'seqs'
     seqs = loadSeqs(sfile, alpha=alpha)[0].astype('<u1')
-    log("Found {} sequences".format(seqs.shape[0]))
+    log(f"Found {seqs.shape[0]} sequences")
     return seqs
 
 def process_sample_args(args, log):
@@ -1298,7 +1287,7 @@ def process_sample_args(args, log):
 
     bad_track = [x for x in p.tracked if x not in ['bim', 'E', 'seq']]
     if len(bad_track) != 0:
-        raise ValueError('Invalid "--tracked" values: {}'.format(bad_track))
+        raise ValueError(f'Invalid "--tracked" values: {bad_track}')
 
     if p['equiltime'] != 'auto':
         p['equiltime'] = int(p['equiltime'])
@@ -1318,16 +1307,15 @@ def process_sample_args(args, log):
     if p.equiltime == 'auto':
         log('Using "auto" equilibration')
     else:
-        log(("In each MCMC round, running {} GPU MCMC kernel calls"
-             ).format(p.equiltime))
+        log(f"In each MCMC round, running {p.equiltime} GPU MCMC kernel calls")
     if 'tempering' in p:
-        log("Parallel tempering with inverse temperatures {}, "
-            "swapping {} times per loop".format(args.tempering, p.nswaps))
+        log(f"Parallel tempering with inverse temperatures {args.tempering}, "
+            f"swapping {p.nswaps} times per loop")
 
     if p.equiltime != 'auto' and p.trackequil != 0:
         if p.equiltime%p.trackequil != 0:
             raise Exception("Error: trackequil must be a divisor of equiltime")
-        log("Tracking equilibration every {} loops.".format(p.trackequil))
+        log(f"Tracking equilibration every {p.trackequil} loops.")
 
     log("")
     return p

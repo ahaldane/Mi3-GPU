@@ -30,8 +30,7 @@ from mi3gpu.utils.potts_common import printsome, getLq, indepF
 ################################################################################
 #Helper funcs
 
-def printstats(name, jstep, bicount, bimarg_target, bimarg_model, couplings,
-               energies, e_rho, ptinfo):
+def bimarg_stats(bimarg_target, bimarg_model):
     topbi = bimarg_target > 0.01
     with np.errstate(divide='ignore', invalid='ignore'):
         rel_err = (np.abs(bimarg_target - bimarg_model)/bimarg_target)
@@ -39,11 +38,20 @@ def printstats(name, jstep, bicount, bimarg_target, bimarg_model, couplings,
     ssr = np.sum((bimarg_target - bimarg_model)**2)
     maxd = np.max(np.abs(bimarg_target - bimarg_model))
 
+    return ferr, ssr, maxd
+
+def printstats(name, jstep, bicount, bimarg_target, bimarg_model, couplings,
+               energies, e_rho, ptinfo):
+    ferr, ssr, maxd = bimarg_stats(bimarg_target, bimarg_model)
+    ferr, maxd = ferr*100, maxd*100
+
     C = bimarg_model - indepF(bimarg_model)
     X = np.sum(couplings*C, axis=1)
 
     Co = bimarg_target - indepF(bimarg_target)
     Xo = np.sum(couplings*Co, axis=1)
+
+    X = f"{np.sum(X): 6.1f} ({np.sum(Xo): 6.1f})"
 
     rhostr = '(none)'
     if e_rho is not None:
@@ -51,21 +59,17 @@ def printstats(name, jstep, bicount, bimarg_target, bimarg_model, couplings,
         rhostr = np.array2string(np.array(rho), precision=2, floatmode='fixed',
                                  suppress_small=True)[1:-1]
 
+    lowE, meanE, stdE = np.min(energies), np.mean(energies), np.std(energies)
     #print some details
-    disp = """\
+    disp = f"""\
 {name} {jstep: 6d} Error: SSR:{ssr:6.3f}   rel%:{ferr:5.2f}   max%:{maxd:5.2f}   X:{X}
-{name} bimarg: {bimarg} ...
-{name}      J: {couplings} ...
+{name} bimarg: {printsome(bimarg)} ...
+{name}      J: {printsome(couplings)} ...
 {name} min(E) = {lowE:.4f}     mean(E) = {meanE:.4f}     std(E) = {stdE:.4f}
-{name} E Autocorr vs time: {rhos}""".format(
-        name=name, jstep=jstep, ferr=ferr*100, ssr=ssr, maxd=maxd*100,
-        X="{: 6.1f} ({: 6.1f})".format(np.sum(X), np.sum(Xo)),
-        bimarg=printsome(bimarg_model),
-        couplings=printsome(couplings), lowE=min(energies),
-        meanE=np.mean(energies), stdE=np.std(energies), rhos=rhostr)
+{name} E Autocorr vs time: {rhostr}"""
 
     if ptinfo != None:
-        disp += "\n{} PT swap rate: {}".format(name, ptinfo[1])
+        disp += f"\n{name} PT swap rate: {ptinfo[1]}"
 
     return disp
 
@@ -85,7 +89,7 @@ def writeStatus(name, Jstep, bimarg_target, bicount, bimarg_model, couplings,
 
     if ptinfo != None:
         for n,B in enumerate(ptinfo[0]):
-            np.save(outdir / 'Bs-{}'.format(n), B)
+            np.save(outdir / f'Bs-{n}', B)
 
     log(dispstr)
 
@@ -126,13 +130,14 @@ def getNeff(w):
     return (np.sum(w)**2)/np.sum(w**2)
 
 def NewtonStatus(n, trialJ, weights, bimarg_model, bimarg_target, log):
-    SSR = np.sum((bimarg_model.flatten() - bimarg_target.flatten())**2)
+    ferr, ssr, maxd = bimarg_stats(bimarg_target, bimarg_model)
+    w = weights
 
     # not clear what best Neff measure is. sum(weights)?
     Neff = getNeff(weights)
     log("Predicted statistics after perturbing J:")
-    log("     SSR: {:.4f}    Neff: {:.1f}    wspan: {:.3g}:{:.3g}".format(
-         SSR, Neff, min(weights), max(weights)))
+    log(f"    SSR:{ssr:6.3f}   rel%:{ferr:5.2f}   max%:{maxd:5.2f}")
+    log(f"    Neff: {Neff:.1f}    wspan: {min(w):.3e}:{max(w):.3e}")
     log("  trialJ:", printsome(trialJ)), '...'
     log("  bimarg:", printsome(bimarg_model)), '...'
     log(" weights:", printsome(weights)), '...'
@@ -147,9 +152,9 @@ def iterNewton(param, bimarg_model, gpus, log):
 
 
     log("")
-    log("Perturbation optimization for up to {} steps:".format(newtonSteps))
+    log(f"Perturbation optimization for up to {newtonSteps} steps:")
     if param.reg:
-        log("Using regularization {} ({})".format(param.reg, param.regarg))
+        log(f"Using regularization {param.reg} ({param.regarg})")
 
     s = time.time()
 
@@ -211,13 +216,13 @@ def iterNewton(param, bimarg_model, gpus, log):
         weights = np.concatenate(weights)
         Neff = getNeff(weights)
         if i%64 == 0 or abs(lastNeff - Neff)/N0 > 0.05 or Neff < Nfrac*N0:
-            log("J-step {: 5d}   Neff: {:.1f}   ({:.1f}% of {})".format(
-                 i, Neff, Neff/N0*100, N0))
+            relN = Neff/N0*100
+            log("J-step {i: 5d}   Neff: {Neff:.1f}   ({relN:.1f}% of {N0})")
             lastNeff = Neff
         if Neff < Nfrac*N0:
-            log("Ending coupling updates because Neff/N < {:.2f}".format(Nfrac))
+            log(f"Ending coupling updates because Neff/N < {Nfrac:.2f}")
             break
-    log("Performed {} coupling update steps".format(i))
+    log(f"Performed {i} coupling update steps")
 
     # print status
     bi, J, dJ = gpus.head_gpu.readBufs(['bi', 'J', 'dJ'])
@@ -231,7 +236,7 @@ def iterNewton(param, bimarg_model, gpus, log):
                         "pc-damping")
 
     e = time.time()
-    log("Total Newton-step running time: {:.1f} s".format(e-s))
+    log("Total Newton-step running time: {e-s:.1f} s")
 
     # dump profiling info if profiling is turned on
     gpus.logProfile()
@@ -344,12 +349,12 @@ def track_main_bufs(param, gpus, savedir=None, step=None):
 
     if savedir:
         if 'bim' in param.tracked:
-            np.save(savedir / 'bimarg_{}'.format(step), bimarg_model)
+            np.save(savedir / f'bimarg_{step}', bimarg_model)
         if 'E' in param.tracked:
-            np.save(savedir / 'energies_{}'.format(step), energies)
+            np.save(savedir / f'energies_{step}', energies)
         if 'seq' in param.tracked:
             seqs = gpus.collect('seq main')
-            writeSeqs(savedir / 'seqs_{}'.format(step), seqs,
+            writeSeqs(savedir / f'seqs_{step}', seqs,
                       param.alpha, zipf=True)
     return energies, bimarg_model
 
@@ -385,14 +390,14 @@ def runMCMC(gpus, couplings, runName, param, log):
             energies, _ = track_main_bufs(param, gpus, equil_dir, step)
             equil_e.append(energies)
 
-            rstr = "Step {} <E>={:.2f}. ".format(step, np.mean(energies))
+            rstr = f"Step {step} <E>={np.mean(energies):.2f}. "
 
             if len(equil_e) >= 3:
                 r1, p1 = spearmanr(equil_e[-1], equil_e[-2])
                 r2, p2 = spearmanr(equil_e[-1], equil_e[-3])
 
                 fmt = "({:.3f}, {:.2g}) ".format
-                rstr += "r={} prev:{}".format(fmt(r1, p1), fmt(r2, p2))
+                rstr += f"r={fmt(r1,p1)} prev:{fmt(r2,p2)}"
 
                 if p1 > 0.02 and p2 > 0.02 and step >= param.min_equil:
                     log(rstr + "Equilibrated.")
@@ -492,7 +497,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
             step += loops
             energies, _ = track_main_bufs(param, gpus, equil_dir, step)
             equil_e.append(energies)
-            np.save(outdir / runName / 'equilibration' / 'Bs_{}'.format(step),
+            np.save(outdir / runName / 'equilibration' / f'Bs_{step}',
                     np.concatenate(Bs))
 
             if len(equil_e) >= 3:
@@ -500,8 +505,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
                 r2, p2 = spearmanr(equil_e[-1], equil_e[-3])
 
                 fmt = "({:.3f}, {:.2g})".format
-                rstr = "Step {}, r={} prev:{}".format(
-                        step, fmt(r1, p1), fmt(r2, p2))
+                rstr = f"Step {step}, r={fmt(r1, p1)} prev:{fmt(r2, p2)}"
 
                 # Note that we are testing the correlation for *all* walkers,
                 # no matter their temperature. In other words, we are waiting
@@ -512,7 +516,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
                     log(rstr + ". Equilibrated.")
                     break
             else:
-                rstr = "Step {}".format(step)
+                rstr = f"Step {step}"
 
             loops = loops*2
             log(rstr + ". Continuing.")
@@ -536,7 +540,7 @@ def runMCMC_tempered(gpus, couplings, runName, param, log):
                 Bs,r = swapTemps(gpus, param.tempering, param.nswaps)
 
             energies, _ = track_main_bufs(param, gpus, equil_dir, step)
-            np.save(outdir / runName / 'equilibration' / 'Bs_{}'.format(j),
+            np.save(outdir / runName / 'equilibration' / f'Bs_{j}',
                     np.concatenate(Bs))
 
             equil_e.append(energies)
@@ -585,9 +589,9 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
     bimarg_target = param.bimarg
 
     log("")
-    log("Gradient Descent step {}".format(runName))
-    log("---------------------------")
-    log("Total J update step {}".format(Jstep))
+    log(f"Gradient Descent step {runName}")
+    log( "---------------------------")
+    log(f"Total J update step {Jstep}")
 
     #re-distribute energy among couplings
     #(not really needed, but makes nicer output and might prevent
@@ -619,8 +623,8 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
 
     end_time = time.time()
     dt = end_time - start_time
-    log("Total MCMC running time: {:.1f} s    ({:.3g} MC/s)".format(
-        dt, equilsteps*param.nsteps*np.float64(gpus.nwalkers)/dt))
+    MC_s = equilsteps*param.nsteps*np.float64(gpus.nwalkers)/dt
+    log(f"Total MCMC running time: {dt:.1f} s    ({MC_s:.3g} MC/s)")
 
     #get summary statistics and output them
     seqs = gpus.collect('seq main')
@@ -645,14 +649,14 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
             # 1.5 instead to slightly bias towards more newtonsteps on average
             param.newtonSteps = max(ns_delta,
                                     param.newtonSteps - int(1.5*ns_delta))
-            log("SSR increased over min. Decreasing newtonsteps to {}".format(
-                param.newtonSteps))
+            log("SSR increased over min. "
+                f"Decreasing newtonsteps to {param.newtonSteps}")
     param.last_ssr = ssr
     param.min_ssr = min(ssr, param.min_ssr)
 
     Jsteps, newJ = NewtonSteps(runName, param, bimarg_model, gpus, log)
     param.newtonSteps = min(2048, Jsteps + ns_delta)
-    log("Increasing newtonsteps to {}".format(param.newtonSteps))
+    log(f"Increasing newtonsteps to {param.newtonSteps)}")
     with open(outdir / runName / 'nsteps', 'wt') as f:
         f.write(str(Jsteps))
 
@@ -699,7 +703,7 @@ def newtonMCMC(param, gpus, start_run, Jstep, log):
 
     # solve using newton-MCMC
     Jstep += Jsteps
-    name_fmt = 'run_{{:0{}d}}'.format(int(np.ceil(np.log10(param.mcmcsteps))))
+    name_fmt = f'run_{{:0{int(np.ceil(np.log10(param.mcmcsteps)))}d}}'
     for i in range(start_run, param.mcmcsteps):
         runname = name_fmt.format(i)
 
