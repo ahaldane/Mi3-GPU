@@ -718,9 +718,9 @@ void weightedMarg(__global float *bimarg_new,
 }
 
 __kernel
-void addBiBufs(__global float *dst, __global float *src) {
+void addFloatBufs(__global float *dst, __global float *src, int buflen) {
     uint n = get_global_id(0);
-    if (n >= NCOUPLE) {
+    if (n >= buflen) {
         return;
     }
     dst[n] += src[n];

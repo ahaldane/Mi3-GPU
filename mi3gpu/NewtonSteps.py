@@ -163,6 +163,7 @@ def iterNewton(param, bimarg_model, gpus, log):
     seqbuf = 'main'
     wbufname = 'weights'
     ebufname = 'E main'
+    etmpname = 'E tmp'
     if param.distribute_jstep != 'all':
         seqs = gpus.collect('seq main')
 
@@ -177,6 +178,7 @@ def iterNewton(param, bimarg_model, gpus, log):
         seqbuf = 'large'
         wbufname = 'weights large'
         ebufname = 'E large'
+        etmpname = 'E tmp large'
 
     gpus.calcEnergies(seqbuf)
     gpus.calcBicounts(seqbuf)
@@ -186,16 +188,18 @@ def iterNewton(param, bimarg_model, gpus, log):
     gpus.fillBuf('dJ', 0)
 
     N0 = N
+    ref_dE = 0.0
     if param.beta is not None:
         E = gpus.readBufs(ebufname)
-        weight_mod = [(param.beta-1)*x for x in E]
-        w = np.concatenate(weight_mod)
+        beta_mod = [(param.beta-1)*x for x in E]
+        w = np.concatenate(beta_mod)
         N0 = getNeff(np.exp(w - np.max(w)))
+        gpus.setBuf(-etmpname, beta_mod)
+        ref_dE = np.min(w)
         log(f"Temperature reweight decreases Neff from {N} to {N0}")
 
     # do coupling updates
     lastNeff = 2*N0
-    ref_dE = 0.0
     for i in range(newtonSteps):
         gpus.updateJ(gamma, pc)
         if param.reg is not None:
@@ -203,36 +207,21 @@ def iterNewton(param, bimarg_model, gpus, log):
         gpus.calcEnergies(seqbuf, 'dJ')
 
         if param.beta:
-            # XXX add weight_mod to ebufname here
-            raise Exception("TODO: Implement --beta here")
+            raise Exception("TODO: Test this before using it")
+            gpus.addBuf(ebufname, etmpname)
 
         gpus.min_buf(ebufname)
         mindE_fut = gpus.getBuf('minout')
 
         gpus.dE_to_weights(seqbuf, ref_dE) # refdE is estimated from last round
         gpus.weight_statistics(seqbuf)
-        weightstat_fut = gpus.getBuf('weightstats')
-
-        ## compute weights on CPU (since we want to subtract max for precision)
-        #dE = gpus.readBufs(ebufname)
-        #if param.beta is not None:
-        #    for dEi, wi in zip(dE, weight_mod):
-        #        dEi -= wi
-        #mindE = np.min([np.min(x) for x in dE])
-        #weights = [np.exp(mindE - x) for x in dE]
-        #gpus.setBuf(wbufname, weights)
+        w_fut = gpus.getBuf('weightstats')
 
         gpus.weightedMarg(seqbuf)
         gpus.merge_bimarg()
 
-        #weights = np.concatenate(weights)
-        #Neff = getNeff(weights)
-
-        wsum, wsum2 = (np.sum(x) for x in 
-                        zip(*(wi.read() for wi in weightstat_fut)))
+        wsum, wsum2 = (np.sum(x) for x in zip(*(w.read() for w in w_fut)))
         Neff = wsum**2/wsum2
-        ref_dE = np.min([x.read()[()] for x in mindE_fut])
-
         if i%64 == 0 or abs(lastNeff - Neff)/N0 > 0.05 or Neff < Nfrac*N0:
             relN = Neff/N0*100
             log(f"J-step {i: 5d}   Neff: {Neff:.1f}   ({relN:.1f}% of {N0})")
@@ -240,6 +229,8 @@ def iterNewton(param, bimarg_model, gpus, log):
         if Neff < Nfrac*N0:
             log(f"Ending coupling updates because Neff/N < {Nfrac:.2f}")
             break
+
+        ref_dE = np.min([x.read()[()] for x in mindE_fut])
 
     log(f"Performed {i} coupling update steps")
 

@@ -289,6 +289,7 @@ class MCMCGPU:
         self._setupBuffer(    'seq large', '<u4', (self.SWORDS, nseq_large))
         self._setupBuffer(   'seqL large', '<u4', (self.L, nseq_large//4)),
         self._setupBuffer(      'E large', '<f4', (nseq_large,))
+        self._setupBuffer(  'E tmp large', '<f4', (nseq_large,)),
         self._setupBuffer('weights large', '<f4', (nseq_large,))
 
         self.largebufs.extend(['seq large', 'seqL large', 'E large',
@@ -326,6 +327,7 @@ class MCMCGPU:
         self._setupBuffer(   'Xlambdas', '<f4', (nPairs,))
         self._setupBuffer(    'weights', '<f4', (self.nseq['main'],))
         self._setupBuffer('weightstats', '<f4', (2,))
+        self._setupBuffer(      'E tmp', '<f4', (self.nseq['main'],)),
 
 
     def packSeqs_4(self, seqs):
@@ -665,10 +667,27 @@ class MCMCGPU:
             self.prg.renormalize_bimarg(self.queue, (nPairs*q*q,), (q*q,),
                          self.bufs['bi'], wait_for=self._waitevt(wait_for)))
 
-    def addBiBuffer(self, bufname, otherbuf, wait_for=None):
+    def addFloatBufs(self, dstname, srcname, wait_for=None):
         # used for combining results from different gpus, where  otherbuf is a
         # buffer "belonging" to another gpu
         self.log("addbuf")
+
+        dst = self.bufs[dstname]
+        src = self.bufs[srcname]
+        if dst.size != src.size:
+            raise Exception('Tried to add bufs of different sizes')
+        buflen = np.product(self.buf_spec[dstname][1])
+
+        return self.logevt('addbuf',
+            self.prg.addFloatBufs(self.queue, (nworkunits,), (self.wgsize,),
+                       dst, src, np.uint32(buflen),
+                       wait_for=self._waitevt(wait_for)))
+
+
+    def addBiBuffer(self, bufname, otherbuf, wait_for=None):
+        # used for combining results from different gpus, where  otherbuf is a
+        # buffer "belonging" to another gpu
+        self.log("addbibuf")
 
         selfbuf = self.bufs[bufname]
         if selfbuf.size != otherbuf.size:
@@ -677,9 +696,10 @@ class MCMCGPU:
         q, nPairs = self.q, self.nPairs
         nworkunits = self.wgsize*((nPairs*q*q-1)//self.wgsize+1)
 
-        return self.logevt('addbuf',
-            self.prg.addBiBufs(self.queue, (nworkunits,), (self.wgsize,),
-                       selfbuf, otherbuf, wait_for=self._waitevt(wait_for)))
+        return self.logevt('addbibuf',
+            self.prg.addFloatBufs(self.queue, (nworkunits,), (self.wgsize,),
+                       selfbuf, otherbuf, np.uint32(nPairs*q*q),
+                       wait_for=self._waitevt(wait_for)))
 
     def updateJ(self, gamma, pc, Jbuf='dJ', wait_for=None):
         self.require('Jstep')
