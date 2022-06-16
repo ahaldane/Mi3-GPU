@@ -181,6 +181,7 @@ class MCMCGPU:
         self._setupBuffer('seqL main', '<u4', (L, self.nseq['main']//4)),
         self._setupBuffer(    'cprob', '<f4', (L, (q-1))),
         self._setupBuffer(   'E main', '<f4', (self.nseq['main'],)),
+        self._setupBuffer(   'minout', '<f4', (1,))
         self.unpackedJ = False #use to keep track of whether J is unpacked
         self.repackedSeqT = {'main': False}
 
@@ -319,12 +320,12 @@ class MCMCGPU:
         self._initcomponent('Jstep')
 
         nPairs, q = self.nPairs, self.q
-        self._setupBuffer(       'dJ', '<f4',  (nPairs, q*q))
-        self._setupBuffer('bi target', '<f4',  (nPairs, q*q))
-        self._setupBuffer(     'Creg', '<f4',  (nPairs, q*q))
-        self._setupBuffer( 'Xlambdas', '<f4',  (nPairs,))
-        self._setupBuffer(     'neff', '<f4',  (1,))
-        self._setupBuffer(  'weights', '<f4',  (self.nseq['main'],))
+        self._setupBuffer(         'dJ', '<f4', (nPairs, q*q))
+        self._setupBuffer(  'bi target', '<f4', (nPairs, q*q))
+        self._setupBuffer(       'Creg', '<f4', (nPairs, q*q))
+        self._setupBuffer(   'Xlambdas', '<f4', (nPairs,))
+        self._setupBuffer(    'weights', '<f4', (self.nseq['main'],))
+        self._setupBuffer('weightstats', '<f4', (2,))
 
 
     def packSeqs_4(self, seqs):
@@ -548,6 +549,64 @@ class MCMCGPU:
             self.prg.getEnergies(self.queue, (nseq,), (self.wgsize,),
                              self.bufs[Jbufname], seq_dev, np.uint32(buflen),
                              energies_dev, wait_for=self._waitevt(wait_for)))
+
+    def min_buf(self, buf, wait_for=None):
+        self.require('Jstep')
+        self.log("min_buf")
+
+        bufdev = self.bufs[buf]
+        buflen = np.product(self.buf_spec[buf][1])
+
+        vsize = 1024
+        local_min = cl.LocalMemory(vsize*np.dtype(np.float32).itemsize)
+        return self.logevt('min_buf',
+              self.prg.minFloats(self.queue, (vsize,), (vsize,),
+                         bufdev, self.bufs['minout'], np.uint32(buflen), 
+                         local_min, wait_for=self._waitevt(wait_for)))
+
+    def weight_statistics(self, buf='main', wait_for=None):
+        self.require('Jstep')
+        self.log("weight_statistics")
+
+        buflen = self.nseq[buf]
+        if buf == 'main':
+            nseq = self.nseq[buf]
+            weights_dev = self.bufs['weights']
+        else:
+            nseq = self.nstoredseqs
+            nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
+            weights_dev = self.bufs['weights large']
+
+        vsize = 1024
+        local_sum = cl.LocalMemory(vsize*np.dtype(np.float32).itemsize)
+        local_sum2 = cl.LocalMemory(vsize*np.dtype(np.float32).itemsize)
+        return self.logevt('weight_statistics',
+              self.prg.weight_stats(self.queue, (vsize,), (vsize,),
+                            weights_dev, self.bufs['weightstats'],
+                            local_sum, local_sum2, np.uint32(buflen),
+                            wait_for=self._waitevt(wait_for)))
+
+    def dE_to_weights(self,  buf='main', offset=0., wait_for=None):
+        self.require('Jstep')
+        self.log("dE_to_weights")
+
+        buflen = self.nseq[buf]
+        if buf == 'main':
+            nseq = self.nseq[buf]
+            dE_dev = self.bufs['E main']
+            weights_dev = self.bufs['weights']
+        else:
+            nseq = self.nstoredseqs
+            nseq = nseq + ((self.wgsize - nseq) % self.wgsize)
+            dE_dev = self.bufs['E large']
+            weights_dev = self.bufs['weights large']
+
+        return self.logevt('dE_to_weights',
+            self.prg.dE_to_weights(self.queue, (nseq,), (self.wgsize,),
+                        np.float32(offset),
+                        np.uint32(buflen), dE_dev, weights_dev,
+                        wait_for=self._waitevt(wait_for)))
+        
 
     def fixed_beta_weights(self, ref_E, seqbufname='main', wait_for=None):
         self.require('Jstep')

@@ -1053,7 +1053,7 @@ def process_newton_args(args, log):
         elif rtype == 'X':
             try:
                 lX = float(rarg)
-                log(f"Regularizing X with lambda_X = {}lX")
+                log(f"Regularizing X with lambda_X = {lX}")
             except:
                 raise Exception(f"{rtype} specifier must be of form 'X:lX', eg "
                                 f"'X:0.01'. Got '{args.reg}'")

@@ -63,7 +63,7 @@ def printstats(name, jstep, bicount, bimarg_target, bimarg_model, couplings,
     #print some details
     disp = f"""\
 {name} {jstep: 6d} Error: SSR:{ssr:6.3f}   rel%:{ferr:5.2f}   max%:{maxd:5.2f}   X:{X}
-{name} bimarg: {printsome(bimarg)} ...
+{name} bimarg: {printsome(bimarg_model)} ...
 {name}      J: {printsome(couplings)} ...
 {name} min(E) = {lowE:.4f}     mean(E) = {meanE:.4f}     std(E) = {stdE:.4f}
 {name} E Autocorr vs time: {rhostr}"""
@@ -131,9 +131,9 @@ def getNeff(w):
 
 def NewtonStatus(n, trialJ, weights, bimarg_model, bimarg_target, log):
     ferr, ssr, maxd = bimarg_stats(bimarg_target, bimarg_model)
+    ferr, maxd = ferr*100, maxd*100
     w = weights
 
-    # not clear what best Neff measure is. sum(weights)?
     Neff = getNeff(weights)
     log("Predicted statistics after perturbing J:")
     log(f"    SSR:{ssr:6.3f}   rel%:{ferr:5.2f}   max%:{maxd:5.2f}")
@@ -195,38 +195,58 @@ def iterNewton(param, bimarg_model, gpus, log):
 
     # do coupling updates
     lastNeff = 2*N0
+    ref_dE = 0.0
     for i in range(newtonSteps):
         gpus.updateJ(gamma, pc)
         if param.reg is not None:
             gpus.reg(param.reg, (gamma, pc,) + param.regarg)
         gpus.calcEnergies(seqbuf, 'dJ')
 
-        # compute weights on CPU (since we want to subtract max for precision)
-        dE = gpus.readBufs(ebufname)
-        if param.beta is not None:
-            for dEi, wi in zip(dE, weight_mod):
-                dEi -= wi
-        mindE = np.min([np.min(x) for x in dE])
-        weights = [np.exp(mindE - x) for x in dE]
-        gpus.setBuf(wbufname, weights)
+        if param.beta:
+            # XXX add weight_mod to ebufname here
+            raise Exception("TODO: Implement --beta here")
+
+        gpus.min_buf(ebufname)
+        mindE_fut = gpus.getBuf('minout')
+
+        gpus.dE_to_weights(seqbuf, ref_dE) # refdE is estimated from last round
+        gpus.weight_statistics(seqbuf)
+        weightstat_fut = gpus.getBuf('weightstats')
+
+        ## compute weights on CPU (since we want to subtract max for precision)
+        #dE = gpus.readBufs(ebufname)
+        #if param.beta is not None:
+        #    for dEi, wi in zip(dE, weight_mod):
+        #        dEi -= wi
+        #mindE = np.min([np.min(x) for x in dE])
+        #weights = [np.exp(mindE - x) for x in dE]
+        #gpus.setBuf(wbufname, weights)
 
         gpus.weightedMarg(seqbuf)
         gpus.merge_bimarg()
 
-        weights = np.concatenate(weights)
-        Neff = getNeff(weights)
+        #weights = np.concatenate(weights)
+        #Neff = getNeff(weights)
+
+        wsum, wsum2 = (np.sum(x) for x in 
+                        zip(*(wi.read() for wi in weightstat_fut)))
+        Neff = wsum**2/wsum2
+        ref_dE = np.min([x.read()[()] for x in mindE_fut])
+
         if i%64 == 0 or abs(lastNeff - Neff)/N0 > 0.05 or Neff < Nfrac*N0:
             relN = Neff/N0*100
-            log("J-step {i: 5d}   Neff: {Neff:.1f}   ({relN:.1f}% of {N0})")
+            log(f"J-step {i: 5d}   Neff: {Neff:.1f}   ({relN:.1f}% of {N0})")
             lastNeff = Neff
         if Neff < Nfrac*N0:
             log(f"Ending coupling updates because Neff/N < {Nfrac:.2f}")
             break
+
     log(f"Performed {i} coupling update steps")
 
     # print status
     bi, J, dJ = gpus.head_gpu.readBufs(['bi', 'J', 'dJ'])
     bimarg_model, trialJ = bi[0], J[0] + dJ[0]
+    weights = gpus.collect(wbufname)
     gpus.setBuf('J', trialJ)
     NewtonStatus(i, trialJ, weights, bimarg_model, bimarg_target, log)
 
@@ -236,7 +256,7 @@ def iterNewton(param, bimarg_model, gpus, log):
                         "pc-damping")
 
     e = time.time()
-    log("Total Newton-step running time: {e-s:.1f} s")
+    log(f"Total Newton-step running time: {e-s:.1f} s")
 
     # dump profiling info if profiling is turned on
     gpus.logProfile()
@@ -656,7 +676,7 @@ def MCMCstep(runName, Jstep, couplings, param, gpus, log):
 
     Jsteps, newJ = NewtonSteps(runName, param, bimarg_model, gpus, log)
     param.newtonSteps = min(2048, Jsteps + ns_delta)
-    log(f"Increasing newtonsteps to {param.newtonSteps)}")
+    log(f"Increasing newtonsteps to {param.newtonSteps}")
     with open(outdir / runName / 'nsteps', 'wt') as f:
         f.write(str(Jsteps))
 

@@ -133,9 +133,17 @@ class GPU_node:
         for gpu in self.gpus:
             getattr(gpu, meth)(*param)
 
-    def calcWeights(self, seqbufname):
+    def min_buf(self, buf):
         for gpu in self.gpus:
-            gpu.calcWeights(seqbufname)
+            gpu.min_buf(buf)
+
+    def weight_statistics(self, buf='main'):
+        for gpu in self.gpus:
+            gpu.weight_statistics(buf)
+
+    def dE_to_weights(self, offset=0., buf='main'):
+        for gpu in self.gpus:
+            gpu.dE_to_weights(offset, buf)
 
     def weightedMarg(self, seqbufname):
         for gpu in self.gpus:

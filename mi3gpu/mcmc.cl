@@ -555,11 +555,91 @@ void sumFloats(__global float *data,
     }
 }
 
+__kernel //sums a vector. Call with 1 group of size VSIZE, must be power of two
+void minFloats(__global float *data,
+               __global float *output,
+                         uint  len,
+               __local  float *local_min) {
+    uint li = get_local_id(0);
+    uint vsize = get_local_size(0);
+    uint n;
+
+    // accumulate through array
+    local_min[li] = 0;
+    for (n = li; n < len; n += vsize) {
+        local_min[li] = fmin(data[n], local_min[li]);
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    //reduce (req power of two unlike elsewhere in this file)
+    for (n = vsize/2; n > 0; n >>= 1) {
+        if (li < n) {
+            local_min[li] = fmin(local_min[li], local_min[li + n]);
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    // assumes li is even. Need to add last element if odd
+    if (li == 0) {
+        *output = local_min[0];
+    }
+}
+
+__kernel // Call with 1 group of size VSIZE, must be power of two
+void weight_stats(__global float *data,
+                  __global float *out3,
+                  __local  float *local_sum,
+                  __local  float *local_sum2,
+                            uint  len) {
+    uint li = get_local_id(0);
+    const uint vsize = get_local_size(0);
+    uint n;
+
+    // accumulate
+    local_sum[li] = 0;
+    local_sum2[li] = 0;
+    for (n = li; n < len; n += vsize) {
+        float val = data[n];
+        local_sum[li] += val;
+        local_sum2[li] += val*val;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    //reduce (req power of two unlike elsewhere in this file)
+    for (n = vsize/2; n > 0; n >>= 1) {
+        if (li < n) {
+            local_sum[li] = local_sum[li] + local_sum[li + n];
+            local_sum2[li] = local_sum2[li] + local_sum2[li + n];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    // assumes li is even. Need to add last element if odd
+    if (li < 2) {
+        float tmp;
+        switch(li) {
+            case 0: tmp = local_sum[0]; break;
+            case 1: tmp = local_sum2[0]; break;
+        }
+        out3[li] = tmp;
+    }
+}
+
+__kernel
+void dE_to_weights(         float ref_E,
+                             uint buflen,
+                   __global float *dE,
+                   __global float *weights) {
+    if (get_global_id(0) >= buflen) {
+        return;
+    }
+    weights[get_global_id(0)] = exp(-dE[get_global_id(0)]+ref_E);
+}
+
 __kernel
 void fixed_beta_weights(         float ref_E,
                                   uint buflen,
                         __global float *energies,
                         __global float *weights) {
+    if (get_global_id(0) >= buflen) {
+        return;
+    }
     weights[get_global_id(0)] = exp((BETA-1)*(energies[get_global_id(0)]-ref_E));
 }
 
