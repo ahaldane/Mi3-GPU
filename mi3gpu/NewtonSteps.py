@@ -194,7 +194,7 @@ def iterNewton(param, bimarg_model, gpus, log):
         beta_mod = [-(param.beta-1)*x for x in E]
         dEB = np.concatenate(beta_mod)
         ref_dE = np.min(dEB)
-        N0 = getNeff(np.exp(-(dEB - ref_dEB))
+        N0 = getNeff(np.exp(-(dEB - ref_dEB)))
         gpus.setBuf(etmpname, beta_mod)
         log(f"Temperature reweight decreases Neff from {N} to {N0}")
 
