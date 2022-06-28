@@ -23,6 +23,54 @@ def mutation_pc(ff, N, mode='jeffreys'):
     ff = nrmlz((1-mu)**2*ff + (1-mu)*mu*fifj/q + (mu/q)**2)
     return ff
 
+def apply_pseudocount(mode, ff, pc):
+    L, q = getLq(ff)
+
+    if mode == 'constant':
+        if len(pc) != 1 or pc[0] < 0 or pc[0] > 1:
+            raise ValueError("pc should be a single value 0 <= x <= 1")
+        return nrmlz(ff + pc[0])
+
+    elif mode in ['jeffreys', 'bayes'] :
+        if len(pc) != 1:
+            raise ValueError("pc should be a single value representing Neff")
+        pc, = pc
+        return mutation_pc(ff, pc, mode)
+
+    elif mode == 'unijmix':
+        if len(pc) != 2:
+            raise ValueError("pc should be two values representing (pc, w)"
+                             "where the weight is 0 <= w <= 1 and pc is "
+                             "a pseudocount on the univariate marginals, eg "
+                             "put 0.5/Neff for Jeffrey's prior.")
+        pc, l = pc
+        f = getUnimarg(ff)
+        f = nrmlz(f + pc)
+        fifj = np.array([np.outer(f[i],f[j]).flatten()
+                         for i in range(L-1) for j in range(i+1,L)])
+        return nrmlz((1-l)*ff + l*fifj)
+
+    elif mode == 'meanfield':
+        if len(pc) != 1 or pc[0] < 0 or pc[0] > 1:
+            raise ValueError("pc should be a single value 0 <= x <= 1")
+        pc = pc[0]/(1-pc[0])
+        return nrmlz(ff + pc/(q*q))
+
+    elif mode == 'test':
+        if len(pc) != 2:
+            raise ValueError("pc should be two values representing (pc, w)"
+                             "where the weight is 0 <= w <= 1 and pc is "
+                             "a pseudocount on the univariate marginals, eg "
+                             "put 0.5/Neff for Jeffrey's prior.")
+        pc, l = pc
+        f = getUnimarg(ff)
+        fpc = nrmlz(f + pc)
+        z = (fpc - (1-l)*f)/l
+
+        zizj = np.array([np.outer(z[i],z[j]).flatten()
+                         for i in range(L-1) for j in range(i+1,L)])
+        return nrmlz((1-l)*ff + l*zizj)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -38,55 +86,9 @@ def main():
     parser.add_argument('-o', '--out', default='outpc', help="Output file")
 
     args = parser.parse_args(sys.argv[1:])
-    ff = ff_orig = np.load(args.margfile)
-    L, q = getLq(ff)
+    ff_orig = np.load(args.margfile)
 
-    pc = args.pc
-    if args.mode == 'constant':
-        print("Using a flat pseudocount", file=sys.stderr)
-        if len(pc) != 1 or pc[0] < 0 or pc[0] > 1:
-            raise ValueError("pc should be a single value 0 <= x <= 1")
-        ff = nrmlz(ff + pc[0])
-    elif args.mode in ['jeffreys', 'bayes'] :
-        if len(pc) != 1:
-            raise ValueError("pc should be a single value representing Neff")
-        pc, = pc
-
-        ff = mutation_pc(ff, pc, args.mode)
-    elif args.mode == 'unijmix':
-        if len(pc) != 2:
-            raise ValueError("pc should be two values representing (pc, w)"
-                             "where the weight is 0 <= w <= 1 and pc is "
-                             "a pseudocount on the univariate marginals, eg "
-                             "put 0.5/Neff for Jeffrey's prior.")
-        pc, l = pc
-        f = getUnimarg(ff)
-        f = nrmlz(f + pc)
-        fifj = np.array([np.outer(f[i],f[j]).flatten()
-                         for i in range(L-1) for j in range(i+1,L)])
-        ff = nrmlz((1-l)*ff + l*fifj)
-
-    elif args.mode == 'meanfield':
-        print("Using meanfield pseudocount", file=sys.stderr)
-        if len(pc) != 1 or pc[0] < 0 or pc[0] > 1:
-            raise ValueError("pc should be a single value 0 <= x <= 1")
-        pc = pc[0]/(1-pc[0])
-        ff = nrmlz(ff + pc/(q*q))
-
-    elif args.mode == 'test':
-        if len(pc) != 2:
-            raise ValueError("pc should be two values representing (pc, w)"
-                             "where the weight is 0 <= w <= 1 and pc is "
-                             "a pseudocount on the univariate marginals, eg "
-                             "put 0.5/Neff for Jeffrey's prior.")
-        pc, l = pc
-        f = getUnimarg(ff)
-        fpc = nrmlz(f + pc)
-        z = (fpc - (1-l)*f)/l
-
-        zizj = np.array([np.outer(z[i],z[j]).flatten()
-                         for i in range(L-1) for j in range(i+1,L)])
-        ff = nrmlz((1-l)*ff + l*zizj)
+    ff = apply_pseudocount(args.mode, ff_orig, args.pc)
 
     ssr = np.sum((ff - ff_orig)**2)
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -94,7 +96,6 @@ def main():
         ferr = np.mean(rel_err[ff_orig > 0.01])
     print("Difference in pseudocounted marginals relative to original:")
     print("SSR: {:.2f}   Ferr: {:.4f}".format(ssr, ferr))
-
 
     np.save(args.out, ff.astype('<f4'))
 
