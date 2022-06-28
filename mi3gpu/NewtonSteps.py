@@ -129,6 +129,20 @@ def getNeff(w):
     # var(X) = p(1-p)/Neff, with Neff = N in the unweighted case.
     return (np.sum(w)**2)/np.sum(w**2)
 
+def predictNeff(Es, beta, beta_gen):
+    # predict what Neff we would get when generating sequences using temperature beta,
+    # for use in evaluating marginals at beta=1, given a previously set of generated
+    # sequence energies at temperature beta_gen.
+
+    # derivation:
+    # Neff = [\int \rho_b(E) e^{-(1 - b)E} dE ]^2 / \int \rho_b(E) e^{-2(1-b)E} dE
+    # use \rho_b(E) = \rho_bgen(E + (bgen - b)varE)  using gaussian approx (see REM notes)
+    # Neff = [\int \rho_bgen(E+(bgen-b)varE) e^{-(1 - b)E} dE ]^2 / \int ...
+    #      = [\int \rho_bgen(E) e^{-(1 - b)(E-(bgen-b)varE} dE ]^2 / \int ...
+    # in othe words, logw = -(1 - b)(E-(bgen-b)varE}
+    logw = -(1-b)*(e - (bgen-b)*np.var(e))
+    return getNeff(np.exp(logw - np.max(logw)))
+
 def NewtonStatus(n, trialJ, weights, bimarg_model, bimarg_target, log):
     ferr, ssr, maxd = bimarg_stats(bimarg_target, bimarg_model)
     ferr, maxd = ferr*100, maxd*100
@@ -194,7 +208,7 @@ def iterNewton(param, bimarg_model, gpus, log):
         beta_mod = [-(param.beta-1)*x for x in E]
         dEB = np.concatenate(beta_mod)
         ref_dE = np.min(dEB)
-        N0 = getNeff(np.exp(-(dEB - ref_dEB)))
+        N0 = getNeff(np.exp(-(dEB - ref_dE)))
         gpus.setBuf(etmpname, beta_mod)
         log(f"Temperature reweight decreases Neff from {N} to {N0}")
 
@@ -206,9 +220,8 @@ def iterNewton(param, bimarg_model, gpus, log):
             gpus.reg(param.reg, (gamma, pc,) + param.regarg)
         gpus.calcEnergies(seqbuf, 'dJ')
 
-        if param.beta:
-            raise Exception("TODO: Test this before using it")
-            gpus.addBuf(ebufname, etmpname)
+        if param.beta is not None:
+            gpus.addFloatBuf(ebufname, etmpname)
 
         gpus.min_buf(ebufname)
         mindE_fut = gpus.getBuf('minout')

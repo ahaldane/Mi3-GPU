@@ -667,7 +667,7 @@ class MCMCGPU:
             self.prg.renormalize_bimarg(self.queue, (nPairs*q*q,), (q*q,),
                          self.bufs['bi'], wait_for=self._waitevt(wait_for)))
 
-    def addFloatBufs(self, dstname, srcname, wait_for=None):
+    def addFloatBuf(self, dstname, srcname, wait_for=None):
         # used for combining results from different gpus, where  otherbuf is a
         # buffer "belonging" to another gpu
         self.log("addbuf")
@@ -677,12 +677,12 @@ class MCMCGPU:
         if dst.size != src.size:
             raise Exception('Tried to add bufs of different sizes')
         buflen = np.product(self.buf_spec[dstname][1])
+        nworkunits = self.wgsize*((buflen-1)//self.wgsize+1)
 
         return self.logevt('addbuf',
             self.prg.addFloatBufs(self.queue, (nworkunits,), (self.wgsize,),
                        dst, src, np.uint32(buflen),
                        wait_for=self._waitevt(wait_for)))
-
 
     def addBiBuffer(self, bufname, otherbuf, wait_for=None):
         # used for combining results from different gpus, where  otherbuf is a

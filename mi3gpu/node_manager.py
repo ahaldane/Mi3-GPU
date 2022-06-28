@@ -145,9 +145,17 @@ class GPU_node:
         for gpu in self.gpus:
             gpu.dE_to_weights(offset, buf)
 
+    def fixed_beta_weights(self, ref_E, seqbufname='main'):
+        for gpu in self.gpus:
+            gpu.fixed_beta_weights(ref_E, seqbufname)
+
     def weightedMarg(self, seqbufname):
         for gpu in self.gpus:
             gpu.weightedMarg(seqbufname)
+
+    def addFloatBuf(self,dstname, srcname):
+        for gpu in self.gpus:
+            gpu.addFloatBuf(dstname, srcname)
 
     def renormalize_bimarg(self):
         for gpu in self.gpus:
