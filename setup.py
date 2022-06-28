@@ -32,6 +32,7 @@ setuptools.setup(
              'mi3gpu/utils/exploreParam.py',
              'mi3gpu/utils/alphabet_reduction.py',
              'mi3gpu/utils/apply_alphamap.py',
+             'mi3gpu/utils/reverse_alphamap.py',
              'mi3gpu/utils/pre_regularize.py'],
     include_package_data = True,
     classifiers=[
