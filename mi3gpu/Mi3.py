@@ -523,10 +523,11 @@ def inverseIsing(orig_args, infer_args, log):
 
     f = p.bimarg
     expect_SSR = np.sum(f*(1-f))/N
+    # for unit normal, the mean abs deviation is sqrt(2/pi)
     absexp = np.sqrt(2/np.pi)*np.sqrt(f*(1-f)/N)/f
     expect_Ferr = np.mean(absexp[f>0.01])
     log("\nEstimated lowest achievable statistical error for this nwalkers and "
-        f"bimarg is:\nMIN:    SSR = {expect_SSR:.4f}   Ferr = {expect_Ferr:.3f}")
+        f"bimarg is:\nMIN:    SSR = {expect_SSR:.4f}   rel% = {expect_Ferr:.3f}")
     log("(Statistical error only. Modeling biases and perturbation procedure "
         "may cause additional error)")
 
@@ -724,7 +725,7 @@ def equilibrate(orig_args, args, log):
                                      description=descr)
     add = parser.add_argument
     addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
-                                          'gpus profile')
+                                          'gpus profile beta')
     addopt(parser, 'Sequence Options',    'seedseq seqs indep_marg ')
     addopt(parser, 'Sampling Options',    'equiltime min_equil max_equil '
                                           'trackequil tracked '
