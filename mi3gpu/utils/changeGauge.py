@@ -185,9 +185,9 @@ def test_transform(L, q, func):
 
     seqs = np.random.randint(q, size=(20, L))
 
-    from mi3gpu.utils.getSeqEnergies import potts_energies as energies
+    from mi3gpu.utils.getSeqEnergies import E_potts
 
-    e1 = energies(seqs, J) + np.sum(h[np.arange(L),seqs], axis=1)
+    e1 = E_potts(seqs, J) + np.sum(h[np.arange(L),seqs], axis=1)
 
     hp, Jp = func(h, J)
 

@@ -19,41 +19,54 @@
 #Contact: allan.haldane _AT_ gmail.com
 import numpy as np
 import sys, argparse
+import functools
 
 from mi3gpu.utils.potts_common import getLq, alpha20
 import mi3gpu.utils.seqload as seqload
 
-def potts_energies(s, J):
+@functools.lru_cache
+def nij_inds(L):
+    i,j = np.triu_indices(L,k=1)
+    n = np.arange(L*(L-1)//2)
+    return n,i,j
+
+def E_potts(s, J):
     L, q = getLq(J)
-    N, Ls = s.shape
-    assert(L == Ls)
+    assert(L == s.shape[-1])
+    # the x + q*y operation below may overflow for i1 if q>16, so fix if so.
+    # Also, make the ij index the fast axis, and transpose to help bcasting
+    s = np.require(s.T, dtype='i4' if q > 16 else None, requirements='C')
 
-    s = s.T.copy() # transpose for speed
-    if q > 16: # the x + q*y operation below may overflow for i1
-        s = s.astype('i4')
-
+    if s.ndim == 1: # a single sequence
+        n,i,j = nij_inds(L)
+        return np.sum(J[n,q*s[i] + s[j]], dtype='f8')
+    
+    N = s.shape[1]
+    qsi = np.empty(N, dtype=s.dtype) # preallocated scratch
+    qqs = np.empty(N, dtype=s.dtype) # preallocated scratch
     pairenergy = np.zeros(N, dtype='f8')
-    for n,(i,j) in enumerate((i,j) for i in range(L-1) for j in range(i+1,L)):
-        pairenergy += J[n,s[j,:] + q*s[i,:]]
+    n = 0
+    for i in range(L-1):
+        np.multiply(q, s[i,:], out=qsi)
+        for j in range(i+1,L):
+            np.add(qsi, s[j,:], out=qqs)
+            pairenergy += J[n,qqs]
+            n += 1
     return pairenergy
 
-def indep_energies(s, h):
+def E_indep(s, h):
     L, q = h.shape
-    return np.sum(h[np.arange(L), s], axis=1)
+    return np.sum(h[np.arange(L), s], axis=-1)
 
-def potts_energies_decomposed(s, J):
+def E_potts_decomposed(s, J):
     L, q = getLq(J)
-    N, Ls = s.shape
-    assert(L == Ls)
-
-    s = s.T.copy() # transpose for speed
-    if q > 16: # the x + q*y operation below may overflow for i1
-        s = s.astype('i4')
-
-    cpl = np.zeros((N, L*(L-1)//2), dtype='f8')
-    for n,(i,j) in enumerate((i,j) for i in range(L-1) for j in range(i+1,L)):
-        cpl[:,n] = J[n,s[j,:] + q*s[i,:]]
-    return cpl
+    assert(L == s.shape[-1])
+    # the x + q*y operation below may overflow for i1 if q>16, so fix if so.
+    # Also, make the ij index the fast axis
+    s = np.require(s.T, dtype='i4' if q > 16 else None, requirements='C')
+    n,i,j = nij_inds(L)
+    # note this returns the f4 dtype of J. To perform sums, convert to f8 first
+    return J[n[:,None],q*s[i] + s[j]]
 
 def main():
     parser = argparse.ArgumentParser(description='Compute Sequence Energies')
@@ -76,7 +89,7 @@ def main():
     couplings = np.load(args.couplings).astype('f8')
 
     def chunkE(seqs, param):
-        return potts_energies(seqs, couplings)
+        return E_potts(seqs, couplings)
     
     # process the file in chunks for speed
     e = seqload.mapSeqs(args.seqs, chunkE, letters)[0]
