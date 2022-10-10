@@ -835,7 +835,7 @@ def equilibrate(orig_args, args, log):
             raise Exception("# of temperatures must evenly divide # walkers")
         Bs = np.concatenate([full(p.nwalkers/len(p.tempering), b, dtype='f4')
                           for b in p.tempering])
-        Bs = split(Bs, len(gpus))
+        Bs = np.split(Bs, len(gpus))
         for B,gpu in zip(Bs, gpus):
             gpu.setBuf('Bs', B)
             gpu.markSeqs(B == B0)
@@ -874,7 +874,8 @@ def subseqFreq(orig_args, args, log):
     add = parser.add_argument
     add('fixpos', help="comma separated list of fixed positions")
     add('out', default='output', help='Output File')
-    addopt(parser, 'GPU options',         'wgsize gpus')
+    addopt(parser, 'GPU options',         'nwalkers nsteps wgsize '
+                                          'gpus profile beta')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
     addopt(parser,  None,                 'outdir')
     group = parser.add_argument_group('Sequence Options')
@@ -904,13 +905,13 @@ def subseqFreq(orig_args, args, log):
     bseqs = loadSequenceFile(args.backgroundseqs, alpha, log)
     sseqs = loadSequenceFile(args.subseqs, alpha, log)
 
-    args.nwalkers = 1
-    gpup, cldat, gdevs = process_GPU_args(args, L, q, p.outdir, 1, log)
+    gpup = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
-    p.nsteps = 1
-    gpuwalkers = divideWalkers(len(bseqs), len(gdevs), log, p.wgsize)
-    gpus = [initGPU(n, cldat, dev, len(sseqs), nwalk, p, log)
-            for n,(dev, nwalk) in enumerate(zip(gdevs, gpuwalkers))]
+    gpus = setup_GPUs(p, log)
+    gpus.initMCMC(p.nsteps)
+
+    gpubseqs = np.split(bseqs, gpus.ngpus)
+    gpus.initLargeBufs(gpubseqs[0].shape[0])
 
     #fix positions
     fixedpos = np.array([int(x) for x in args.fixpos.split(',')])
@@ -918,12 +919,11 @@ def subseqFreq(orig_args, args, log):
     fixedmarks[fixedpos] = 1
 
     #load buffers
-    gpubseqs = split(bseqs, np.cumsum(gpuwalkers)[:-1])
-    for gpu,bs in zip(gpus, gpubseqs):
-        gpu.setBuf('seq main', sseqs)
-        gpu.setBuf('seq large', bs)
+    gpus.setBuf('seq main', sseqs)
+    gpus.setBuf('seq large', gpubseqs)
+    for gpu,bs in zip(gpus.gpus, gpubseqs):
         gpu.markPos(fixedmarks)
-        gpu.setBuf('J', p.couplings)
+    gpus.setBuf('J', p.couplings)
 
     log("")
 
@@ -931,8 +931,7 @@ def subseqFreq(orig_args, args, log):
     log("=================================")
     log("")
 
-    for gpu in gpus:
-        gpu.calcEnergies('large')
+    gpus.calcEnergies('large')
     origEs = np.concatenate(readGPUbufs(['E large'], gpus)[0])
 
     log("Getting substituted energies...")
@@ -940,10 +939,11 @@ def subseqFreq(orig_args, args, log):
     logf = np.zeros(len(sseqs))
     for n in range(len(sseqs)):
         # replaced fixed positions by subsequence, and calc energies
-        for gpu in gpus:
+        for gpu in gpus.gpus: #XXX not yet implemented in node manager
             gpu.copySubseq(n)
-            gpu.calcEnergies('large')
+        gpus.calcEnergies('large')
         energies = np.concatenate(readGPUbufs(['E large'], gpus)[0])
+        energies = gpus.collect(['E large'])[0]
         logf[n] = logsumexp(origEs - energies)
 
     #save result
