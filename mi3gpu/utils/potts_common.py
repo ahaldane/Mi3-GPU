@@ -171,4 +171,4 @@ def printsome(a, prec=4):
     return np.array2string(a.flatten()[:5], precision=prec, sign=' ')[1:-1]
 
 # put here to avoid circular import
-from mi3gpu.utils.getSeqEnergies import potts_E, indep_E
+from mi3gpu.utils.getSeqEnergies import E_potts, E_indep
