@@ -18,7 +18,6 @@
 
 #Contact: allan.haldane _AT_ gmail.com
 import numpy as np
-from mi3gpu.utils.getSeqEnergies import potts_E, indep_E
 
 alpha20 = "ACDEFGHIKLMNPQRSTVWY"
 alpha21 = '-' + alpha20
@@ -170,3 +169,6 @@ def getRddE(J):
 
 def printsome(a, prec=4):
     return np.array2string(a.flatten()[:5], precision=prec, sign=' ')[1:-1]
+
+# put here to avoid circular import
+from mi3gpu.utils.getSeqEnergies import potts_E, indep_E
