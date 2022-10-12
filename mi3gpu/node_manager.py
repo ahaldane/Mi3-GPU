@@ -96,6 +96,10 @@ class GPU_node:
         for gpu in self.gpus:
             gpu.initJstep()
 
+    def initSubseq(self):
+        for gpu in self.gpus:
+            gpu.initSubseq()
+
     def logProfile(self):
         for gpu in self.gpus:
             gpu.logProfile()
@@ -231,6 +235,10 @@ class GPU_node:
         for gpu in self.gpus:
             gpu.fillSeqs(seq)
 
+    def markPos(self, marks):
+        for gpu in self.gpus:
+            gpu.markPos(marks)
+
     def storeSeqs(self, seqs=None):
         for gpu in self.gpus:
             gpu.storeSeqs(seqs)
@@ -238,6 +246,10 @@ class GPU_node:
     def clearLargeSeqs(self):
         for gpu in self.gpus:
             gpu.clearLargeSeqs()
+
+    def copySubseq(self, seqind):
+        for gpu in self.gpus:
+            gpu.copySubseq(seqind)
 
     def reduce_node_bimarg(self):
         # each gpu has its own bimarg computed for its sequences. We want to
