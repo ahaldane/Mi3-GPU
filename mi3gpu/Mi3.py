@@ -875,7 +875,8 @@ def subseqFreq(orig_args, args, log):
                                      description=descr)
     add = parser.add_argument
     add('fixpos', help="comma separated list of fixed positions")
-    add('out', default='output', help='Output File')
+    add('--iterbackgrounds', action='store_true', 
+        help='use if backgrounds is small')
     addopt(parser, 'GPU options',         'nsteps wgsize '
                                           'gpus profile beta')
     addopt(parser, 'Potts Model Options', 'alpha couplings L')
@@ -907,24 +908,36 @@ def subseqFreq(orig_args, args, log):
     bseqs = loadSequenceFile(args.backgroundseqs, alpha, log)
     sseqs = loadSequenceFile(args.subseqs, alpha, log)
 
-    args.nwalkers = sseqs.shape[0]
+    large, small = bseqs, sseqs
+    if args.iterbackgrounds:
+        large, small = sseqs, bseqs
+
+    ns = len(small)
+    if ns < 512:
+        zpad = np.zeros((512-ns, L), dtype='u1')
+        small = np.concatenate([small, zpad], axis=0)
+    args.nwalkers = small.shape[0]
     gpup = process_GPU_args(args, L, q, p.outdir, log)
     p.update(gpup)
     gpus = setup_GPUs(p, log, splitwalkers=False)
     gpus.initMCMC(p.nsteps)
 
-    gpubseqs = np.split(bseqs, gpus.ngpus)
-    gpus.initLargeBufs(gpubseqs[0].shape[0])
+    gpulseqs = np.split(large, gpus.ngpus)
+    gpus.initLargeBufs(gpulseqs[0].shape[0])
     gpus.initSubseq()
 
     #fix positions
     fixedpos = np.array([int(x) for x in args.fixpos.split(',')])
+    if args.iterbackgrounds:
+        members = set(fixedpos)
+        fixedpos = np.array([i for i in range(L) if i not in members])
+    log(fixedpos)
     fixedmarks = np.zeros(L, dtype='u1')
     fixedmarks[fixedpos] = 1
 
     #load buffers
-    gpus.setBuf('seq main', sseqs)
-    gpus.setBuf('seq large', gpubseqs)
+    gpus.setBuf('seq main', small)
+    gpus.setBuf('seq large', gpulseqs)
     gpus.markPos(fixedmarks)
     gpus.setBuf('J', p.couplings)
 
@@ -934,23 +947,30 @@ def subseqFreq(orig_args, args, log):
     log("=================================")
     log("")
 
-    gpus.calcEnergies('large')
-    origEs = gpus.collect(['E large'])[0]
+    gpus.calcEnergies('main')
+    origEs = gpus.collect(['E main'])[0][:ns]
 
     log("Getting substituted energies...")
-    subseqE = []
-    logf = np.zeros(len(sseqs))
-    for n in range(len(sseqs)):
-        # replaced fixed positions by subsequence, and calc energies
-        gpus.copySubseq(n)
-        gpus.calcEnergies('large')
-        energies = gpus.collect(['E large'])[0]
-        logf[n] = logsumexp(origEs - energies)
-        log(f"Subseq {n}  {logf[n]}")
+    if args.iterbackgrounds:
+        logf = np.full(len(large), -np.inf)
+        for n, eo in enumerate(origEs):
+            # replaced fixed positions by subsequence, and calc energies
+            gpus.copySubseq(n)
+            gpus.calcEnergies('large')
+            energies = gpus.collect(['E large'])[0]
+            np.logaddexp(logf, eo-energies, out=logf)
+    else:
+        logf = np.zeros(len(large))
+        for n in range(ns):
+            # replaced fixed positions by subsequence, and calc energies
+            gpus.copySubseq(n)
+            gpus.calcEnergies('large')
+            energies = gpus.collect(['E large'])[0]
+            logf[n] = logsumexp(origEs - energies)
 
     #save result
-    log(f"Saving result (log frequency) to file {args.out}")
-    np.save(args.out, logf)
+    log(f"Done! Saving result (log frequency) to file.")
+    np.save(p.outdir / 'probs.npy', logf)
 
     logfile.close()
 
