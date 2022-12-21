@@ -30,26 +30,31 @@ def nij_inds(L):
     n = np.arange(L*(L-1)//2)
     return n,i,j
 
+# reorder the memory for optimized energy calculation.
+# do this once beforehand if calling E_potts many times.
+def MSA_prepmem(s, q):
+    return np.require(s, dtype='i4' if q > 16 else None, requirements='F')
+
 def E_potts(s, J):
     L, q = getLq(J)
     assert(L == s.shape[-1])
     # the x + q*y operation below may overflow for i1 if q>16, so fix if so.
     # Also, make the ij index the fast axis, and transpose to help bcasting
-    s = np.require(s.T, dtype='i4' if q > 16 else None, requirements='C')
+    s = MSA_prepmem(s, q)
 
     if s.ndim == 1: # a single sequence
         n,i,j = nij_inds(L)
         return np.sum(J[n,q*s[i] + s[j]], dtype='f8')
     
-    N = s.shape[1]
+    N = s.shape[0]
     qsi = np.empty(N, dtype=s.dtype) # preallocated scratch
     qqs = np.empty(N, dtype=s.dtype) # preallocated scratch
     pairenergy = np.zeros(N, dtype='f8')
     n = 0
     for i in range(L-1):
-        np.multiply(q, s[i,:], out=qsi)
+        np.multiply(q, s[:,i], out=qsi)
         for j in range(i+1,L):
-            np.add(qsi, s[j,:], out=qqs)
+            np.add(qsi, s[:,j], out=qqs)
             pairenergy += J[n,qqs]
             n += 1
     return pairenergy
@@ -63,10 +68,10 @@ def E_potts_decomposed(s, J):
     assert(L == s.shape[-1])
     # the x + q*y operation below may overflow for i1 if q>16, so fix if so.
     # Also, make the ij index the fast axis
-    s = np.require(s.T, dtype='i4' if q > 16 else None, requirements='C')
+    s = MSA_prepmem(s, q)
     n,i,j = nij_inds(L)
     # note this returns the f4 dtype of J. To perform sums, convert to f8 first
-    return J[n[:,None],q*s[i] + s[j]]
+    return J[n[:,None],q*s[:,i] + s[:,j]]
 
 def main():
     parser = argparse.ArgumentParser(description='Compute Sequence Energies')
