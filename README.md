@@ -13,7 +13,7 @@ Mi3-GPU solves the inverse Ising problem with few approximations using Markov-Ch
 
 ## Further Informtion
 
-See the [User Guide](UserGuide.md) for detailed information and examples. This software is primarily described by Ref [1], with additional details on the statistical properties of the algorithm in Ref [2].
+See the [User Guide](UserGuide.md) for detailed information and examples. This software is primarily described by Ref [1], with additional details on the statistical properties of the algorithm in Ref [2]. It is used in a number of publications, including [3-5].
 
 Licensed under GPLv3, see source for contact information.
 
@@ -23,3 +23,21 @@ Licensed under GPLv3, see source for contact information.
 
 [2] Influence of multiple-sequence-alignment depth on Potts statistical models of protein covariation
 Allan Haldane, Ronald M. Levy. PRE 2019. http://dx.doi.org/10.1103/PhysRevE.99.032405
+
+[3] Structural propensities of kinase family proteins from a Potts model of residue co-variation.  Haldane, Flynn, He, Vijayan, Levy. Protein Science 2016
+http://dx.doi.org/10.1002/pro.2954
+
+[4] The generative capacity of probabilistic protein sequence models.  McGee, Hauri, Novinger, Vucetic, Levy, Carnevale, Haldane.  Nature Communications 2021
+http://dx.doi.org/10.1038/s41467-021-26529-9
+
+[5] Inference of Epistatic Effects Leading to Entrenchment and Drug Resistance in HIV-1 Protease.  Flynn, Haldane, Torbett, Levy.  Molecular Biology and EvolutionJun 2017
+http://dx.doi.org/10.1093/molbev/msx095
+
+[6] Epistasis and entrenchment of drug resistance in HIV-1 subtype B.  Biswas, Haldane, Arnold, Levy.  eLife 2019
+http://dx.doi.org/10.7554/eLife.50524
+
+[7] Coevolutionary Landscape of Kinase Family Proteins: Sequence Probabilities and Functional Motifs. Haldane, Flynn, He, Levy.  Biophysical Journal 2018
+http://dx.doi.org/10.1016/j.bpj.2017.10.028
+
+[8] Evolutionary divergence in the conformational landscapes of Tyrosine vs Serine/Threonine Kinases. Joan Gizzio, Abhishek Thakur, Allan Haldane, Ronald M Levy  eLife 11:e83368 (2022) 
+https://doi.org/10.7554/eLife.83368

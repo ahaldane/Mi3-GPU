@@ -913,8 +913,9 @@ def subseqFreq(orig_args, args, log):
         large, small = sseqs, bseqs
 
     ns = len(small)
-    if ns < 512:
-        zpad = np.zeros((512-ns, L), dtype='u1')
+    if ns < 512 or (ns % 512) != 0:
+        n_new = ns-1 + 512 - ((ns-1)%512)
+        zpad = np.zeros((n_new - ns, L), dtype='u1')
         small = np.concatenate([small, zpad], axis=0)
     args.nwalkers = small.shape[0]
     gpup = process_GPU_args(args, L, q, p.outdir, log)
