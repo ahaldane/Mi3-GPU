@@ -32,7 +32,7 @@ def indmap(oldalpha, amap):
 
     return  np.array([ind(let) for let in oldalpha])
 
-def reduceSeqAlphaPerpos(seqs, newalphas, oldalpha, out=None):
+def reduceSeqAlphaPerpos(seqs, newalphas, oldalpha, out=None, ids=None):
     rseqs = np.empty(seqs.shape, dtype=int)
     for n,a in enumerate(newalphas):
         conv = indmap(oldalpha, a)
@@ -40,7 +40,7 @@ def reduceSeqAlphaPerpos(seqs, newalphas, oldalpha, out=None):
 
     if out is None:
         out = sys.stdout
-    seqload.writeSeqs(out, rseqs, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    seqload.writeSeqs(out, rseqs, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", ids=ids)
 
 def reduceBimAlphaPerpos(bimarg, newalphas, oldalpha, out):
     if out is None:
@@ -91,8 +91,8 @@ def main():
     try:
         bimarg = np.load(args.file)
     except:
-        seqs = seqload.loadSeqs(args.file, alpha)[0]
-        reduceSeqAlphaPerpos(seqs, newalphas, alpha, args.out)
+        seqs, ids, _ = seqload.loadSeqs(args.file, alpha)
+        reduceSeqAlphaPerpos(seqs, newalphas, alpha, args.out, ids)
     else:
         reduceBimAlphaPerpos(bimarg, newalphas, alpha, args.out)
 
