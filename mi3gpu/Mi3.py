@@ -1334,7 +1334,10 @@ class CLInfoAction(configargparse.Action):
         printGPUs(print)
         parser.exit()
 
-def main(args):
+def main():
+    setup_exit_hook(print)
+    args = sys.argv[1:]
+
     actions = {
       'infer':   inverseIsing,
       'energies':    getEnergies,
@@ -1375,5 +1378,4 @@ def main(args):
     actions[known_args.action](args, remaining_args, print)
 
 if __name__ == '__main__':
-    setup_exit_hook(print)
-    main(sys.argv[1:])
+    main()
