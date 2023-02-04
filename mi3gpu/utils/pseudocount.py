@@ -2,6 +2,7 @@
 import numpy as np
 import argparse, sys
 from mi3gpu.utils.potts_common import getLq, getUnimarg, indepF
+from mi3gpu.NewtonSteps import bimarg_stats
 
 nrmlz = lambda x: x/np.sum(x,axis=1)[:,None]
 
@@ -90,12 +91,10 @@ def main():
 
     ff = apply_pseudocount(args.mode, ff_orig, args.pc)
 
-    ssr = np.sum((ff - ff_orig)**2)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        rel_err = (np.abs(ff_orig - ff)/ff_orig)
-        ferr = np.mean(rel_err[ff_orig > 0.01])
+    ferr, ssr, maxd = bimarg_stats(ff_orig, ff)
+    ferr, maxd = ferr*100, maxd*100
     print("Difference in pseudocounted marginals relative to original:")
-    print("SSR: {:.2f}   Ferr: {:.4f}".format(ssr, ferr))
+    print(f"SSR:{ssr:6.3f}   rel%:{ferr:5.2f}   max%:{maxd:5.2f}")
 
     np.save(args.out, ff.astype('<f4'))
 
