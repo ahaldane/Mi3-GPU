@@ -1,9 +1,12 @@
 [build-system]
-requires = ["setuptools", "numpy"]
+requires = ["setuptools", "wheel", "setuptools-git-versioning", "oldest-supported-numpy"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["mi3gpu*"]
+
+[tool.setuptools-git-versioning]
+enabled = true
 
 [project]
 name = "mi3gpu"
@@ -22,11 +25,11 @@ classifiers = [
 ]
 dependencies = [
     "numpy >= 1.14",
-    "scipy>=1.0.0",
+    "scipy >= 1.0.0",
     "pyopencl",
     "configargparse",
 ]
-dynamic = ["version"]
+dynamic =["version" ]
 
 [project.scripts]
 Mi3 = "mi3gpu.Mi3:main"
