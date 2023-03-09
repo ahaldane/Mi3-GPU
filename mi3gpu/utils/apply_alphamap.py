@@ -23,6 +23,14 @@ import numpy as np
 from mi3gpu.utils.potts_common import getLq, alpha20
 import mi3gpu.utils.seqload as seqload
 
+def read_alphamap(fn):
+    with open(fn) as f:
+        # assumed to be a file containing the output of alphabet reduction, but
+        # only for one reduction level.  Each line should look like:
+        # ALPHA8 -DNAGSQFMYCI E HWP K L R T V
+        newalphas = [a.split()[1:] for a in f.readlines()]
+    return newalphas
+
 def indmap(oldalpha, amap):
     def ind(x):
         for i in range(len(amap)):
@@ -32,19 +40,15 @@ def indmap(oldalpha, amap):
 
     return  np.array([ind(let) for let in oldalpha])
 
-def reduceSeqAlphaPerpos(seqs, newalphas, oldalpha, out=None, ids=None):
+def reduceSeqAlphaPerpos(seqs, newalphas, oldalpha, out_alpha, out=None, ids=None):
     rseqs = np.empty(seqs.shape, dtype=int)
     for n,a in enumerate(newalphas):
         conv = indmap(oldalpha, a)
         rseqs[:,n] = conv[seqs[:,n]]
+    return rseqs
 
-    if out is None:
-        out = sys.stdout
-    seqload.writeSeqs(out, rseqs, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", ids=ids)
 
-def reduceBimAlphaPerpos(bimarg, newalphas, oldalpha, out):
-    if out is None:
-        raise ValueError('out argument required for bimarg reduction')
+def reduceBimAlphaPerpos(bimarg, newalphas, oldalpha):
 
     L, q = getLq(bimarg)
     qout = len(newalphas[0])
@@ -64,8 +68,8 @@ def reduceBimAlphaPerpos(bimarg, newalphas, oldalpha, out):
 
     # renormalize
     newbim /= np.sum(newbim, axis=1, keepdims=True)
-
-    np.save(out, newbim.astype('f4'))
+    
+    return newbim.astype('f4')
 
 def main():
     parser = argparse.ArgumentParser(
@@ -73,28 +77,35 @@ def main():
     parser.add_argument('file', help='either seq file or bimarg file')
     parser.add_argument('alphamap')
     parser.add_argument('--alpha', default='protgap')
+    parser.add_argument('--out_alpha', default='alphabet')
     parser.add_argument('--out')
-
     args = parser.parse_args(sys.argv[1:])
+
+    out = args.out
+
     alphabets = {'protein': alpha20,
                  'protgap': '-' + alpha20,
                  'charge': '0+-',
-                 'nuc': "ACGT"}
+                 'nuc': "ACGT",
+                 'alphabet': "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
     alpha = alphabets.get(args.alpha, args.alpha)
+    out_alpha = alphabets.get(args.out_alpha, args.out_alpha)
 
-    with open(args.alphamap) as f:
-        # assumed to be a file containing the output of alphabet reduction, but
-        # only for one reduction level.  Each line should look like:
-        # ALPHA8 -DNAGSQFMYCI E HWP K L R T V
-        newalphas = [a.split()[1:] for a in f.readlines()]
+    newalphas = read_alphamap(args.alphamap)
 
     try:
         bimarg = np.load(args.file)
     except:
         seqs, ids, _ = seqload.loadSeqs(args.file, alpha)
-        reduceSeqAlphaPerpos(seqs, newalphas, alpha, args.out, ids)
+        rseqs = reduceSeqAlphaPerpos(seqs, newalphas, alpha, out_alpha)
+        if args.out is None:
+            out = sys.stdout
+        seqload.writeSeqs(out, rseqs, out_alpha, ids=ids)
     else:
-        reduceBimAlphaPerpos(bimarg, newalphas, alpha, args.out)
+        if out is None:
+            raise ValueError('out argument required for bimarg reduction')
+        newbim = reduceBimAlphaPerpos(bimarg, newalphas, alpha)
+        np.save(args.out, newbim)
 
 if __name__ == '__main__':
     main()
