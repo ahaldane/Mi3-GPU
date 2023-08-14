@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-# This script requires the Biopython module to be installed.
-
 fail() {
     echo 'failed' ; exit 1; 
 }
@@ -11,22 +9,22 @@ if [ -f PF00018_full.txt ]; then
     echo "--> SH3 MSA already downloaded from Pfam."
 else
     echo -e "\n--> Downloading SH3 MSA from Pfam..."
-    wget 'https://pfam.xfam.org/family/PF00018/alignment/full/format?format=fasta&alnType=full&order=t&case=l&gaps=default&download=1' -O PF00018_full.txt || fail
+    wget 'https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF00018/?annotation=alignment:full&download' -O PF00018_full.txt.gz || fail
+    gunzip PF00018_full.txt.gz
 fi
 
 
 
 echo -e "\n--> convert FASTA to flat MSA format"
 python3 <<EOF || fail
-from Bio import SeqIO
-from Bio.Alphabet import IUPAC
 import re
 
-alpha = '-' + IUPAC.protein.letters
+alpha = '-ACDEFGHIKLMNPQRSTVWY'
 
 with open("PF00018_full.txt", "r") as fin:
-    seqs = [re.sub('[a-z.]', '', str(r.seq))
-            for r in SeqIO.parse(fin, "fasta")]
+    seqs = (r.split()[-1] for r in fin 
+            if not (r.startswith('#') or r.startswith('/')))
+    seqs = [re.sub('[a-z.]', '', r) for r in seqs]
 
 # remove sequences with ambigious residues
 seqs = [s for s in seqs if all(c in alpha for c in s)]
@@ -34,8 +32,6 @@ seqs = [s for s in seqs if all(c in alpha for c in s)]
 with open("seqs21_raw", "wt") as fout:
     fout.write("\n".join(seqs))
 EOF
-
-
 
 echo -e "\n--> remove gapped columns and sequences"
 python3 <<EOF || fail
@@ -69,10 +65,10 @@ getMarginals.py --weights weights${phy}.npy seqs21 bim21 || fail
 echo -e "\n--> Apply small pseudocount"
 pseudocount.py bim21.npy $(cat Neff$phy) --mode jeffreys -o bim21Jeff.npy || fail
 
-# the bim21Jeff.npy file may now be used to infer a Potts model.
-# For instance, the following inference options will run a first round of inference:
+echo -e "\n The bim21Jeff.npy file may now be used to infer a Potts model on GPUs."
+echo -e "\n For instance, the following inference options will run a first round of inference:"
 #
-<<EOF
+echo '
 alpha=-ACDEFGHIKLMNPQRSTVWY
 bim=bim21Jeff.npy
 export PYTHONUNBUFFERED=1
@@ -86,7 +82,7 @@ Mi3.py infer --bimarg $bim \
           --reg l1z:0.0002 \
           --outdir A1 \
           --log
-EOF
+'
 #
 # A slightly more converged model can be produced by continuing the inference
 # with nwalkers=1048576 for 16 mcsteps.

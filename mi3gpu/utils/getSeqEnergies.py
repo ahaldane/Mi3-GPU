@@ -24,7 +24,7 @@ import functools
 from mi3gpu.utils.potts_common import getLq, alpha20
 import mi3gpu.utils.seqload as seqload
 
-@functools.lru_cache
+@functools.lru_cache(maxsize=None)
 def nij_inds(L):
     i,j = np.triu_indices(L,k=1)
     n = np.arange(L*(L-1)//2)
